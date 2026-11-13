@@ -1,0 +1,33 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+
+    <!-- Linexa official logo — concept #01 «PROMPT» from the Haven logo
+         sheet (linexa-logos-haven.html, CONCEPTS id "prompt"), the
+         transparent-mark export: the 512x512 sheet geometry verbatim
+         (chevron + half-lit cursor, 46-unit round strokes) on a transparent
+         canvas. This is the single canonical in-app brand mark; surfaces
+         that want the launcher look place it on the ic_launcher_background
+         charcoal tile, exactly like the home-screen icon composites the
+         same two layers. -->
+
+    <!-- Prompt chevron ">" -->
+    <path
+        android:pathData="M158,178 L254,256 L158,334"
+        android:strokeColor="#2AD178"
+        android:strokeWidth="46"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000" />
+
+    <!-- Half-lit cursor "_" -->
+    <path
+        android:pathData="M292,334 L354,334"
+        android:strokeColor="#2AD178"
+        android:strokeWidth="46"
+        android:strokeLineCap="round"
+        android:strokeAlpha="0.5"
+        android:fillColor="#00000000" />
+</vector>

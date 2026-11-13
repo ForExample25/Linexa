@@ -1,0 +1,41 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Linexa official logo — concept #01 «PROMPT» from the Haven logo
+         sheet (linexa-logos-haven.html, CONCEPTS id "prompt"). The terminal
+         signature: a chevron ">" and a half-lit cursor "_", the same motif
+         the Haven UI repeats everywhere. Art is authored on the sheet's
+         512x512 grid (safe-zone ≤ 61%) and mapped here as the adaptive
+         foreground at the sheet's specified scale — mark centered on 66% of
+         the 108dp canvas: 512 * (108 * 0.66 / 512) = 71.28dp content box,
+         translate (108 - 71.28) / 2 = 18.36dp. Geometry, stroke weight and
+         opacity are the sheet's exact values, not a redraw. -->
+
+    <group
+        android:scaleX="0.13921875"
+        android:scaleY="0.13921875"
+        android:translateX="18.36"
+        android:translateY="18.36">
+
+        <!-- Prompt chevron ">" -->
+        <path
+            android:pathData="M158,178 L254,256 L158,334"
+            android:strokeColor="#2AD178"
+            android:strokeWidth="46"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:fillColor="#00000000" />
+
+        <!-- Half-lit cursor "_" -->
+        <path
+            android:pathData="M292,334 L354,334"
+            android:strokeColor="#2AD178"
+            android:strokeWidth="46"
+            android:strokeLineCap="round"
+            android:strokeAlpha="0.5"
+            android:fillColor="#00000000" />
+    </group>
+</vector>

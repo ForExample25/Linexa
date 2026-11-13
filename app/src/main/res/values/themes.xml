@@ -1,0 +1,10 @@
+<resources>
+    <style name="Theme.Linexa" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <!-- HAVEN rebuild: light window background matching the Haven light `bg`
+             token (#F7F7F5, HavenColors.lightPalette). The dark override in
+             values-night/themes.xml matches the Haven dark `bg` (#101113). -->
+        <item name="android:windowBackground">#F7F7F5</item>
+    </style>
+</resources>

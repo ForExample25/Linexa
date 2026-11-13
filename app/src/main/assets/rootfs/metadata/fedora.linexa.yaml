@@ -1,0 +1,223 @@
+# ══════════════════════════════════════════════════════════════════════════
+# Linexa bundled RootFS metadata — Fedora (generic profile)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# Applied by DownloadService when the downloaded Fedora image carries no
+# native declaration of its own (linuxcontainers.org images never do). It is
+# validated by the same fail-hard pipeline as an archive-authored file and is
+# persisted as the workspace's config.yaml.
+#
+# Fedora specifics:
+#  - dnf is the package manager; `dnf -y` consumes the confirmation the
+#    shortcut card already showed the user.
+#  - /bin is a symlink to /usr/bin in the modern usr-merged image; the
+#    declared shell is the real /usr/bin/bash.
+#  - SELinux is disabled/unenforcing in a PRoot guest; commands that would
+#    require policy management are deliberately absent.
+linexa:
+  schema_version: 2
+
+  distro:
+    id: fedora
+    name: Fedora Linux
+    version: "42"
+
+  architecture: arm64
+
+  rootfs:
+    type: base
+    compressed_format: tar.xz
+
+  desktop:
+    enabled: false
+
+  package_manager:
+    type: dnf
+
+  environment:
+    shell: /bin/bash
+    shell_args:
+      - --login
+    user: linexa
+    home: /home/linexa
+    variables:
+      LINEXA_WORKSPACE: /home/linexa
+
+  workspace:
+    directory: /home/linexa
+
+  shell_config:
+    aliases:
+      la: "ls -A"
+      ll: "ls -alF"
+      l: "ls -CF"
+      ls: "ls --color=auto"
+      grep: "grep --color=auto"
+
+  init:
+    post_install:
+      - "mkdir -p /home/linexa/projects /home/linexa/scripts /home/linexa/bin"
+    first_boot:
+      - "command -v sudo >/dev/null 2>&1 || dnf -y install sudo || true"
+
+  health_check:
+    command: "test -x /usr/bin/bash && test -x /usr/bin/dnf"
+
+  metadata:
+    display_name: Fedora
+    description: "Fedora base system, installed from Linexa's bundled profile."
+
+  shortcuts:
+    - id: system-management
+      label: System Management
+      description: Package database and system information operations.
+      children:
+        - id: update-system
+          label: Check for updates and upgrade
+          action: update
+          command: dnf -y upgrade
+        - id: clean-package-cache
+          label: Clean package cache
+          description: Removes downloaded RPMs and stale metadata.
+          command: dnf clean all
+        - id: system-info
+          label: System information
+          action: check
+          command: "echo '--- CPU ---'; lscpu | head -12; echo '--- MEMORY ---'; free -h; echo '--- LINEXA FEED ---'; linexa-hostinfo 2>/dev/null || echo 'linexa-hostinfo feed not available'"
+        - id: disk-usage
+          label: Disk usage
+          action: check
+          command: df -h
+        - id: root-shell
+          label: Root shell
+          as_root: true
+          description: Opens a terminal running as the emulated root account.
+
+    - id: development
+      label: Development
+      description: Compilers and language toolchains from Fedora's repositories.
+      children:
+        - id: build-tools
+          label: GCC & build tools
+          children:
+            - id: build-tools-install
+              label: Install
+              action: install
+              command: dnf -y groupinstall "Development Tools" && gcc --version | head -1
+            - id: build-tools-remove
+              label: Remove
+              action: remove
+              command: dnf -y groupremove "Development Tools"
+        - id: python3
+          label: Python 3 + pip
+          children:
+            - id: python3-install
+              label: Install
+              action: install
+              command: dnf -y install python3 python3-pip && python3 --version
+            - id: python3-remove
+              label: Remove
+              action: remove
+              command: dnf -y remove python3 python3-pip
+        - id: nodejs
+          label: Node.js & npm
+          children:
+            - id: nodejs-install
+              label: Install
+              action: install
+              command: dnf -y install nodejs npm && node --version
+            - id: nodejs-remove
+              label: Remove
+              action: remove
+              command: dnf -y remove nodejs npm
+        - id: git
+          label: Git
+          children:
+            - id: git-install
+              label: Install
+              action: install
+              command: dnf -y install git && git --version
+            - id: git-remove
+              label: Remove
+              action: remove
+              command: dnf -y remove git
+
+    - id: shell-utilities
+      label: Shell & Utilities
+      description: Editors, monitors and everyday command-line helpers.
+      children:
+        - id: core-tools
+          label: Core command-line tools
+          children:
+            - id: core-tools-install
+              label: Install
+              action: install
+              command: dnf -y install curl wget nano htop unzip zip less man-db bash-completion
+            - id: core-tools-remove
+              label: Remove
+              action: remove
+              command: dnf -y remove curl wget nano htop unzip zip less man-db bash-completion
+        - id: vim
+          label: Vim
+          children:
+            - id: vim-install
+              label: Install
+              action: install
+              command: dnf -y install vim-enhanced && vim --version | head -1
+            - id: vim-remove
+              label: Remove
+              action: remove
+              command: dnf -y remove vim-enhanced
+        - id: tmux
+          label: tmux
+          children:
+            - id: tmux-install
+              label: Install
+              action: install
+              command: dnf -y install tmux && tmux -V
+            - id: tmux-remove
+              label: Remove
+              action: remove
+              command: dnf -y remove tmux
+        - id: btop
+          label: btop
+          children:
+            - id: btop-install
+              label: Install
+              action: install
+              command: dnf -y install btop
+            - id: btop-remove
+              label: Remove
+              action: remove
+              command: dnf -y remove btop
+
+    - id: networking
+      label: Networking
+      description: Diagnostics and transfer tools.
+      children:
+        - id: net-tools
+          label: Network diagnostics
+          children:
+            - id: net-tools-install
+              label: Install
+              action: install
+              command: dnf -y install iputils bind-utils net-tools traceroute mtr
+            - id: net-tools-remove
+              label: Remove
+              action: remove
+              command: dnf -y remove iputils bind-utils net-tools traceroute mtr
+        - id: curl-wget
+          label: curl & wget
+          children:
+            - id: curl-wget-install
+              label: Install
+              action: install
+              command: dnf -y install curl wget && curl --version | head -1
+            - id: curl-wget-remove
+              label: Remove
+              action: remove
+              command: dnf -y remove curl wget
+        - id: network-info
+          label: Network info
+          action: check
+          command: hostname -I; echo; cat /etc/resolv.conf

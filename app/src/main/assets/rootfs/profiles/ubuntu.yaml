@@ -1,0 +1,56 @@
+# §1.146 — Ubuntu built-in RootFS profile.
+#
+# Verified against an Ubuntu rootfs tarball (ub.tgz): entries are packed
+# WITHOUT a leading "./", `etc/debian_version` is present (Ubuntu is
+# Debian-derived), `etc/lsb-release` is a real file, and `etc/os-release` is a
+# symlink to `../usr/lib/os-release`.
+#
+# Ubuntu is listed separately from Debian rather than as a Debian alias because
+# its `os-release` ID is `ubuntu` and the confirmation screen must say Ubuntu.
+# Detection would otherwise resolve it to Debian, since it carries
+# `etc/debian_version` too — the marker files alone cannot tell them apart,
+# which is exactly why os_release_ids is checked first.
+id: ubuntu
+name: Ubuntu
+
+detection:
+  os_release_ids:
+    - ubuntu
+  marker_files:
+    - etc/os-release
+    - usr/lib/os-release
+    - etc/lsb-release
+    - etc/debian_version
+  version_from: etc/debian_version
+  architecture_hints:
+    aarch64-linux-gnu: arm64
+    ld-linux-aarch64: arm64
+    arm-linux-gnueabihf: armv7l
+    x86_64-linux-gnu: x86_64
+    ld-linux-x86-64: x86_64
+    i386-linux-gnu: i686
+  elf_probe_paths:
+    - bin/dash
+    - usr/bin/dash
+    - bin/bash
+    - usr/bin/bash
+
+supported_architectures: [arm64, armv7l, x86_64]
+
+layout:
+  required_directories: [bin, etc, lib, usr, var]
+  shell_candidates: [bin/bash, usr/bin/bash, bin/sh, usr/bin/sh]
+
+install:
+  - ensure_tmp
+  - ensure_dev_shm
+  - ensure_run
+  - ensure_proc_snapshots
+  - ensure_hostinfo_bin
+  - android_account_fixup
+  - seed_resolv_conf
+
+environment:
+  login_shell: /bin/bash
+  shell_args: ["--login"]
+  package_manager: apt

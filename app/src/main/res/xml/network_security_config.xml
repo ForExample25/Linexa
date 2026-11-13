@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Desktop Modes (2026-08): the WebView run mode loads the guest web server at
+  http://127.0.0.1:<port> — plain HTTP on loopback, which Android 9+ blocks by
+  default. This config permits cleartext ONLY for the loopback hosts the
+  Desktop screen can produce; the base rule keeps the platform default
+  (cleartextTrafficPermitted="false") for everything else, which is what the
+  app's own HTTPS traffic (distro downloads, release checks) already required.
+  Widening this to any additional host needs a reason written here, not a
+  silent base-config change.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>

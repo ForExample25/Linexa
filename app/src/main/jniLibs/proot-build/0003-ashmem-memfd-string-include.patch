@@ -1,0 +1,21 @@
+From: Linexa Engineering <linexa@fem.linexa>
+Date: 2026-08-25
+Subject: [PATCH 3/3] ashmem_memfd: include <string.h> for strcmp/memset
+
+Required to compile termux/proot v5.1.107.89 with modern clang (NDK r29):
+implicit function declarations are errors under C99+, and ashmem_memfd.c
+calls strcmp(3) and memset(3) without including <string.h>.
+
+Cosmetic build fix only — no behavior change.
+
+diff --git a/src/extension/ashmem_memfd/ashmem_memfd.c b/src/extension/ashmem_memfd/ashmem_memfd.c
+--- a/src/extension/ashmem_memfd/ashmem_memfd.c
++++ b/src/extension/ashmem_memfd/ashmem_memfd.c
+@@ -1,6 +1,7 @@
+ #if defined(__ANDROID__) || defined(__BIONIC__)
+
+ #include <stdlib.h>
++#include <string.h>
+ #include <signal.h>
+ #include <unistd.h>
+ #include <sys/syscall.h>  /* __NR_memfd_create,  */

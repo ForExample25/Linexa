@@ -1,0 +1,510 @@
+From: Linexa Engineering <linexa@fem.linexa>
+Date: 2026-08-25
+Subject: [PATCH 2/3] link2symlink: resolve .l2s.* targets against the link's
+ own directory; return -errno instead of raw -1
+
+Linexa F-1/F-2 fix (audit LINEXA_TERMINAL_RUNTIME_SOURCE_AUDIT.md §5.6/§16).
+
+## Root cause
+
+PRoot's link2symlink extension dereferences the raw string targets of
+`.l2s.*` symlinks with its OWN process cwd as the base, and leaks the bare
+`ssize_t` sentinel -1 from readlink(2) into the syscall-exit plumbing, which
+interprets any negative extension result as -errno. -1 is EPERM.
+
+Concretely, `handle_sysexit_end()` (src/syscall/exit.c:770-772 poke) does:
+
+    size = my_readlink(original, intermediate);   /* member target string */
+    ...
+    intermediate_proc: size = my_readlink(intermediate, final);
+    /* intermediate may be RELATIVE (".l2s.unzip0001"): readlink() resolves
+       it against PROOT'S CWD, not the member's directory -> ENOENT -> -1 */
+
+and `my_readlink()` itself violates its own documented contract:
+
+    size = readlink(symlink, value, PATH_MAX);
+    if (size < 0)
+            return size;      /* -1, NOT -errno */
+
+Every guest lstat/newfstatat/rename/unlink/link over a family member whose
+stored target is relative (Linexa's L2sLinkRewriter output, §1.168) or
+dangling (pre-§1.168 staging targets) therefore fails with EPERM:
+
+    dpkg: unable to stat './usr/bin/unzip': Operation not permitted
+
+Reproduced with the verbatim termux v5.1.107.89 binary: lstat(member) and
+lstat(sentinel) both return EPERM for relative targets; link() onto an
+existing relative-target family returns EPERM (move_and_symlink_path's
+!first_link branch has the same cwd-relative readlink); rename/unlink
+"succeed" only because decrement_link_count() swallows the broken deref and
+skips the count bookkeeping — leaving stale sentinel+data files behind
+(dpkg's replaced family leaks, sibling members keep serving the OLD bytes
+via the stale sentinel).
+
+## The fix
+
+Two new helpers (both in link2symlink.c, no other file touched):
+
+  - `normalize_path()` — lexical normalization of an absolute path
+    ("." dropped, ".." pops, clamped at "/").
+  - `resolve_target_in_place(link_path, target)` — resolves a symlink's
+    target string the way the kernel dereferences that link: a relative
+    target is anchored to the directory CONTAINING the link, never to
+    PRoot's cwd. Absolute targets pass through unchanged.
+
+resolve_target_in_place() is applied at every site where a `.l2s.*` target
+string is about to be used as a path:
+
+  - handle_sysexit_end(): member branch resolves the sentinel against the
+    member's dir; intermediate_proc resolves the data file against the
+    sentinel's dir. `lstat(final)` failures now return -errno. A length
+    guard stops the atoi() counter decode from reading out of bounds on
+    malformed names (mirrors link2symlink_handle_statx's guard).
+  - decrement_link_count(): both the sentinel and the data file are
+    resolved before any rename/unlink/symlink mutation, so family
+    bookkeeping runs on real absolute paths and recreated sentinels carry
+    absolute targets (families converge to the healthy runtime shape).
+    The "Skiping deref of broken link2symlink" skip semantics are
+    preserved. All raw -1 returns normalized to -errno.
+  - move_and_symlink_path(): the !first_link branch resolves the sentinel
+    and data file the same way (fixes link() onto an existing
+    relative-target family). Raw -1 returns normalized to -errno.
+  - translated_path(): the member's target is resolved before the
+    sentinel read, and a bare relative target (no "/") is now treated as
+    its own basename instead of being skipped, so the member->data rewrite
+    works uniformly for relative and absolute spellings (previously only
+    absolute targets were rewritten; relative ones worked by luck of the
+    kernel following the chain, diverging for O_NOFOLLOW-style opens and
+    statx).
+
+Lexical normalization is exact for link2symlink targets: PRoot only ever
+stores absolute targets or bare/real-directory-relative names, and every
+directory between a translated (canonical) path root and the link is a real
+directory, so ".." segments climb real directories exactly like the kernel.
+
+## Verification (x86_64 build of the same source, real ptrace, real dpkg)
+
+Before (termux v5.1.107.89 binary):
+    lstat member / sentinel over relative targets -> EPERM
+    link() onto existing relative-target family   -> EPERM
+    dpkg -i upgrade over relative-target family   ->
+        "unable to stat './opt/l2stest/pkgbase': Operation not permitted"
+    rename/unlink over member                      -> family bookkeeping
+                                                     silently skipped
+After (patched):
+    lstat member: regular file, st_nlink = family size
+    lstat sentinel: OK; stat/follow: OK; cat/execve: OK
+    full family lifecycle: replace decrements siblings (nlink 3 -> 2 -> 1),
+    last unlink removes sentinel+data
+    dpkg -i fresh / upgrade / reinstall / remove over RELATIVE-target
+    families: all succeed; no stale .l2s.* files remain after replace
+
+## Upstream status
+
+Not fixed in termux/proot master as of 2026-08-25 (post-.89 commits touch
+PROOT_L2S_DIR descriptor hardening (7266fb3), statx nlink (894e578), and
+descriptor naming (7ff389a) — none address cwd-relative target resolution
+or the -1 sentinel). This patch is carried in jniLibs/proot-build/ and
+compiled into the vendored libproot.so pair, consistent with the existing
+0001-readlinkat-empty-pathname-fix.patch practice.
+
+Regression test: test/test-l2s-relative-targets.c
+(see jniLibs/proot-build/test-l2s-relative-targets.c)
+
+--- a/src/extension/link2symlink/link2symlink.c	2026-07-28 21:05:50.000000000 +0000
++++ b/src/extension/link2symlink/link2symlink.c	2026-08-25 03:26:49.462648969 +0000
+@@ -33,6 +33,13 @@
+ /**
+  * Copy the contents of the @symlink into @value (nul terminated).
+  * This function returns -errno if an error occured, otherwise 0.
++ *
++ * L2S fix (Linexa patch 0002): the historical implementation returned
++ * the raw ssize_t (-1) from readlink(2) instead of -errno.  PRoot's
++ * syscall-exit plumbing interprets any negative extension result as
++ * -errno, so the raw -1 surfaced to the tracee as EPERM for every
++ * readlink failure — including the plain ENOENT of resolving a
++ * relative ``.l2s.*`` target against PRoot's own cwd.
+  */
+ static int my_readlink(const char symlink[PATH_MAX], char value[PATH_MAX])
+ {
+@@ -40,7 +47,7 @@
+ 
+ 	size = readlink(symlink, value, PATH_MAX);
+ 	if (size < 0)
+-		return size;
++		return -errno;
+ 	if (size >= PATH_MAX)
+ 		return -ENAMETOOLONG;
+ 	value[size] = '\0';
+@@ -49,6 +56,118 @@
+ }
+ 
+ /**
++ * L2S fix (Linexa patch 0002): lexically normalize the absolute path
++ * @in into @out (both PATH_MAX buffers).  "." and empty components are
++ * dropped, ".." pops the previous component (clamped at "/" as the
++ * kernel does for absolute paths).  Returns -ENAMETOOLONG on overflow,
++ * otherwise 0.  @in must be absolute.
++ */
++static int normalize_path(char out[PATH_MAX], const char in[PATH_MAX])
++{
++	const char *p = in;
++	char *o = out;
++
++	*o = '\0';
++	while (*p != '\0') {
++		const char *start;
++		size_t len;
++
++		while (*p == '/')
++			p++;
++		start = p;
++		while (*p != '\0' && *p != '/')
++			p++;
++		len = (size_t) (p - start);
++
++		if (len == 0 || (len == 1 && start[0] == '.'))
++			continue;
++
++		if (len == 2 && start[0] == '.' && start[1] == '.') {
++			/* Pop the last component, clamp at "/". */
++			if (o != out) {
++				while (o > out + 1 && *(o - 1) != '/')
++					o--;
++				if (o > out)
++					o--;
++				*o = '\0';
++			}
++			continue;
++		}
++
++		if ((size_t) (o - out) + len + 1 >= PATH_MAX)
++			return -ENAMETOOLONG;
++		if (o == out || *(o - 1) != '/')
++			*o++ = '/';
++		memcpy(o, start, len);
++		o += len;
++		*o = '\0';
++	}
++
++	if (o == out) {
++		out[0] = '/';
++		out[1] = '\0';
++	}
++
++	return 0;
++}
++
++/**
++ * L2S fix (Linexa patch 0002): resolve the symlink target stored in
++ * @target as the kernel would when dereferencing the symlink located
++ * at @link_path — i.e. a relative target is interpreted against the
++ * directory CONTAINING the link, never against PRoot's own process
++ * cwd (the historical behavior, which broke every lstat/rename/unlink
++ * over a ``.l2s.*`` member whose target was relative).
++ *
++ * @target is updated in place with the absolute, normalized result.
++ * Absolute targets are returned unchanged (the kernel ignores the
++ * link's directory for those too).  @link_path must be absolute and
++ * canonical, which always holds here: it originates from PRoot's
++ * translated syscall arguments, whose parent directories were already
++ * resolved.
++ *
++ * Lexical normalization is exact for link2symlink targets: PRoot only
++ * ever stores absolute targets or bare/real-directory-relative names,
++ * and every directory between the translated path root and the link is
++ * a real directory, so ".." segments climb real directories exactly
++ * like the kernel does.
++ *
++ * Returns -errno on failure, otherwise 0.
++ */
++static int resolve_target_in_place(const char link_path[PATH_MAX], char target[PATH_MAX])
++{
++	char work[PATH_MAX];
++	const char *last;
++	size_t dirlen;
++	size_t target_len;
++	int status;
++
++	if (target[0] == '\0')
++		return -ENOENT;
++	if (target[0] == '/')
++		return 0; /* absolute: same base the kernel would use */
++
++	last = strrchr(link_path, '/');
++	if (last == NULL)
++		return -EINVAL; /* link_path must be absolute here */
++	dirlen = (last == link_path) ? 1 : (size_t) (last - link_path);
++
++	target_len = strlen(target);
++	if (dirlen + 1 + target_len >= PATH_MAX)
++		return -ENAMETOOLONG;
++
++	memcpy(work, link_path, dirlen);
++	work[dirlen] = '/';
++	memcpy(work + dirlen + 1, target, target_len + 1);
++
++	status = normalize_path(target, work);
++	if (status < 0)
++		return status;
++
++	return 0;
++}
++
++/**
+  * Move the path pointed to by @tracee's @sysarg to a new location,
+  * symlink the original path to this new one, make @tracee's @sysarg
+  * point to the new location.  This function returns -errno if an
+@@ -91,6 +210,15 @@
+ 		if (size < 0)
+ 			return size;
+ 
++		/* L2S fix (Linexa patch 0002): the member's target names
++		 * the sentinel relative to the MEMBER's directory; make
++		 * `intermediate` the absolute sentinel path so the
++		 * !first_link branch below reads a real path instead of
++		 * resolving it against PRoot's cwd.  */
++		status = resolve_target_in_place(original, intermediate);
++		if (status < 0)
++			return status;
++
+ 		name = strrchr(intermediate, '/');
+ 		if (name == NULL)
+ 			name = intermediate;
+@@ -139,7 +267,7 @@
+ 		strcat(final, ".0002");
+ 		status = rename(original, final);
+ 		if (status < 0)
+-			return status;
++			return -errno;
+ 		status = notify_extensions(tracee, LINK2SYMLINK_RENAME, (intptr_t) original, (intptr_t) final);
+ 		if (status < 0)
+ 			return status;
+@@ -147,18 +275,28 @@
+ 		/* Symlink the intermediate to the final file.  */
+ 		status = symlink(final, intermediate);
+ 		if (status < 0)
+-			return status;
++			return -errno;
+ 
+ 		/* Symlink the original path to the intermediate one.  */
+ 		status = symlink(intermediate, original);
+ 		if (status < 0)
+-			return status;
++			return -errno;
+ 	} else {
+ 		/*Move the original content to new location, by incrementing count at end of path. */
+ 		size = my_readlink(intermediate, final);
+ 		if (size < 0)
+ 			return size;
+ 
++		/* L2S fix (Linexa patch 0002): the sentinel's target
++		 * names the data file relative to the SENTINEL's
++		 * directory; make `final` absolute before mutating.  */
++		status = resolve_target_in_place(intermediate, final);
++		if (status < 0)
++			return status;
++
++		if (strlen(final) < 5)
++			return -ENOENT; /* malformed counter: refuse */
++
+ 		link_count = atoi(final + strlen(final) - 4);
+ 		link_count++;
+ 
+@@ -167,7 +305,7 @@
+ 
+ 		status = rename(final, new_final);
+ 		if (status < 0)
+-			return status;
++			return -errno;
+ 		status = notify_extensions(tracee, LINK2SYMLINK_RENAME, (intptr_t) final, (intptr_t) new_final);
+ 		if (status < 0)
+ 			return status;
+@@ -175,10 +313,10 @@
+ 		/* Symlink the intermediate to the final file.  */
+ 		status = unlink(intermediate);
+ 		if (status < 0)
+-			return status;
++			return -errno;
+ 		status = symlink(final, intermediate);
+ 		if (status < 0)
+-			return status;
++			return -errno;
+ 	}
+ 
+ 	/* Perform symlink() operation within PRoot.  */
+@@ -235,6 +373,14 @@
+ 	if (size < 0)
+ 		return size;
+ 
++	/* L2S fix (Linexa patch 0002): resolve the member's target
++	 * against the member's own directory, so `intermediate` becomes
++	 * the absolute path of the sentinel regardless of the target
++	 * spelling PRoot (or a repaired rootfs) stored.  */
++	status = resolve_target_in_place(original, intermediate);
++	if (status < 0)
++		return status;
++
+ 	name = strrchr(intermediate, '/');
+ 	if (name == NULL)
+ 		name = intermediate;
+@@ -254,6 +400,15 @@
+ 		return 0;
+ 	}
+ 
++	/* L2S fix (Linexa patch 0002): same resolution for the data
++	 * file, relative to the sentinel's directory.  */
++	status = resolve_target_in_place(intermediate, final);
++	if (status < 0)
++		return status;
++
++	if (strlen(final) < 5)
++		return 0; /* malformed counter: nothing sane to decrement */
++
+ 	link_count = atoi(final + strlen(final) - 4);
+ 	link_count--;
+ 
+@@ -264,7 +419,7 @@
+ 
+ 		status = rename(final, new_final);
+ 		if (status < 0)
+-			return status;
++			return -errno;
+ 		status = notify_extensions(tracee, LINK2SYMLINK_RENAME, (intptr_t) final, (intptr_t) new_final);
+ 		if (status < 0)
+ 			return status;
+@@ -274,19 +429,19 @@
+ 		/* Symlink the intermediate to the final file.  */
+ 		status = unlink(intermediate);
+ 		if (status < 0)
+-			return status;
++			return -errno;
+ 
+ 		status = symlink(final, intermediate);
+ 		if (status < 0)
+-			return status;
++			return -errno;
+ 	} else {
+ 		/* If it is the last, delete the intermediate and final */
+ 		status = unlink(intermediate);
+ 		if (status < 0)
+-			return status;
++			return -errno;
+ 		status = unlink(final);
+ 		if (status < 0)
+-			return status;
++			return -errno;
+ 		status = notify_extensions(tracee, LINK2SYMLINK_UNLINK, (intptr_t) final, 0);
+ 		if (status < 0)
+ 			return status;
+@@ -413,6 +568,16 @@
+ 		if (size < 0)
+ 			return size;
+ 
++		/* L2S fix (Linexa patch 0002): the member's target names
++		 * the sentinel relative to the MEMBER's directory (the
++		 * kernel's base when dereferencing the member), not
++		 * relative to PRoot's own cwd.  Historical behavior:
++		 * readlink(".l2s.x0001") against the cwd -> ENOENT -> raw
++		 * -1 -> the tracee's lstat/stat returned EPERM.  */
++		status = resolve_target_in_place(original, intermediate);
++		if (status < 0)
++			return status;
++
+ 		name = strrchr(intermediate, '/');
+ 		if (name == NULL)
+ 			name = intermediate;
+@@ -426,10 +591,22 @@
+ 		if (size < 0)
+ 			return size;
+ 
+-		final_proc: status = lstat(final,&finalStat);
++		/* L2S fix (Linexa patch 0002): same resolution for the
++		 * sentinel's target (the data file), relative to the
++		 * SENTINEL's directory.  `intermediate` is always
++		 * absolute here: either it came from `original` (the
++		 * sentinel-named branch above) or it was just resolved.  */
++		status = resolve_target_in_place(intermediate, final);
+ 		if (status < 0)
+ 			return status;
+ 
++		final_proc: status = lstat(final,&finalStat);
++		if (status < 0)
++			return errno > 0 ? -errno : -ENOENT;
++
++		if (strlen(final) < 5)
++			return 0; /* malformed counter: leave the kernel result */
++
+ 		finalStat.st_nlink = atoi(final + strlen(final) - 4);
+ 
+ 		/* Get the address of the 'stat' structure.  */
+@@ -515,10 +692,18 @@
+ 	if (status < 0)
+ 		return;
+ 
++	/* L2S fix (Linexa patch 0002): resolve the member's target
++	 * against the member's own directory (the kernel's base), so
++	 * `path` is the absolute sentinel path whether the stored target
++	 * was absolute or relative.  */
++	if (resolve_target_in_place(translated_path, path) < 0)
++		return;
++
+ 	component = strrchr(path, '/');
+ 	if (component == NULL)
+-		return;
+-	component++;
++		component = path; /* bare relative name: its own basename */
++	else
++		component++;
+ 
+ 	if (strncmp(component, PREFIX, strlen(PREFIX)) != 0)
+ 		return;
+@@ -527,6 +712,11 @@
+ 	if (status < 0)
+ 		return;
+ 
++	/* L2S fix (Linexa patch 0002): resolve the sentinel's target
++	 * against the sentinel's directory as well.  */
++	if (resolve_target_in_place(path, path2) < 0)
++		return;
++
+ #if 0 /* Sanity check. */
+ 	component = strrchr(path, '/');
+ 	if (component == NULL)
+@@ -658,21 +848,21 @@
+ 	case INITIALIZATION: {
+ 		/* List of syscalls handled by this extensions.  */
+ 		static FilteredSysnum filtered_sysnums[] = {
+-			{ PR_link,		FILTER_SYSEXIT },
+-			{ PR_linkat,		FILTER_SYSEXIT },
+-			{ PR_unlink,		FILTER_SYSEXIT },
+-			{ PR_unlinkat,		FILTER_SYSEXIT },
+-			{ PR_fstat,		FILTER_SYSEXIT },
+-			{ PR_fstat64,		FILTER_SYSEXIT },
+-			{ PR_fstatat64,		FILTER_SYSEXIT },
+-			{ PR_lstat,		FILTER_SYSEXIT },
+-			{ PR_lstat64,		FILTER_SYSEXIT },
+-			{ PR_newfstatat,	FILTER_SYSEXIT },
+-			{ PR_stat,		FILTER_SYSEXIT },
+-			{ PR_stat64,		FILTER_SYSEXIT },
+-			{ PR_rename,		FILTER_SYSEXIT },
+-			{ PR_renameat,		FILTER_SYSEXIT },
+-			{ PR_renameat2,		FILTER_SYSEXIT },
++			{ PR_link,              FILTER_SYSEXIT },
++			{ PR_linkat,            FILTER_SYSEXIT },
++			{ PR_unlink,            FILTER_SYSEXIT },
++			{ PR_unlinkat,          FILTER_SYSEXIT },
++			{ PR_fstat,             FILTER_SYSEXIT },
++			{ PR_fstat64,           FILTER_SYSEXIT },
++			{ PR_fstatat64,         FILTER_SYSEXIT },
++			{ PR_lstat,             FILTER_SYSEXIT },
++			{ PR_lstat64,           FILTER_SYSEXIT },
++			{ PR_newfstatat,        FILTER_SYSEXIT },
++			{ PR_stat,              FILTER_SYSEXIT },
++			{ PR_stat64,            FILTER_SYSEXIT },
++			{ PR_rename,            FILTER_SYSEXIT },
++			{ PR_renameat,          FILTER_SYSEXIT },
++			{ PR_renameat2,         FILTER_SYSEXIT },
+ 			FILTERED_SYSNUM_END,
+ 		};
+ 		extension->filtered_sysnums = filtered_sysnums;

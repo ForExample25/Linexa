@@ -1,0 +1,8 @@
+<resources>
+    <!-- Linexa launcher background — the Haven logo sheet's terminal color
+         (#0A0E0F, PAL.dark.bg): the exact background the sheet specifies for
+         the adaptive icon ("foreground = mark centered at 66% of the canvas,
+         background = #0A0E0F"). The foreground is the official logo, concept
+         #01 «PROMPT» — a Haven-green prompt chevron and half-lit cursor. -->
+    <color name="ic_launcher_background">#0A0E0F</color>
+</resources>

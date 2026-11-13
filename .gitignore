@@ -1,0 +1,61 @@
+# ── Machine-local build inputs and secrets ──────────────────────────────
+local.properties
+keystore/
+*.jks
+*.keystore
+*.p12
+*.pfx
+
+# ── Gradle / Android build outputs and caches ───────────────────────────
+.gradle/
+.kotlin/
+build/
+**/build/
+.cxx/
+.externalNativeBuild/
+captures/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+*.hprof
+*.log
+lint-results*
+output-metadata.json
+
+# ── IDE / OS noise ──────────────────────────────────────────────────────
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# ── Internal project records, audit evidence, and snapshots ─────────────
+# These are maintained locally but are not part of the public source tree.
+/ARCHIVE_MANIFEST.txt
+/LINEXA_UPDATE_REPORT.md
+/MOTION_*.md
+/Linexa-*.zip
+/tessera-linux-main.zip
+/build_debug.sh
+
+/docs/EXECUTION_STATE.md
+/docs/audit/
+/docs/planning/
+/docs/analysis/
+/docs/implementation/
+/docs/research/
+/docs/optimization/
+/docs/licensing/
+/docs/archive/
+/docs/engineering/DEVICE_TEST_LANE.md
+/docs/features/TERMINAL_WINDOW_CHROME_V2.md
+
+# ── Local test / tool output ────────────────────────────────────────────
+/test-results/
+/reports/
+*.exec
+*.hprof

@@ -1,0 +1,225 @@
+From: Linexa Engineering <linexa@fem.linexa>
+Date: 2026-08-25
+Subject: [PATCH 4/4] execve: PROOT_GUEST_ENV_FILTER — scrub host-only
+ variables from the tracee environment
+
+Linexa F-8 fix (audit LINEXA_TERMINAL_RUNTIME_SOURCE_AUDIT.md §1.190/§16/§20).
+
+## Root cause
+
+PRoot passes its own environment to the tracee verbatim (verified
+empirically against the vendored binary: `env` inside the guest is
+byte-identical to the launcher's env). On Android launchers that
+environment must carry LD_LIBRARY_PATH / PROOT_TMP_DIR / PROOT_LOADER /
+TERMINFO for PRoot itself and its bundled binaries to work at all — and
+those HOST paths then leak into every guest process, violating the
+separation between the host/bootstrap execution environment and the
+guest Linux environment. Upstream proot has no --env/--unsetenv options
+in this lineage, which is why the leak was previously documented as
+unfixable without a proot rebuild.
+
+## The fix
+
+A new opt-in, launcher-driven env scrub, applied at the ENTER side of
+every execve translation (before the loader/QEMU machinery touches
+envp):
+
+    PROOT_GUEST_ENV_FILTER="NAME1,NAME2,..."
+
+For every listed name, the variable is removed from the tracee's envp[]
+when — and only when — its value is byte-identical to PRoot's own value
+for that name. Value matching (not name-only matching) is what keeps
+guest-authored values intact: a guest wrapper script exporting its own
+LD_LIBRARY_PATH before exec'ing a binary keeps working (verified:
+`LD_LIBRARY_PATH=/guest/own /bin/sh -c env` inside proot preserves the
+guest value), while the copy inherited unchanged from the host launcher
+is dropped. Names PRoot itself does not carry are skipped entirely.
+
+Entry removal uses resize_array_of_xpointers(envp, index + 1, -1) — the
+"remove slot index" form of PRoot's own array helper — plus
+compare_xpointee_env-based lookup, so the mechanism is exactly the one
+the QEMU path (ldso_env_passthru / rebuild_host_ldso_paths) already
+exercises. Duplicated entries of a filtered name are removed in a loop.
+
+The scrub is best-effort by design: an unfetchable envp surfaces the
+fetch error, but a merely-unmatched variable is a no-op.
+
+## Why opt-in (per invocation) rather than always-on
+
+PRoot invocations that deliberately run HOST binaries as the tracee must
+keep the host environment: Linexa's rootfs extractor runs its bundled
+bionic `tar` under `proot --link2symlink`, and that tar needs
+LD_LIBRARY_PATH to resolve its own shared libraries. The extractor
+therefore does not set PROOT_GUEST_ENV_FILTER, while every guest-session
+launch (PRootLauncher.buildLaunchSpec) does, listing exactly the
+host-owned variables: LD_LIBRARY_PATH, PROOT_TMP_DIR, PROOT_LOADER,
+TERMINFO, and PROOT_GUEST_ENV_FILTER itself (so the control variable
+does not leak either).
+
+## Verification (x86_64 build of the same source, real ptrace)
+
+Filter set, env {A, LD_LIBRARY_PATH, B, C, PATH, PROOT_LOADER,
+PROOT_TMP_DIR, TERMINFO, PROOT_GUEST_ENV_FILTER, HOME, TERM, LANG,
+COLORTERM}:
+    guest env = {A, B, C, PATH, HOME, TERM, LANG, COLORTERM}  — exactly
+    the five host-owned variables removed, nothing else touched.
+Filtered variable first (slot 0) and last (final real slot): removal
+correct at every position; no blank entries left behind.
+Guest-authored LD_LIBRARY_PATH: preserved.
+Full L2S (F-1/F-2) regression battery re-run with the filter active:
+unchanged (member/sentinel lstat, family lifecycle, dpkg -i over
+relative-target families all still pass).
+
+## Upstream status
+
+Not applicable — an opt-in extension, not a defect fix; nothing
+equivalent exists in termux/proot master as of 2026-08-25. Carried in
+jniLibs/proot-build/ and compiled into the vendored libproot.so pair,
+consistent with the existing patch practice.
+
+Regression test: covered end-to-end by the Kotlin
+PRootLauncherGuestEnvFilterTest / PRootExecNoninteractiveDebconfTest env
+assertions (the fake proot records the full env of every launch) plus
+the on-guest `env` checks above.
+
+diff --git a/src/execve/enter.c b/src/execve/enter.c
+--- a/src/execve/enter.c
++++ b/src/execve/enter.c
+@@ -592,6 +592,123 @@
+  * translate_load_*().  This function returns -errno if an error
+  * occured, otherwise 0.
+  */
++/**
++ * Linexa patch 0004 (F-8, 2026-08-25 audit): remove HOST-ONLY variables
++ * from the tracee's environment, so the guest sees a clean Linux
++ * environment instead of the launcher's plumbing.
++ *
++ * PRoot passes its own environment to the tracee verbatim; on Android
++ * launchers (Linexa, termux-style) that environment must carry
++ * LD_LIBRARY_PATH / PROOT_TMP_DIR / PROOT_LOADER / TERMINFO for PRoot and
++ * its bundled binaries to work at all — and those host paths then leak
++ * into every guest process. This build has no --env/--unsetenv options,
++ * so the scrub is driven by an environment variable read by PRoot itself:
++ *
++ *     PROOT_GUEST_ENV_FILTER="NAME1,NAME2,..."
++ *
++ * For every listed name, the variable is removed from the tracee's envp[]
++ * when — and only when — its value is byte-identical to PRoot's own value
++ * for that name. Value matching (not name-only matching) is what keeps
++ * guest-authored values intact: a guest wrapper script that exports its
++ * own LD_LIBRARY_PATH before exec'ing a binary keeps working, while the
++ * copy inherited unchanged from the host launcher is dropped. Names PRoot
++ * itself does not carry are skipped entirely.
++ *
++ * The filter is opt-in per invocation: PRoot invocations that deliberately
++ * run HOST binaries as the tracee (Linexa's rootfs extractor runs its
++ * bundled bionic `tar` under `proot --link2symlink`, and that tar needs
++ * LD_LIBRARY_PATH to link) simply do not set PROOT_GUEST_ENV_FILTER.
++ *
++ * This runs at the ENTER side of every execve translation, before the
++ * loader/QEMU machinery touches envp (which is also why it must never
++ * return a fatal error for a merely-unfilterable environment — the scrub
++ * is a best-effort hygiene step, not a correctness gate).
++ */
++/**
++ * Linexa patch 0004 helper: remove envp[@index] from @envp.
++ * resize_array_of_xpointers(envp, index + 1, -1) is the "remove slot
++ * index" form: the memmove shifts everything from index+1 down onto
++ * index, and the `index >= 1` assert inside resize() is satisfied by
++ * construction (index + 1 >= 1). Verified against the minimal case
++ * [A, LD_LIBRARY_PATH=x, B, C, ..., NULL]: removing slot 1 leaves
++ * [A, B, C, ..., NULL] byte-identical for the untouched entries.
++ */
++static int remove_env_entry(ArrayOfXPointers *envp, size_t index)
++{
++	return resize_array_of_xpointers(envp, index + 1, -1);
++}
++
++static int scrub_guest_env(Tracee *tracee)
++{
++	ArrayOfXPointers *envp;
++	char *filter;
++	char *name;
++	char *saveptr;
++	int status;
++
++	filter = getenv("PROOT_GUEST_ENV_FILTER");
++	if (filter == NULL || filter[0] == '\0')
++		return 0;
++
++	filter = strdup(filter);
++	if (filter == NULL)
++		return -ENOMEM;
++
++	status = fetch_array_of_xpointers(tracee, &envp, SYSARG_3, 0);
++	if (status < 0) {
++		free(filter);
++		return status;
++	}
++
++	/* Environment variables should be compared with the "name"
++	 * part of the "name=value" string format.  */
++	envp->compare_xpointee = (compare_xpointee_t) compare_xpointee_env;
++
++	for (name = strtok_r(filter, ",", &saveptr);
++	     name != NULL;
++	     name = strtok_r(NULL, ",", &saveptr)) {
++		const char *host_value;
++		size_t name_length;
++
++		host_value = getenv(name);
++		if (host_value == NULL)
++			continue; /* not a host-carried variable: nothing leaked */
++
++		name_length = strlen(name);
++
++		while (1) {
++			char *entry;
++			size_t index;
++
++			status = find_xpointee(envp, name);
++			if (status < 0 || (size_t) status >= envp->length)
++				break; /* error or not found */
++
++			index = (size_t) status;
++			status = read_xpointee_as_string(envp, index, &entry);
++			if (status < 0)
++				break;
++
++			/* Remove only values inherited unchanged from the host. */
++			if (   strlen(entry) <= name_length
++			    || entry[name_length] != '='
++			    || strcmp(&entry[name_length + 1], host_value) != 0)
++				break;
++
++			status = remove_env_entry(envp, index);
++			if (status < 0)
++				break;
++		}
++	}
++
++	status = push_array_of_xpointers(envp, SYSARG_3);
++	free(filter);
++	if (status < 0)
++		return status;
++
++	return 0;
++}
++
+ int translate_execve_enter(Tracee *tracee)
+ {
+ 	char user_path[PATH_MAX];
+@@ -611,6 +728,13 @@
+ 		return 0;
+ 	}
+ 
++	/* Linexa patch 0004 (F-8): drop host-only variables from the
++	 * tracee's environment before anything else inspects or rewrites
++	 * envp. Best-effort by design — see scrub_guest_env(). */
++	status = scrub_guest_env(tracee);
++	if (status < 0)
++		return status;
++
+ 	status = get_sysarg_path(tracee, user_path, SYSARG_1);
+ 	if (status < 0)
+ 		return status;

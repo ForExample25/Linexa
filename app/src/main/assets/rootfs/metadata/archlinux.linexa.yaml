@@ -1,0 +1,227 @@
+# ══════════════════════════════════════════════════════════════════════════
+# Linexa bundled RootFS metadata — Arch Linux ARM (generic profile)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# Applied by DownloadService when the downloaded Arch Linux ARM tarball
+# carries no native declaration of its own (the official ALARM tarballs never
+# do). It is validated by the same fail-hard pipeline as an archive-authored
+# file and is persisted as the workspace's config.yaml.
+#
+# Arch specifics:
+#  - the catalog id is `archlinux` (the distro's own `ID=archarm` in
+#    os-release is an alias the built-in profile already accepts), so the
+#    bundled file is named archlinux.linexa.yaml.
+#  - pacman refuses to run without a valid keyring; `pacman-key --init` is a
+#    first-boot step, not a post-install one, so an offline install still
+#    completes.
+#  - ALARM is rolling: there is no VERSION_ID, so no fake version is declared.
+linexa:
+  schema_version: 2
+
+  distro:
+    id: archlinux
+    name: Arch Linux ARM
+    version: "rolling"
+
+  architecture: arm64
+
+  rootfs:
+    type: base
+    compressed_format: tar.gz
+
+  desktop:
+    enabled: false
+
+  package_manager:
+    type: pacman
+
+  environment:
+    shell: /bin/bash
+    shell_args:
+      - --login
+    user: linexa
+    home: /home/linexa
+    variables:
+      LINEXA_WORKSPACE: /home/linexa
+
+  workspace:
+    directory: /home/linexa
+
+  shell_config:
+    aliases:
+      la: "ls -A"
+      ll: "ls -alF"
+      l: "ls -CF"
+      ls: "ls --color=auto"
+      grep: "grep --color=auto"
+
+  init:
+    post_install:
+      - "mkdir -p /home/linexa/projects /home/linexa/scripts /home/linexa/bin"
+    first_boot:
+      - "pacman-key --init && pacman-key --populate archlinuxarm || true"
+
+  health_check:
+    command: "test -x /usr/bin/bash && test -x /usr/bin/pacman"
+
+  metadata:
+    display_name: Arch Linux ARM
+    description: "Arch Linux ARM base system, installed from Linexa's bundled profile."
+
+  shortcuts:
+    - id: system-management
+      label: System Management
+      description: Package database and system information operations.
+      children:
+        - id: update-system
+          label: Check for updates and upgrade
+          action: update
+          command: pacman -Syu --noconfirm
+        - id: clean-package-cache
+          label: Clean package cache
+          description: Removes packages no longer installed from the local cache.
+          command: pacman -Sc --noconfirm
+        - id: refresh-keyring
+          label: Refresh pacman keyring
+          command: pacman-key --init && pacman-key --populate archlinuxarm && pacman-key --refresh-keys
+        - id: system-info
+          label: System information
+          action: check
+          command: "echo '--- CPU ---'; lscpu | head -12; echo '--- MEMORY ---'; free -h; echo '--- LINEXA FEED ---'; linexa-hostinfo 2>/dev/null || echo 'linexa-hostinfo feed not available'"
+        - id: disk-usage
+          label: Disk usage
+          action: check
+          command: df -h
+        - id: root-shell
+          label: Root shell
+          as_root: true
+          description: Opens a terminal running as the emulated root account.
+
+    - id: development
+      label: Development
+      description: Compilers and language toolchains from Arch's repositories.
+      children:
+        - id: base-devel
+          label: GCC & build tools
+          children:
+            - id: base-devel-install
+              label: Install
+              action: install
+              command: pacman -S --needed --noconfirm base-devel && gcc --version | head -1
+            - id: base-devel-remove
+              label: Remove
+              action: remove
+              command: pacman -Rns --noconfirm base-devel
+        - id: python
+          label: Python 3 + pip
+          children:
+            - id: python-install
+              label: Install
+              action: install
+              command: pacman -S --needed --noconfirm python python-pip && python3 --version
+            - id: python-remove
+              label: Remove
+              action: remove
+              command: pacman -Rns --noconfirm python python-pip
+        - id: nodejs
+          label: Node.js & npm
+          children:
+            - id: nodejs-install
+              label: Install
+              action: install
+              command: pacman -S --needed --noconfirm nodejs npm && node --version
+            - id: nodejs-remove
+              label: Remove
+              action: remove
+              command: pacman -Rns --noconfirm nodejs npm
+        - id: git
+          label: Git
+          children:
+            - id: git-install
+              label: Install
+              action: install
+              command: pacman -S --needed --noconfirm git && git --version
+            - id: git-remove
+              label: Remove
+              action: remove
+              command: pacman -Rns --noconfirm git
+
+    - id: shell-utilities
+      label: Shell & Utilities
+      description: Editors, monitors and everyday command-line helpers.
+      children:
+        - id: core-tools
+          label: Core command-line tools
+          children:
+            - id: core-tools-install
+              label: Install
+              action: install
+              command: pacman -S --needed --noconfirm curl wget nano htop unzip zip less man-db bash-completion
+            - id: core-tools-remove
+              label: Remove
+              action: remove
+              command: pacman -Rns --noconfirm curl wget nano htop unzip zip less man-db bash-completion
+        - id: vim
+          label: Vim
+          children:
+            - id: vim-install
+              label: Install
+              action: install
+              command: pacman -S --needed --noconfirm vim && vim --version | head -1
+            - id: vim-remove
+              label: Remove
+              action: remove
+              command: pacman -Rns --noconfirm vim
+        - id: tmux
+          label: tmux
+          children:
+            - id: tmux-install
+              label: Install
+              action: install
+              command: pacman -S --needed --noconfirm tmux && tmux -V
+            - id: tmux-remove
+              label: Remove
+              action: remove
+              command: pacman -Rns --noconfirm tmux
+        - id: btop
+          label: btop
+          children:
+            - id: btop-install
+              label: Install
+              action: install
+              command: pacman -S --needed --noconfirm btop
+            - id: btop-remove
+              label: Remove
+              action: remove
+              command: pacman -Rns --noconfirm btop
+
+    - id: networking
+      label: Networking
+      description: Diagnostics and transfer tools.
+      children:
+        - id: net-tools
+          label: Network diagnostics
+          children:
+            - id: net-tools-install
+              label: Install
+              action: install
+              command: pacman -S --needed --noconfirm iputils bind net-tools traceroute mtr
+            - id: net-tools-remove
+              label: Remove
+              action: remove
+              command: pacman -Rns --noconfirm iputils bind net-tools traceroute mtr
+        - id: curl-wget
+          label: curl & wget
+          children:
+            - id: curl-wget-install
+              label: Install
+              action: install
+              command: pacman -S --needed --noconfirm curl wget && curl --version | head -1
+            - id: curl-wget-remove
+              label: Remove
+              action: remove
+              command: pacman -Rns --noconfirm curl wget
+        - id: network-info
+          label: Network info
+          action: check
+          command: hostname -I; echo; cat /etc/resolv.conf

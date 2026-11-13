@@ -1,0 +1,567 @@
+# ══════════════════════════════════════════════════════════════════════════
+# Linexa bundled RootFS metadata — Debian (generic profile)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# WHAT THIS FILE IS
+#
+# Linexa's own install profile for Debian rootfs archives that carry no
+# native `.linexa.yaml` of their own (the debuerreotype base tarballs Linexa
+# downloads never do). `BundledRootfsMetadataProvider.forDistro(id, version)`
+# resolves it — preferring a `debian-<version>.linexa.yaml` file when one is
+# shipped for the exact version being installed — and the install pipeline
+# applies the result exactly as if the archive had declared it.
+#
+# METADATA PRECEDENCE (issue #10/#12 — deterministic, do not reorder):
+#   1. archive-carried native `.linexa.yaml` / `linexa.yaml` / `config.yaml`
+#   2. bundled version-specific profile  (e.g. `debian-13.linexa.yaml`)
+#   3. bundled generic profile           (this file)
+#   4. archive-carried legacy `.tiny.yaml` (compatibility source only — its
+#      quick_commands are mapped into the SAME structure below, never
+#      promoted over a native declaration)
+#   5. undeclared (signal-based detection)
+#
+# SCHEMA 2 (issue #3/#4/#5, 2026-09-03)
+#
+# `shortcuts:` is now a TREE: a group entry carries `children:` instead of a
+# command, and leaves carry an optional `action:` tag (install/remove/
+# update/launch/check) plus optional `as_root:`. The structure mirrors the
+# TinyContainer `.tiny.yaml` organization the user reference uses —
+# Software Management → Chrome → Install/Remove — and the Commands tab
+# renders it through the existing CommandTree (categories navigate, leaves
+# run). Actions are OPTIONAL per entry; only commands that are technically
+# valid for Debian are declared.
+#
+# COMMANDS POLICY (unchanged in spirit, updated for the user environment)
+#
+# Every command is Debian-specific and verified against Debian's package
+# archive layout (bookworm/trixie):
+#   - apt-get (never bare apt) with `-y` everywhere: no interactive prompts;
+#   - the terminal runs as the `linexa` USER (issue #1); app-initiated
+#     package operations run through Linexa's root-emulated package queue,
+#     so these commands need no sudo. Typed manually, plain `apt-get` works
+#     because the proot guest's system writes are granted at the runtime
+#     layer, and `sudo` (Linexa's provisioned privilege bridge) is available
+#     for muscle-memory commands;
+#   - every software entry declares BOTH install and remove where the
+#     archive supports both — the incomplete remove-only entries the
+#     TinyContainer reference had are normalized (see TinyQuickCommands for
+#     imported .tiny.yaml files);
+#   - packages that do NOT exist in Debian 12 (bookworm) are never offered:
+#     `fastfetch` only entered Debian at trixie, so the system-info shortcut
+#     probes `command -v` and falls back to lscpu/free — honest on both;
+#   - Debian 12+ ships PEP 668's externally-managed Python (pip3 refuses
+#     system-wide installs), so the Python shortcut provisions a venv;
+#   - Chromium/VS Code need `--no-sandbox` desktop launchers under proot
+#     (no user namespaces on Android kernels) — the install commands create
+#     them, exactly like the TinyContainer reference does.
+#
+# USER ENVIRONMENT (issue #1/#13)
+#
+# user: linexa, home: /home/linexa — the terminal runs as the REAL `linexa`
+# account (proot --change-id with the uid/gid from /etc/passwd; the account
+# is guaranteed at launch). `~` is /home/linexa, so the prompt reads
+# `linexa@localhost:~$`, and `cd ~/linexa` lands in the project directory
+# the post_install step creates.
+linexa:
+  schema_version: 2
+
+  # ── Distribution identity ──────────────────────────────────────────────
+  distro:
+    id: debian
+    name: Debian
+
+  # The download catalog ships the dist-arm64v8 tarball only.
+  architecture: arm64
+
+  rootfs:
+    type: base
+    compressed_format: tar.xz
+
+  desktop:
+    enabled: false
+
+  # Selects Linexa's compiled-in apt provider (commands + output parsers);
+  # the schema deliberately does not accept per-operation command strings.
+  package_manager:
+    type: apt
+
+  # ── Runtime environment (issue #1) ──────────────────────────────────
+  environment:
+    shell: /bin/bash
+    shell_args:
+      - --login
+    # The normal user. Launched via proot --change-id=<uid from
+    # /etc/passwd>; GuestRootfsInitializer.ensureGuestUser creates the
+    # account (uid 1000 when free) if the image lacks it.
+    user: linexa
+    # The account home — `~` in the prompt, `cd ~` lands here.
+    home: /home/linexa
+    variables:
+      # Kept for scripts that referenced it in earlier builds.
+      LINEXA_WORKSPACE: /home/linexa
+
+  # Issue #2 (2026-09-04): the terminal's startup directory is ALWAYS the
+  # account home (prompt `linexa@localhost:~$`), regardless of this
+  # declaration — the runtime no longer honors `linexa.workspace.directory`
+  # for the startup directory, and the equivalent `~/linexa` folder is not
+  # created. Kept (pointing at the home) so the schema stays complete.
+  workspace:
+    directory: /home/linexa
+
+  shell_config:
+    aliases:
+      la: "ls -A"
+      ll: "ls -alF"
+      l: "ls -CF"
+      ls: "ls --color=auto"
+      grep: "grep --color=auto"
+
+  init:
+    # Issue #2 (2026-09-04): the `~/linexa` folder is GONE — the terminal
+    # opens in the home itself, so only the classic layout sub-folders are
+    # created. (The old `mkdir -p /home/linexa/linexa ...` produced the
+    # "linexa inside linexa" directory the requirement forbids.)
+    post_install:
+      - "mkdir -p /home/linexa/projects /home/linexa/scripts /home/linexa/bin"
+    # One-shot: Debian base ships NO sudo — install it so the distro's real
+    # binary exists underneath Linexa's provisioned privilege bridge
+    # (Ubuntu ships sudo already, so only Debian needs this). `|| true`
+    # keeps an offline first boot from blocking; the bridge works without
+    # the package either way.
+    first_boot:
+      - "command -v sudo >/dev/null 2>&1 || apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y sudo || true"
+
+  health_check:
+    command: "test -x /bin/bash && test -x /usr/bin/apt-get"
+
+  metadata:
+    display_name: Debian
+    description: "Debian base system, installed from Linexa's bundled profile."
+
+  # ── Shortcuts (schema v2 — hierarchical, action-tagged) ────────────────
+  shortcuts:
+    # ── System Management ────────────────────────────────────────────────
+    - id: system-management
+      label: System Management
+      description: Package database and system information operations.
+      children:
+        - id: update-system
+          label: Check for updates and upgrade
+          action: update
+          description: "apt-get update, then upgrade with noninteractive conffile handling."
+          command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" upgrade
+        - id: full-upgrade
+          label: Full upgrade (dist-upgrade)
+          action: update
+          description: Also removes or replaces packages when required to complete the upgrade.
+          command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" full-upgrade
+        - id: clean-package-cache
+          label: Clean package cache
+          description: Removes downloaded .deb archives and stale package lists.
+          command: apt-get clean && rm -rf /var/lib/apt/lists/*
+        - id: autoremove
+          label: Autoremove unused packages
+          description: Removes packages that were auto-installed as dependencies and are no longer needed.
+          command: apt-get autoremove --purge -y
+        - id: fix-dpkg
+          label: Fix interrupted packages (dpkg)
+          action: check
+          description: Configures any packages left half-installed by an interrupted operation.
+          command: dpkg --configure -a
+        - id: system-info
+          label: System information
+          action: check
+          description: CPU and memory overview, plus the Android host feed when available.
+          command: "echo '--- CPU ---'; lscpu | head -12; echo '--- MEMORY ---'; free -h; echo '--- LINEXA FEED ---'; linexa-hostinfo 2>/dev/null || echo 'linexa-hostinfo feed not available'"
+        - id: disk-usage
+          label: Disk usage
+          action: check
+          description: Filesystem usage of the workspace.
+          command: df -h
+        - id: root-shell
+          label: Root shell
+          as_root: true
+          description: Opens a terminal running as the emulated root account, for operations that explicitly need root.
+
+    # ── Software Management ────────────────────────────────────────────
+    - id: software-management
+      label: Software Management
+      description: Install or remove desktop applications and developer tools. Each entry declares the actions its packages support.
+      children:
+        - id: chromium
+          label: Chromium
+          description: Open-source browser. Installs a "Chromium (no sandbox)" launcher because Chromium's process sandbox needs user namespaces that Android kernels withhold under proot.
+          children:
+            - id: chromium-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y chromium chromium-l10n && cp /usr/share/applications/chromium.desktop /usr/share/applications/chromium-no-sandbox.desktop && sed -i '/^Name\[.*\]=.*/d; s/^Name=.*/Name=Chromium (no sandbox)/' /usr/share/applications/chromium-no-sandbox.desktop && sed -i 's#Exec=/usr/bin/chromium %U#Exec=/usr/bin/chromium --no-sandbox %U#g' /usr/share/applications/chromium-no-sandbox.desktop
+            - id: chromium-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y chromium chromium-l10n && rm -f /usr/share/applications/chromium-no-sandbox.desktop
+        - id: firefox-esr
+          label: Firefox ESR
+          description: The Extended Support Release of Firefox, shipped in Debian's own archive.
+          children:
+            - id: firefox-esr-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y firefox-esr
+            - id: firefox-esr-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y firefox-esr
+        - id: onlyoffice
+          label: OnlyOffice Desktop Editors
+          description: Office suite alternative; installed from the upstream arm64 .deb.
+          children:
+            - id: onlyoffice-install
+              label: Install
+              action: install
+              command: wget https://download.onlyoffice.com/install/desktop/editors/linux/onlyoffice-desktopeditors_arm64.deb -O /tmp/office.deb && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y patchelf /tmp/office.deb; patchelf --clear-execstack /opt/onlyoffice/desktopeditors/libQt5Gui.so.5; rm -f /tmp/office.deb
+            - id: onlyoffice-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y onlyoffice-desktopeditors
+        - id: libreoffice
+          label: LibreOffice
+          description: The full LibreOffice suite from Debian's archive (large download).
+          children:
+            - id: libreoffice-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y libreoffice
+            - id: libreoffice-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y libreoffice*
+        - id: gimp
+          label: GIMP
+          description: GNU Image Manipulation Program.
+          children:
+            - id: gimp-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y gimp
+            - id: gimp-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y gimp
+        - id: krita
+          label: Krita
+          description: Digital painting application (disable GPU acceleration for smoother operation under proot).
+          children:
+            - id: krita-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y krita krita-l10n
+            - id: krita-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y krita krita-l10n
+        - id: octave
+          label: Octave
+          description: Scientific computing environment, a Matlab alternative to a useful extent.
+          children:
+            - id: octave-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y octave
+            - id: octave-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y octave
+        - id: vlc
+          label: VLC media player
+          description: Multimedia player from Debian's archive.
+          children:
+            - id: vlc-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y vlc
+            - id: vlc-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y vlc
+        - id: thunderbird
+          label: Thunderbird
+          description: Mail and calendar client from Debian's archive.
+          children:
+            - id: thunderbird-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y thunderbird
+            - id: thunderbird-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y thunderbird
+
+    # ── Development ──────────────────────────────────────────────────────
+    - id: development
+      label: Development
+      description: Compilers, build systems and language toolchains from Debian's archive.
+      children:
+        - id: build-essential
+          label: GCC & build tools
+          description: gcc, g++, make, libc headers and pkg-config.
+          children:
+            - id: build-essential-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential pkg-config && gcc --version | head -1
+            - id: build-essential-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y build-essential pkg-config
+        - id: cmake
+          label: CMake
+          children:
+            - id: cmake-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y cmake && cmake --version | head -1
+            - id: cmake-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y cmake
+        - id: python3
+          label: Python 3 + venv
+          description: Python with pip and a ready-made virtual environment (PEP 668 blocks system-wide pip installs on modern Debian).
+          children:
+            - id: python3-install
+              label: Install
+              action: install
+              command: 'apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip python3-venv && mkdir -p ~/venvs && python3 -m venv ~/venvs/default && ~/venvs/default/bin/pip install --upgrade pip && ~/venvs/default/bin/python --version && echo "Activate with: source ~/venvs/default/bin/activate"'
+            - id: python3-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y python3 python3-pip python3-venv
+        - id: nodejs
+          label: Node.js & npm
+          description: Node.js from Debian's archive (the version Debian ships — use nvm for newer).
+          children:
+            - id: nodejs-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs npm && node --version
+            - id: nodejs-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y nodejs npm
+        - id: openjdk
+          label: Java (OpenJDK)
+          description: Debian's default JDK, headless.
+          children:
+            - id: openjdk-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y default-jdk-headless && java --version
+            - id: openjdk-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y default-jdk-headless
+        - id: golang
+          label: Go
+          children:
+            - id: golang-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y golang && go version
+            - id: golang-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y golang
+        - id: rust
+          label: Rust
+          description: rustc and cargo from Debian's archive.
+          children:
+            - id: rust-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y rustc cargo && rustc --version
+            - id: rust-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y rustc cargo
+        - id: git
+          label: Git
+          children:
+            - id: git-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y git && git --version
+            - id: git-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y git
+
+    # ── Desktop ─────────────────────────────────────────────────────────
+    - id: desktop
+      label: Desktop
+      description: Graphical environment packages. Start the desktop from the Desktop screen after installing.
+      children:
+        - id: xfce
+          label: XFCE Desktop
+          description: The lightweight desktop Linexa's Desktop screen expects.
+          children:
+            - id: xfce-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y xfce4 xfce4-terminal dbus-x11
+            - id: xfce-remove
+              label: Remove
+              action: remove
+              command: DEBIAN_FRONTEND=noninteractive apt-get autoremove --purge -y xfce4 xfce4-terminal dbus-x11
+        - id: yaru-theme
+          label: Yaru theme
+          description: Ubuntu-style theme; select it afterwards in Appearance settings.
+          children:
+            - id: yaru-theme-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y yaru-theme-gtk yaru-theme-icon
+            - id: yaru-theme-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y yaru-theme-gtk yaru-theme-icon
+
+    # ── Networking ──────────────────────────────────────────────────────
+    - id: networking
+      label: Networking
+      description: Diagnostics and transfer tools.
+      children:
+        - id: net-tools
+          label: Network diagnostics
+          description: ping, dig, traceroute, mtr and classic net-tools.
+          children:
+            - id: net-tools-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y iputils-ping dnsutils net-tools traceroute mtr-tiny
+            - id: net-tools-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y iputils-ping dnsutils net-tools traceroute mtr-tiny
+        - id: curl-wget
+          label: curl & wget
+          description: Command-line HTTP clients.
+          children:
+            - id: curl-wget-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl wget && curl --version | head -1
+            - id: curl-wget-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y curl wget
+        - id: openssh-client
+          label: SSH client
+          children:
+            - id: openssh-client-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-client && ssh -V 2>&1
+            - id: openssh-client-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y openssh-client
+        - id: network-info
+          label: Network info
+          action: check
+          description: The workspace's addresses and DNS configuration.
+          command: hostname -I; echo; cat /etc/resolv.conf
+
+    # ── Shell & Utilities ───────────────────────────────────────────────
+    - id: shell-utilities
+      label: Shell & Utilities
+      description: Editors, monitors and everyday command-line helpers.
+      children:
+        - id: core-tools
+          label: Core command-line tools
+          description: curl, wget, git, nano, htop, zip/unzip, less, man and bash completion.
+          children:
+            - id: core-tools-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl wget git nano htop unzip zip less man-db bash-completion
+            - id: core-tools-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y curl wget git nano htop unzip zip less man-db bash-completion
+        - id: vim
+          label: Vim
+          children:
+            - id: vim-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y vim && vim --version | head -1
+            - id: vim-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y vim
+        - id: zsh
+          label: Zsh
+          children:
+            - id: zsh-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y zsh && zsh --version
+            - id: zsh-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y zsh
+        - id: btop
+          label: btop
+          description: Modern resource monitor (in Debian since bookworm).
+          children:
+            - id: btop-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y btop
+            - id: btop-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y btop
+        - id: tree
+          label: Tree
+          description: Recursive directory listing.
+          children:
+            - id: tree-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y tree
+            - id: tree-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y tree
+        - id: tmux
+          label: tmux
+          description: Terminal multiplexer.
+          children:
+            - id: tmux-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y tmux && tmux -V
+            - id: tmux-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y tmux
+
+    # ── Compatibility ───────────────────────────────────────────────────
+    - id: compatibility
+      label: Compatibility
+      description: Run Windows software through Wine (ARM builds; x86 Windows binaries need box64 emulation and are not provided here).
+      children:
+        - id: wine
+          label: Wine
+          description: Windows compatibility layer. Only ARM-architecture Windows programs run on this device.
+          children:
+            - id: wine-install
+              label: Install
+              action: install
+              command: apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y wine wine64 && wine --version
+            - id: wine-remove
+              label: Remove
+              action: remove
+              command: apt-get autoremove --purge -y wine wine64

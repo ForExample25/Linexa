@@ -1,0 +1,2226 @@
+# ══════════════════════════════════════════════════════════════════════════
+# Linexa built-in Quick Commands catalog — THE ONE CANONICAL SOURCE
+# ══════════════════════════════════════════════════════════════════════════
+#
+# WHAT THIS FILE IS
+#
+# The app's single project-owned catalog of built-in Workspace Quick
+# Commands. It is parsed by QuickCommandsCatalogParser, validated by
+# QuickCommandsCatalogValidator, memoized by QuickCommandsCatalogLoader and
+# resolved per workspace by QuickCommandsResolver. The Commands screen has no
+# other built-in source: the old hard-coded Kotlin fallback list
+# (WorkspaceContent.builtinShortcuts) and the legacy `.tiny.yaml`
+# `quick_commands` flattener were both replaced by this file.
+#
+# This file is DATA, never code. It is also the only place the extracted
+# quick-command content of the reference TinyContainer `.tiny.yaml` lives:
+# that tree was normalized (every node typed, every action explicit) into the
+# schema below. `.tiny.yaml` files inside imported images are NOT read for
+# commands anymore — nothing in the app depends on them for Quick Commands.
+#
+# SCHEMA (v1)
+#
+#   linexa_quick_commands:
+#     schema_version: 1
+#     distributions:
+#       <key>:                      # common | ubuntu | debian | fedora | arch | alpine
+#         default:
+#           categories: [ node... ]
+#         versions:
+#           "<selector>":           # quoted! ("22.04" is a string, not a float)
+#             patches:              # optional — field overrides applied by node id
+#               - id: <existing node id>
+#                 name? description? command?
+#             categories: [ node... ]   # optional — appended after the defaults
+#
+# NODE FIELDS (every node states what it is explicitly — nothing is inferred)
+#
+#   id          required, unique within its branch, safe token [a-z0-9._-]
+#   type        required, one of: category | group | application | action
+#                 category     top navigational level (System, Browsers…)
+#                 group        nested navigational level (JetBrains IDEs…)
+#                 application  a software item whose children are its actions
+#                 action       an executable leaf — the only type with a command
+#   name        required, user-facing title
+#   description optional, user-facing explanation
+#   children    required for category/group/application; forbidden on action
+#   command     required for action; forbidden elsewhere
+#   action      optional tag on action: install|remove|update|launch|check
+#   as_root     optional on action: run in the root-emulated terminal
+#   icon        optional icon key (see WorkspaceShortcuts ICONS table)
+#
+# VERSION RESOLUTION (QuickCommandsResolver)
+#
+#   1. an exact version-selector match wins;
+#   2. otherwise the longest matching dot-component prefix wins
+#      ("22.04.5" → "22.04" → "22");
+#   3. otherwise the distribution default applies;
+#   4. a workspace whose distribution is unknown gets ONLY the `common`
+#      branch — never another distribution's commands.
+#
+# The `common` branch is included for EVERY distribution (after the distro's
+# own categories) and holds genuinely portable commands only.
+#
+# COMMANDS POLICY
+#
+# Every command runs inside the guest through the existing exec/terminal
+# bridge, on a user tap. Commands are per-distribution and honest:
+# apt-get for Debian/Ubuntu, dnf for Fedora, pacman for Arch, apk for Alpine.
+# A package that does not exist in a distribution's archive is never offered
+# for that distribution. Package entries declare BOTH directions where the
+# archive supports them.
+# ══════════════════════════════════════════════════════════════════════════
+
+linexa_quick_commands:
+  schema_version: 1
+
+  distributions:
+
+    # ──────────────────────────────────────────────────────────────────────
+    # common — portable commands, resolved for EVERY workspace
+    # ──────────────────────────────────────────────────────────────────────
+    common:
+      default:
+        categories:
+          - id: general-system
+            type: category
+            name: System Tools
+            description: Portable diagnostics that work on every distribution.
+            children:
+              - id: update-system
+                type: action
+                name: Update System
+                description: Updates packages via whichever package manager the guest actually ships.
+                action: update
+                icon: refresh
+                command: "if command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get upgrade -y; elif command -v apk >/dev/null 2>&1; then apk update && apk upgrade; elif command -v pacman >/dev/null 2>&1; then pacman -Syu --noconfirm; elif command -v dnf >/dev/null 2>&1; then dnf upgrade -y; elif command -v zypper >/dev/null 2>&1; then zypper --non-interactive update -y; else echo 'no supported package manager found'; fi"
+              - id: system-info
+                type: action
+                name: System Info
+                description: Hardware and OS overview.
+                action: check
+                icon: info
+                command: "command -v fastfetch >/dev/null 2>&1 && fastfetch || (echo 'fastfetch is not installed — OS release:'; cat /etc/os-release)"
+              - id: hardware-info
+                type: action
+                name: Hardware Info
+                description: CPU cores, clocks and memory from the Android host.
+                action: check
+                icon: cpu
+                command: "(lscpu 2>/dev/null || head -25 /proc/cpuinfo); echo '---'; free -h 2>/dev/null || head -12 /proc/meminfo; echo '---'; linexa-hostinfo 2>/dev/null || echo '(host feed unavailable)'"
+              - id: disk-usage
+                type: action
+                name: Disk Usage
+                description: Free space per mount.
+                action: check
+                icon: storage
+                command: "df -h --exclude-type=tmpfs --exclude-type=devtmpfs 2>/dev/null || df -h"
+              - id: memory-usage
+                type: action
+                name: Memory
+                description: RAM and swap usage.
+                action: check
+                icon: memory
+                command: "free -h 2>/dev/null || head -12 /proc/meminfo"
+              - id: network-info
+                type: action
+                name: Network Info
+                description: Interfaces and current IP addresses.
+                action: check
+                icon: network
+                command: "ip -brief address show 2>/dev/null || hostname -I"
+              - id: clear-screen
+                type: action
+                name: Clear Screen
+                description: Clears the terminal display.
+                command: "clear"
+
+    # ──────────────────────────────────────────────────────────────────────
+    # debian
+    # ──────────────────────────────────────────────────────────────────────
+    debian:
+      default:
+        categories:
+          - id: system
+            type: category
+            name: System
+            description: Package database and system information operations.
+            children:
+              - id: update-upgrade
+                type: action
+                name: Check for updates and upgrade
+                description: apt-get update, then upgrade with noninteractive conffile handling.
+                action: update
+                icon: refresh
+                command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::=\"--force-confdef\" -o Dpkg::Options::=\"--force-confold\" upgrade"
+              - id: full-upgrade
+                type: action
+                name: Full upgrade (dist-upgrade)
+                description: Also removes or replaces packages when required to complete the upgrade.
+                action: update
+                icon: refresh
+                command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::=\"--force-confdef\" -o Dpkg::Options::=\"--force-confold\" full-upgrade"
+              - id: clean-package-cache
+                type: action
+                name: Clean package manager cache
+                description: Removes downloaded .deb archives and stale package lists.
+                icon: delete
+                command: "apt-get clean && rm -rf /var/lib/apt/lists/*"
+              - id: autoremove
+                type: action
+                name: Autoremove unused packages
+                description: Removes packages that were auto-installed as dependencies and are no longer needed.
+                icon: delete
+                command: "apt-get autoremove --purge -y"
+              - id: fix-dpkg
+                type: action
+                name: Fix interrupted packages (dpkg)
+                description: Configures any packages left half-installed by an interrupted operation.
+                action: check
+                icon: settings
+                command: "dpkg --configure -a"
+              - id: system-info
+                type: action
+                name: View system info
+                description: CPU and memory overview, plus the Android host feed when available.
+                action: check
+                icon: info
+                command: "echo '--- CPU ---'; lscpu | head -12; echo '--- MEMORY ---'; free -h; echo '--- LINEXA FEED ---'; linexa-hostinfo 2>/dev/null || echo 'linexa-hostinfo feed not available'"
+              - id: disk-usage
+                type: action
+                name: Disk usage
+                description: Filesystem usage of the workspace.
+                action: check
+                icon: storage
+                command: "df -h"
+              - id: clear-screen
+                type: action
+                name: Clear screen
+                description: Clears the terminal display.
+                command: "clear"
+
+          - id: software-management
+            type: category
+            name: Software Management
+            description: Install or remove desktop applications and developer tools from Debian's archive.
+            children:
+              - id: onlyoffice
+                type: application
+                name: OnlyOffice Desktop Editors
+                description: Office suite alternative; installed from the upstream arm64 .deb.
+                children:
+                  - id: onlyoffice-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "wget https://download.onlyoffice.com/install/desktop/editors/linux/onlyoffice-desktopeditors_arm64.deb -O /tmp/office.deb && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y patchelf /tmp/office.deb; patchelf --clear-execstack /opt/onlyoffice/desktopeditors/libQt5Gui.so.5; rm -f /tmp/office.deb"
+                  - id: onlyoffice-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y onlyoffice-desktopeditors"
+              - id: libreoffice
+                type: application
+                name: LibreOffice
+                description: The full LibreOffice suite from Debian's archive (large download).
+                children:
+                  - id: libreoffice-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y libreoffice"
+                  - id: libreoffice-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y libreoffice*"
+              - id: gimp
+                type: application
+                name: GIMP
+                description: GNU Image Manipulation Program.
+                children:
+                  - id: gimp-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y gimp"
+                  - id: gimp-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y gimp"
+              - id: krita
+                type: application
+                name: Krita
+                description: Digital painting application (disable GPU acceleration for smoother operation under proot).
+                children:
+                  - id: krita-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y krita krita-l10n"
+                  - id: krita-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y krita krita-l10n"
+              - id: octave
+                type: application
+                name: Octave
+                description: Scientific computing environment, a Matlab alternative to a useful extent.
+                children:
+                  - id: octave-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y octave"
+                  - id: octave-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y octave"
+              - id: kdenlive
+                type: application
+                name: Kdenlive
+                description: KDE's non-linear video editor.
+                children:
+                  - id: kdenlive-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y kdenlive"
+                  - id: kdenlive-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y kdenlive"
+              - id: visual-studio-code
+                type: application
+                name: Visual Studio Code
+                description: Installed from Microsoft's arm64 .deb; adds a "Code (no sandbox)" launcher because Electron's sandbox needs user namespaces Android withholds under proot.
+                children:
+                  - id: vscode-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "wget -O /tmp/vscode.deb 'https://aka.ms/linux-arm64-deb' && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y /tmp/vscode.deb && cp /usr/share/applications/code.desktop /usr/share/applications/code-no-sandbox.desktop && sed -i 's/^Name=.*/Name=Code (no sandbox)/' /usr/share/applications/code-no-sandbox.desktop && sed -i 's#Exec=/usr/share/code/code %F#Exec=/usr/share/code/code --no-sandbox %F#g' /usr/share/applications/code-no-sandbox.desktop; rm -f /tmp/vscode.deb"
+                  - id: vscode-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y code && rm -f /usr/share/applications/code-no-sandbox.desktop"
+              - id: vlc
+                type: application
+                name: VLC media player
+                description: Multimedia player from Debian's archive.
+                children:
+                  - id: vlc-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y vlc"
+                  - id: vlc-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y vlc"
+              - id: thunderbird
+                type: application
+                name: Thunderbird
+                description: Mail and calendar client from Debian's archive.
+                children:
+                  - id: thunderbird-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y thunderbird"
+                  - id: thunderbird-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y thunderbird"
+
+          - id: browsers
+            type: category
+            name: Browsers
+            description: Web browsers packaged for Debian.
+            children:
+              - id: chromium-browser
+                type: application
+                name: Chromium Browser
+                description: Open-source browser. Installs a "Chromium (no sandbox)" launcher because Chromium's process sandbox needs user namespaces that Android kernels withhold under proot.
+                children:
+                  - id: chromium-launch
+                    type: action
+                    name: Launch
+                    action: launch
+                    icon: terminal
+                    command: "chromium --no-sandbox"
+                  - id: chromium-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y chromium chromium-l10n && cp /usr/share/applications/chromium.desktop /usr/share/applications/chromium-no-sandbox.desktop && sed -i '/^Name\\[.*\\]=.*/d; s/^Name=.*/Name=Chromium (no sandbox)/' /usr/share/applications/chromium-no-sandbox.desktop && sed -i 's#Exec=/usr/bin/chromium %U#Exec=/usr/bin/chromium --no-sandbox %U#g' /usr/share/applications/chromium-no-sandbox.desktop"
+                  - id: chromium-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y chromium chromium-l10n && rm -f /usr/share/applications/chromium-no-sandbox.desktop"
+              - id: firefox-esr
+                type: application
+                name: Firefox ESR
+                description: The Extended Support Release of Firefox, shipped in Debian's own archive.
+                children:
+                  - id: firefox-esr-launch
+                    type: action
+                    name: Launch
+                    action: launch
+                    icon: terminal
+                    command: "firefox-esr"
+                  - id: firefox-esr-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y firefox-esr"
+                  - id: firefox-esr-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y firefox-esr"
+
+          - id: development
+            type: category
+            name: Development
+            description: Compilers, build systems and language toolchains from Debian's archive.
+            children:
+              - id: jetbrains
+                type: group
+                name: JetBrains IDEs
+                description: Installed from JetBrains' own arm64 builds (not in Debian's archive).
+                children:
+                  - id: pycharm
+                    type: application
+                    name: PyCharm Community
+                    description: Python IDE, installed from JetBrains' pinned arm64 build into /opt.
+                    children:
+                      - id: pycharm-install
+                        type: action
+                        name: Install
+                        action: install
+                        command: "wget -O /tmp/pycharm.tar.gz https://download.jetbrains.com/python/pycharm-community-2024.2.1-aarch64.tar.gz && tar -xzf /tmp/pycharm.tar.gz -C /opt && rm -f /tmp/pycharm.tar.gz && printf '[Desktop Entry]\\nType=Application\\nName=PyCharm Community\\nExec=/opt/pycharm-community-2024.2.1/bin/pycharm.sh\\nIcon=/opt/pycharm-community-2024.2.1/bin/pycharm.png\\nCategories=Development;\\n' > /usr/share/applications/pycharm-community.desktop"
+                      - id: pycharm-remove
+                        type: action
+                        name: Uninstall
+                        action: remove
+                        command: "rm -rf /opt/pycharm-community-2024.2.1 /usr/share/applications/pycharm-community.desktop"
+              - id: build-essential
+                type: application
+                name: GCC & build tools
+                description: gcc, g++, make, libc headers and pkg-config.
+                children:
+                  - id: build-essential-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential pkg-config && gcc --version | head -1"
+                  - id: build-essential-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y build-essential pkg-config"
+              - id: cmake
+                type: application
+                name: CMake
+                children:
+                  - id: cmake-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y cmake && cmake --version | head -1"
+                  - id: cmake-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y cmake"
+              - id: python3
+                type: application
+                name: Python 3 + venv
+                description: Python with pip and a ready-made virtual environment (PEP 668 blocks system-wide pip installs on modern Debian).
+                children:
+                  - id: python3-launch
+                    type: action
+                    name: Launch
+                    action: launch
+                    icon: terminal
+                    command: "python3"
+                  - id: python3-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip python3-venv && mkdir -p ~/venvs && python3 -m venv ~/venvs/default && ~/venvs/default/bin/pip install --upgrade pip && ~/venvs/default/bin/python --version && echo \"Activate with: source ~/venvs/default/bin/activate\""
+                  - id: python3-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y python3 python3-pip python3-venv"
+              - id: nodejs
+                type: application
+                name: Node.js & npm
+                description: Node.js from Debian's archive (the version Debian ships — use nvm for newer).
+                children:
+                  - id: nodejs-launch
+                    type: action
+                    name: Launch
+                    action: launch
+                    icon: terminal
+                    command: "node"
+                  - id: nodejs-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs npm && node --version"
+                  - id: nodejs-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y nodejs npm"
+              - id: openjdk
+                type: application
+                name: Java (OpenJDK)
+                description: Debian's default JDK, headless.
+                children:
+                  - id: openjdk-launch
+                    type: action
+                    name: Launch
+                    action: launch
+                    icon: terminal
+                    command: "java -version && jshell || java"
+                  - id: openjdk-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y default-jdk-headless && java --version"
+                  - id: openjdk-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y default-jdk-headless"
+              - id: golang
+                type: application
+                name: Go
+                children:
+                  - id: golang-launch
+                    type: action
+                    name: Launch
+                    action: launch
+                    icon: terminal
+                    command: "go version && go"
+                  - id: golang-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y golang && go version"
+                  - id: golang-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y golang"
+              - id: rust
+                type: application
+                name: Rust
+                description: rustc and cargo from Debian's archive.
+                children:
+                  - id: rust-launch
+                    type: action
+                    name: Launch
+                    action: launch
+                    icon: terminal
+                    command: "rustc --version && cargo"
+                  - id: rust-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y rustc cargo && rustc --version"
+                  - id: rust-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y rustc cargo"
+              - id: git
+                type: application
+                name: Git
+                children:
+                  - id: git-launch
+                    type: action
+                    name: Launch
+                    action: launch
+                    icon: terminal
+                    command: "git"
+                  - id: git-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y git && git --version"
+                  - id: git-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y git"
+              - id: claude-code
+                type: application
+                name: Claude Code
+                description: Anthropic's Claude Code CLI agent, installed globally through npm.
+                children:
+                  - id: claude-code-launch
+                    type: action
+                    name: Launch
+                    action: launch
+                    icon: terminal
+                    command: "claude"
+                  - id: claude-code-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs npm && npm install -g @anthropic-ai/claude-code && claude --version"
+                  - id: claude-code-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "npm uninstall -g @anthropic-ai/claude-code"
+
+          - id: windows-software
+            type: category
+            name: Windows Software
+            description: Run Windows software through Wine's Windows compatibility layer.
+            children:
+              - id: wine
+                type: application
+                name: Wine (Windows compatibility)
+                description: Wine from Debian's archive; 64-bit Windows apps where the guest architecture supports them.
+                children:
+                  - id: wine-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y wine && wine --version"
+                  - id: wine-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y wine"
+                  - id: wine-wipe-data
+                    type: action
+                    name: Wipe Wine data
+                    description: Deletes the Wine prefix in the home directory — installed Windows programs and their settings go with it.
+                    action: remove
+                    command: "rm -rf ~/.wine"
+
+          - id: networking
+            type: category
+            name: Networking
+            description: Diagnostics and transfer tools.
+            children:
+              - id: net-tools
+                type: application
+                name: Network diagnostics
+                description: ping, dig, traceroute, mtr and classic net-tools.
+                children:
+                  - id: net-tools-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y iputils-ping dnsutils net-tools traceroute mtr-tiny"
+                  - id: net-tools-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y iputils-ping dnsutils net-tools traceroute mtr-tiny"
+              - id: curl-wget
+                type: application
+                name: curl & wget
+                description: Command-line HTTP clients.
+                children:
+                  - id: curl-wget-launch
+                    type: action
+                    name: Launch
+                    action: launch
+                    icon: terminal
+                    command: "curl --version | head -1 && wget"
+                  - id: curl-wget-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl wget && curl --version | head -1"
+                  - id: curl-wget-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y curl wget"
+              - id: openssh-client
+                type: application
+                name: SSH client
+                children:
+                  - id: openssh-client-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-client && ssh -V 2>&1"
+                  - id: openssh-client-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y openssh-client"
+              - id: network-info
+                type: action
+                name: Network info
+                action: check
+                description: The workspace's addresses and DNS configuration.
+                command: "hostname -I; echo; cat /etc/resolv.conf"
+
+          - id: shell-utilities
+            type: category
+            name: Shell & Utilities
+            description: Editors, monitors and everyday command-line helpers.
+            children:
+              - id: core-tools
+                type: application
+                name: Core command-line tools
+                description: curl, wget, git, nano, htop, zip/unzip, less, man and bash completion.
+                children:
+                  - id: core-tools-launch
+                    type: action
+                    name: Launch
+                    action: launch
+                    icon: terminal
+                    command: "htop"
+                  - id: core-tools-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl wget git nano htop unzip zip less man-db bash-completion"
+                  - id: core-tools-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y curl wget git nano htop unzip zip less man-db bash-completion"
+              - id: htop
+                type: application
+                name: htop
+                description: Interactive process viewer.
+                children:
+                  - id: htop-launch
+                    type: action
+                    name: Launch
+                    action: launch
+                    icon: terminal
+                    command: "htop"
+                  - id: htop-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y htop"
+                  - id: htop-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y htop"
+              - id: vim
+                type: application
+                name: Vim
+                children:
+                  - id: vim-launch
+                    type: action
+                    name: Launch
+                    action: launch
+                    icon: terminal
+                    command: "vim"
+                  - id: vim-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y vim && vim --version | head -1"
+                  - id: vim-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y vim"
+              - id: btop
+                type: application
+                name: btop
+                description: Modern resource monitor (in Debian since bookworm).
+                children:
+                  - id: btop-launch
+                    type: action
+                    name: Launch
+                    action: launch
+                    icon: terminal
+                    command: "btop"
+                  - id: btop-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y btop && btop --version"
+                  - id: btop-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y btop"
+
+      # Debian 13 (trixie) ships fastfetch; the system-info entry upgrades to it.
+      versions:
+        "13":
+          patches:
+            - id: system-info
+              description: System overview via fastfetch, with the classic CPU/memory fallback.
+              command: "command -v fastfetch >/dev/null 2>&1 && fastfetch || (echo '--- CPU ---'; lscpu | head -12; echo '--- MEMORY ---'; free -h)"
+
+    # ──────────────────────────────────────────────────────────────────────
+    # ubuntu — Ubuntu's own selections; snap-only packages (Chromium,
+    # Firefox on jammy) are deliberately absent because snapd cannot run
+    # under proot.
+    # ──────────────────────────────────────────────────────────────────────
+    ubuntu:
+      default:
+        categories:
+          - id: system
+            type: category
+            name: System
+            description: Package database and system information operations.
+            children:
+              - id: update-upgrade
+                type: action
+                name: Check for updates and upgrade
+                description: apt-get update, then upgrade with noninteractive conffile handling.
+                action: update
+                icon: refresh
+                command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::=\"--force-confdef\" -o Dpkg::Options::=\"--force-confold\" upgrade"
+              - id: full-upgrade
+                type: action
+                name: Full upgrade (dist-upgrade)
+                description: Also removes or replaces packages when required to complete the upgrade.
+                action: update
+                icon: refresh
+                command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::=\"--force-confdef\" -o Dpkg::Options::=\"--force-confold\" full-upgrade"
+              - id: clean-package-cache
+                type: action
+                name: Clean package manager cache
+                description: Removes downloaded .deb archives and stale package lists.
+                icon: delete
+                command: "apt-get clean && rm -rf /var/lib/apt/lists/*"
+              - id: autoremove
+                type: action
+                name: Autoremove unused packages
+                description: Removes packages that were auto-installed as dependencies and are no longer needed.
+                icon: delete
+                command: "apt-get autoremove --purge -y"
+              - id: fix-dpkg
+                type: action
+                name: Fix interrupted packages (dpkg)
+                description: Configures any packages left half-installed by an interrupted operation.
+                action: check
+                icon: settings
+                command: "dpkg --configure -a"
+              - id: system-info
+                type: action
+                name: View system info
+                description: CPU and memory overview, plus the Android host feed when available.
+                action: check
+                icon: info
+                command: "echo '--- CPU ---'; lscpu | head -12; echo '--- MEMORY ---'; free -h; echo '--- LINEXA FEED ---'; linexa-hostinfo 2>/dev/null || echo 'linexa-hostinfo feed not available'"
+              - id: disk-usage
+                type: action
+                name: Disk usage
+                description: Filesystem usage of the workspace.
+                action: check
+                icon: storage
+                command: "df -h"
+              - id: clear-screen
+                type: action
+                name: Clear screen
+                description: Clears the terminal display.
+                command: "clear"
+
+          - id: software-management
+            type: category
+            name: Software Management
+            description: Install or remove desktop applications and developer tools from Ubuntu's archive.
+            children:
+              - id: libreoffice
+                type: application
+                name: LibreOffice
+                description: The full LibreOffice suite from Ubuntu's archive (large download).
+                children:
+                  - id: libreoffice-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y libreoffice"
+                  - id: libreoffice-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y libreoffice*"
+              - id: gimp
+                type: application
+                name: GIMP
+                description: GNU Image Manipulation Program.
+                children:
+                  - id: gimp-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y gimp"
+                  - id: gimp-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y gimp"
+              - id: krita
+                type: application
+                name: Krita
+                description: Digital painting application (disable GPU acceleration for smoother operation under proot).
+                children:
+                  - id: krita-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y krita krita-l10n"
+                  - id: krita-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y krita krita-l10n"
+              - id: octave
+                type: application
+                name: Octave
+                description: Scientific computing environment, a Matlab alternative to a useful extent.
+                children:
+                  - id: octave-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y octave"
+                  - id: octave-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y octave"
+              - id: visual-studio-code
+                type: application
+                name: Visual Studio Code
+                description: Installed from Microsoft's arm64 .deb; adds a "Code (no sandbox)" launcher because Electron's sandbox needs user namespaces Android withholds under proot.
+                children:
+                  - id: vscode-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "wget -O /tmp/vscode.deb 'https://aka.ms/linux-arm64-deb' && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y /tmp/vscode.deb && cp /usr/share/applications/code.desktop /usr/share/applications/code-no-sandbox.desktop && sed -i 's/^Name=.*/Name=Code (no sandbox)/' /usr/share/applications/code-no-sandbox.desktop && sed -i 's#Exec=/usr/share/code/code %F#Exec=/usr/share/code/code --no-sandbox %F#g' /usr/share/applications/code-no-sandbox.desktop; rm -f /tmp/vscode.deb"
+                  - id: vscode-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y code && rm -f /usr/share/applications/code-no-sandbox.desktop"
+              - id: vlc
+                type: application
+                name: VLC media player
+                description: Multimedia player from Ubuntu's archive.
+                children:
+                  - id: vlc-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y vlc"
+                  - id: vlc-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y vlc"
+              - id: thunderbird
+                type: application
+                name: Thunderbird
+                description: Mail and calendar client from Ubuntu's archive.
+                children:
+                  - id: thunderbird-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y thunderbird"
+                  - id: thunderbird-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y thunderbird"
+
+          - id: browsers
+            type: category
+            name: Browsers
+            description: Web browsers that actually run here — jammy's own firefox/chromium are snap-stubs.
+            children:
+              - id: firefox-esr
+                type: application
+                name: Firefox ESR
+                description: Firefox ESR from the Mozilla team PPA (jammy's own firefox package is a snap-stub that cannot run here). Adds the PPA, pins it, installs.
+                children:
+                  - id: firefox-esr-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y software-properties-common && add-apt-repository -y ppa:mozillateam/ppa && apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y -t 'o=LP-PPA-mozillateam' firefox-esr"
+                  - id: firefox-esr-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y firefox-esr"
+
+          - id: development
+            type: category
+            name: Development
+            description: Compilers, build systems and language toolchains from Ubuntu's archive.
+            children:
+              - id: build-essential
+                type: application
+                name: GCC & build tools
+                description: gcc, g++, make, libc headers and pkg-config.
+                children:
+                  - id: build-essential-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential pkg-config && gcc --version | head -1"
+                  - id: build-essential-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y build-essential pkg-config"
+              - id: cmake
+                type: application
+                name: CMake
+                children:
+                  - id: cmake-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y cmake && cmake --version | head -1"
+                  - id: cmake-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y cmake"
+              - id: python3
+                type: application
+                name: Python 3 + pip
+                description: Ubuntu base ships python3; this ensures pip and venv (22.04 predates PEP 668 enforcement, system-wide pip works).
+                children:
+                  - id: python3-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y python3-pip python3-venv && pip3 --version"
+                  - id: python3-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y python3-pip python3-venv"
+              - id: nodejs
+                type: application
+                name: Node.js & npm
+                description: Node.js from Ubuntu's archive (use nvm for newer releases).
+                children:
+                  - id: nodejs-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y nodejs npm && node --version"
+                  - id: nodejs-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y nodejs npm"
+              - id: openjdk
+                type: application
+                name: Java (OpenJDK)
+                description: Ubuntu's default JDK, headless.
+                children:
+                  - id: openjdk-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y default-jdk-headless && java --version"
+                  - id: openjdk-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y default-jdk-headless"
+              - id: golang
+                type: application
+                name: Go
+                children:
+                  - id: golang-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y golang && go version"
+                  - id: golang-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y golang"
+              - id: rust
+                type: application
+                name: Rust
+                description: rustc and cargo from Ubuntu's archive.
+                children:
+                  - id: rust-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y rustc cargo && rustc --version"
+                  - id: rust-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y rustc cargo"
+              - id: git
+                type: application
+                name: Git
+                children:
+                  - id: git-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y git && git --version"
+                  - id: git-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y git"
+
+          - id: networking
+            type: category
+            name: Networking
+            description: Diagnostics and transfer tools.
+            children:
+              - id: net-tools
+                type: application
+                name: Network diagnostics
+                description: ping, dig, traceroute, mtr and classic net-tools.
+                children:
+                  - id: net-tools-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y iputils-ping dnsutils net-tools traceroute mtr-tiny"
+                  - id: net-tools-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y iputils-ping dnsutils net-tools traceroute mtr-tiny"
+              - id: curl-wget
+                type: application
+                name: curl & wget
+                description: Command-line HTTP clients.
+                children:
+                  - id: curl-wget-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl wget && curl --version | head -1"
+                  - id: curl-wget-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y curl wget"
+              - id: openssh-client
+                type: application
+                name: SSH client
+                children:
+                  - id: openssh-client-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y openssh-client && ssh -V 2>&1"
+                  - id: openssh-client-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apt-get autoremove --purge -y openssh-client"
+              - id: network-info
+                type: action
+                name: Network info
+                action: check
+                description: The workspace's addresses and DNS configuration.
+                command: "hostname -I; echo; cat /etc/resolv.conf"
+
+      # Ubuntu 24.04 (noble) enforces PEP 668: system-wide pip is refused, so
+      # the Python entry switches to the venv-first layout.
+      versions:
+        "24.04":
+          patches:
+            - id: python3
+              description: Python 3 with a ready-made virtual environment (24.04 enforces PEP 668 and blocks system-wide pip).
+            - id: python3-install
+              command: "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y python3 python3-pip python3-venv && mkdir -p ~/venvs && python3 -m venv ~/venvs/default && ~/venvs/default/bin/pip install --upgrade pip && echo \"Activate with: source ~/venvs/default/bin/activate\""
+
+    # ──────────────────────────────────────────────────────────────────────
+    # fedora — dnf
+    # ──────────────────────────────────────────────────────────────────────
+    fedora:
+      default:
+        categories:
+          - id: system
+            type: category
+            name: System
+            description: Package database and system information operations.
+            children:
+              - id: update-system
+                type: action
+                name: Check for updates and upgrade
+                description: Refreshes metadata and upgrades every package with dnf.
+                action: update
+                icon: refresh
+                command: "dnf upgrade -y --refresh"
+              - id: clean-package-cache
+                type: action
+                name: Clean package manager cache
+                description: Removes cached packages and metadata.
+                icon: delete
+                command: "dnf clean all"
+              - id: autoremove
+                type: action
+                name: Autoremove unused packages
+                description: Removes packages that were installed as dependencies and are no longer needed.
+                icon: delete
+                command: "dnf autoremove -y"
+              - id: system-info
+                type: action
+                name: View system info
+                description: CPU and memory overview, plus the Android host feed when available.
+                action: check
+                icon: info
+                command: "echo '--- CPU ---'; lscpu | head -12; echo '--- MEMORY ---'; free -h; echo '--- LINEXA FEED ---'; linexa-hostinfo 2>/dev/null || echo 'linexa-hostinfo feed not available'"
+              - id: disk-usage
+                type: action
+                name: Disk usage
+                description: Filesystem usage of the workspace.
+                action: check
+                icon: storage
+                command: "df -h"
+              - id: clear-screen
+                type: action
+                name: Clear screen
+                description: Clears the terminal display.
+                command: "clear"
+
+          - id: software-management
+            type: category
+            name: Software Management
+            description: Install or remove desktop applications from Fedora's archive.
+            children:
+              - id: gimp
+                type: application
+                name: GIMP
+                description: GNU Image Manipulation Program.
+                children:
+                  - id: gimp-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "dnf install -y gimp"
+                  - id: gimp-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "dnf remove -y gimp"
+              - id: krita
+                type: application
+                name: Krita
+                description: Digital painting application.
+                children:
+                  - id: krita-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "dnf install -y krita"
+                  - id: krita-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "dnf remove -y krita"
+              - id: octave
+                type: application
+                name: Octave
+                description: Scientific computing environment.
+                children:
+                  - id: octave-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "dnf install -y octave"
+                  - id: octave-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "dnf remove -y octave"
+              - id: kdenlive
+                type: application
+                name: Kdenlive
+                description: KDE's non-linear video editor.
+                children:
+                  - id: kdenlive-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "dnf install -y kdenlive"
+                  - id: kdenlive-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "dnf remove -y kdenlive"
+              - id: libreoffice
+                type: application
+                name: LibreOffice
+                description: The full LibreOffice suite (large download).
+                children:
+                  - id: libreoffice-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "dnf install -y libreoffice"
+                  - id: libreoffice-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "dnf remove -y libreoffice*"
+              - id: vlc
+                type: application
+                name: VLC media player
+                description: Multimedia player; enables the RPM Fusion free repository first, because Fedora's own archive does not carry VLC.
+                children:
+                  - id: vlc-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "dnf install -y https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm && dnf install -y vlc"
+                  - id: vlc-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "dnf remove -y vlc"
+              - id: thunderbird
+                type: application
+                name: Thunderbird
+                description: Mail and calendar client from Fedora's archive.
+                children:
+                  - id: thunderbird-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "dnf install -y thunderbird"
+                  - id: thunderbird-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "dnf remove -y thunderbird"
+
+          - id: browsers
+            type: category
+            name: Browsers
+            description: Web browsers packaged for Fedora.
+            children:
+              - id: chromium-browser
+                type: application
+                name: Chromium Browser
+                description: Open-source browser from Fedora's archive.
+                children:
+                  - id: chromium-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "dnf install -y chromium"
+                  - id: chromium-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "dnf remove -y chromium"
+              - id: firefox
+                type: application
+                name: Firefox
+                description: Firefox from Fedora's archive.
+                children:
+                  - id: firefox-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "dnf install -y firefox"
+                  - id: firefox-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "dnf remove -y firefox"
+
+          - id: development
+            type: category
+            name: Development
+            description: Compilers, build systems and language toolchains from Fedora's archive.
+            children:
+              - id: build-tools
+                type: application
+                name: GCC & build tools
+                description: gcc, g++, make and pkg-config.
+                children:
+                  - id: build-tools-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "dnf install -y gcc gcc-c++ make pkgconf-pkg-config && gcc --version | head -1"
+                  - id: build-tools-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "dnf remove -y gcc gcc-c++ make pkgconf-pkg-config"
+              - id: cmake
+                type: application
+                name: CMake
+                children:
+                  - id: cmake-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "dnf install -y cmake && cmake --version | head -1"
+                  - id: cmake-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "dnf remove -y cmake"
+              - id: python3
+                type: application
+                name: Python 3 + venv
+                description: Fedora enforces PEP 668, so a virtual environment is provisioned for pip installs.
+                children:
+                  - id: python3-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "dnf install -y python3 python3-pip && mkdir -p ~/venvs && python3 -m venv ~/venvs/default && ~/venvs/default/bin/pip install --upgrade pip && echo \"Activate with: source ~/venvs/default/bin/activate\""
+                  - id: python3-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "dnf remove -y python3-pip"
+              - id: nodejs
+                type: application
+                name: Node.js & npm
+                children:
+                  - id: nodejs-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "dnf install -y nodejs npm && node --version"
+                  - id: nodejs-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "dnf remove -y nodejs npm"
+              - id: golang
+                type: application
+                name: Go
+                children:
+                  - id: golang-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "dnf install -y golang && go version"
+                  - id: golang-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "dnf remove -y golang"
+              - id: rust
+                type: application
+                name: Rust
+                description: rustc and cargo from Fedora's archive.
+                children:
+                  - id: rust-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "dnf install -y rust cargo && rustc --version"
+                  - id: rust-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "dnf remove -y rust cargo"
+              - id: openjdk
+                type: application
+                name: Java (OpenJDK 21)
+                children:
+                  - id: openjdk-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "dnf install -y java-21-openjdk-headless && java --version"
+                  - id: openjdk-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "dnf remove -y java-21-openjdk-headless"
+              - id: git
+                type: application
+                name: Git
+                children:
+                  - id: git-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "dnf install -y git && git --version"
+                  - id: git-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "dnf remove -y git"
+
+          - id: networking
+            type: category
+            name: Networking
+            description: Diagnostics and transfer tools.
+            children:
+              - id: net-tools
+                type: application
+                name: Network diagnostics
+                description: ping, dig, traceroute and mtr.
+                children:
+                  - id: net-tools-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "dnf install -y iputils bind-utils traceroute mtr"
+                  - id: net-tools-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "dnf remove -y bind-utils traceroute mtr"
+              - id: curl-wget
+                type: application
+                name: curl & wget
+                description: Command-line HTTP clients.
+                children:
+                  - id: curl-wget-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "dnf install -y curl wget && curl --version | head -1"
+                  - id: curl-wget-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "dnf remove -y curl wget"
+              - id: openssh-client
+                type: application
+                name: SSH client
+                children:
+                  - id: openssh-client-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "dnf install -y openssh-clients && ssh -V 2>&1"
+                  - id: openssh-client-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "dnf remove -y openssh-clients"
+
+    # ──────────────────────────────────────────────────────────────────────
+    # arch — pacman
+    # ──────────────────────────────────────────────────────────────────────
+    arch:
+      default:
+        categories:
+          - id: system
+            type: category
+            name: System
+            description: Package database and system information operations.
+            children:
+              - id: update-system
+                type: action
+                name: Check for updates and upgrade
+                description: Synchronizes the package database and upgrades everything (no confirmation prompt).
+                action: update
+                icon: refresh
+                command: "pacman -Syu --noconfirm"
+              - id: clean-package-cache
+                type: action
+                name: Clean package manager cache
+                description: Removes all cached packages not currently installed.
+                icon: delete
+                command: "pacman -Sc --noconfirm"
+              - id: remove-orphans
+                type: action
+                name: Remove orphaned packages
+                description: Removes packages installed as dependencies that nothing requires any more.
+                icon: delete
+                command: "if [ -n \"$(pacman -Qdtq)\" ]; then pacman -Rns --noconfirm $(pacman -Qdtq); else echo 'no orphaned packages'; fi"
+              - id: system-info
+                type: action
+                name: View system info
+                description: CPU and memory overview, plus the Android host feed when available.
+                action: check
+                icon: info
+                command: "echo '--- CPU ---'; lscpu | head -12; echo '--- MEMORY ---'; free -h; echo '--- LINEXA FEED ---'; linexa-hostinfo 2>/dev/null || echo 'linexa-hostinfo feed not available'"
+              - id: disk-usage
+                type: action
+                name: Disk usage
+                description: Filesystem usage of the workspace.
+                action: check
+                icon: storage
+                command: "df -h"
+              - id: clear-screen
+                type: action
+                name: Clear screen
+                description: Clears the terminal display.
+                command: "clear"
+
+          - id: software-management
+            type: category
+            name: Software Management
+            description: Install or remove desktop applications from the Arch repositories.
+            children:
+              - id: libreoffice
+                type: application
+                name: LibreOffice (fresh)
+                description: The current LibreOffice branch from the Arch repositories.
+                children:
+                  - id: libreoffice-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "pacman -S --noconfirm --needed libreoffice-fresh"
+                  - id: libreoffice-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "pacman -Rns --noconfirm libreoffice-fresh"
+              - id: gimp
+                type: application
+                name: GIMP
+                children:
+                  - id: gimp-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "pacman -S --noconfirm --needed gimp"
+                  - id: gimp-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "pacman -Rns --noconfirm gimp"
+              - id: krita
+                type: application
+                name: Krita
+                children:
+                  - id: krita-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "pacman -S --noconfirm --needed krita"
+                  - id: krita-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "pacman -Rns --noconfirm krita"
+              - id: octave
+                type: application
+                name: Octave
+                children:
+                  - id: octave-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "pacman -S --noconfirm --needed octave"
+                  - id: octave-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "pacman -Rns --noconfirm octave"
+              - id: kdenlive
+                type: application
+                name: Kdenlive
+                children:
+                  - id: kdenlive-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "pacman -S --noconfirm --needed kdenlive"
+                  - id: kdenlive-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "pacman -Rns --noconfirm kdenlive"
+              - id: vlc
+                type: application
+                name: VLC media player
+                children:
+                  - id: vlc-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "pacman -S --noconfirm --needed vlc"
+                  - id: vlc-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "pacman -Rns --noconfirm vlc"
+              - id: thunderbird
+                type: application
+                name: Thunderbird
+                children:
+                  - id: thunderbird-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "pacman -S --noconfirm --needed thunderbird"
+                  - id: thunderbird-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "pacman -Rns --noconfirm thunderbird"
+
+          - id: browsers
+            type: category
+            name: Browsers
+            description: Web browsers from the Arch repositories.
+            children:
+              - id: chromium-browser
+                type: application
+                name: Chromium Browser
+                children:
+                  - id: chromium-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "pacman -S --noconfirm --needed chromium"
+                  - id: chromium-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "pacman -Rns --noconfirm chromium"
+              - id: firefox
+                type: application
+                name: Firefox
+                children:
+                  - id: firefox-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "pacman -S --noconfirm --needed firefox"
+                  - id: firefox-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "pacman -Rns --noconfirm firefox"
+
+          - id: development
+            type: category
+            name: Development
+            description: Compilers, build systems and language toolchains from the Arch repositories.
+            children:
+              - id: base-devel
+                type: application
+                name: base-devel
+                description: The Arch base build toolchain (gcc, make, sudo, and friends).
+                children:
+                  - id: base-devel-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "pacman -S --noconfirm --needed base-devel && gcc --version | head -1"
+                  - id: base-devel-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "pacman -Rns --noconfirm base-devel"
+              - id: cmake
+                type: application
+                name: CMake
+                children:
+                  - id: cmake-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "pacman -S --noconfirm --needed cmake && cmake --version | head -1"
+                  - id: cmake-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "pacman -Rns --noconfirm cmake"
+              - id: python3
+                type: application
+                name: Python 3 + pip
+                children:
+                  - id: python3-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "pacman -S --noconfirm --needed python python-pip && python --version"
+                  - id: python3-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "pacman -Rns --noconfirm python-pip"
+              - id: nodejs
+                type: application
+                name: Node.js & npm
+                children:
+                  - id: nodejs-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "pacman -S --noconfirm --needed nodejs npm && node --version"
+                  - id: nodejs-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "pacman -Rns --noconfirm nodejs npm"
+              - id: golang
+                type: application
+                name: Go
+                children:
+                  - id: golang-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "pacman -S --noconfirm --needed go && go version"
+                  - id: golang-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "pacman -Rns --noconfirm go"
+              - id: rust
+                type: application
+                name: Rust
+                children:
+                  - id: rust-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "pacman -S --noconfirm --needed rust && rustc --version"
+                  - id: rust-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "pacman -Rns --noconfirm rust"
+              - id: openjdk
+                type: application
+                name: Java (OpenJDK)
+                children:
+                  - id: openjdk-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "pacman -S --noconfirm --needed jdk-openjdk && java --version"
+                  - id: openjdk-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "pacman -Rns --noconfirm jdk-openjdk"
+              - id: git
+                type: application
+                name: Git
+                children:
+                  - id: git-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "pacman -S --noconfirm --needed git && git --version"
+                  - id: git-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "pacman -Rns --noconfirm git"
+
+          - id: networking
+            type: category
+            name: Networking
+            description: Diagnostics and transfer tools.
+            children:
+              - id: net-tools
+                type: application
+                name: Network diagnostics
+                description: ping, dig and traceroute.
+                children:
+                  - id: net-tools-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "pacman -S --noconfirm --needed iputils bind traceroute"
+                  - id: net-tools-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "pacman -Rns --noconfirm bind traceroute"
+              - id: curl-wget
+                type: application
+                name: curl & wget
+                description: Command-line HTTP clients (curl ships with Arch base; wget is included for completeness).
+                children:
+                  - id: curl-wget-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "pacman -S --noconfirm --needed curl wget && curl --version | head -1"
+                  - id: curl-wget-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "pacman -Rns --noconfirm wget"
+              - id: openssh-client
+                type: application
+                name: SSH client
+                children:
+                  - id: openssh-client-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "pacman -S --noconfirm --needed openssh && ssh -V 2>&1"
+                  - id: openssh-client-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "pacman -Rns --noconfirm openssh"
+
+    # ──────────────────────────────────────────────────────────────────────
+    # alpine — apk
+    # ──────────────────────────────────────────────────────────────────────
+    alpine:
+      default:
+        categories:
+          - id: system
+            type: category
+            name: System
+            description: Package database and system information operations.
+            children:
+              - id: update-system
+                type: action
+                name: Check for updates and upgrade
+                description: Refreshes the package index and upgrades installed packages.
+                action: update
+                icon: refresh
+                command: "apk update && apk upgrade"
+              - id: clean-package-cache
+                type: action
+                name: Clean package manager cache
+                description: Removes downloaded packages from the apk cache.
+                icon: delete
+                command: "apk cache clean 2>/dev/null || rm -rf /var/cache/apk/*"
+              - id: system-info
+                type: action
+                name: View system info
+                description: CPU and memory overview, plus the Android host feed when available.
+                action: check
+                icon: info
+                command: "echo '--- CPU ---'; lscpu 2>/dev/null || head -12 /proc/cpuinfo; echo '--- MEMORY ---'; free -h 2>/dev/null || head -12 /proc/meminfo; echo '--- LINEXA FEED ---'; linexa-hostinfo 2>/dev/null || echo 'linexa-hostinfo feed not available'"
+              - id: disk-usage
+                type: action
+                name: Disk usage
+                description: Filesystem usage of the workspace.
+                action: check
+                icon: storage
+                command: "df -h"
+              - id: clear-screen
+                type: action
+                name: Clear screen
+                description: Clears the terminal display.
+                command: "clear"
+
+          - id: software-management
+            type: category
+            name: Software Management
+            description: Install or remove desktop applications from Alpine's repositories (main + community).
+            children:
+              - id: libreoffice
+                type: application
+                name: LibreOffice
+                description: The LibreOffice suite from Alpine's community repository (large download).
+                children:
+                  - id: libreoffice-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apk add libreoffice"
+                  - id: libreoffice-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apk del libreoffice"
+              - id: gimp
+                type: application
+                name: GIMP
+                children:
+                  - id: gimp-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apk add gimp"
+                  - id: gimp-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apk del gimp"
+              - id: krita
+                type: application
+                name: Krita
+                children:
+                  - id: krita-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apk add krita"
+                  - id: krita-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apk del krita"
+              - id: octave
+                type: application
+                name: Octave
+                children:
+                  - id: octave-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apk add octave"
+                  - id: octave-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apk del octave"
+              - id: vlc
+                type: application
+                name: VLC media player
+                children:
+                  - id: vlc-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apk add vlc"
+                  - id: vlc-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apk del vlc"
+              - id: thunderbird
+                type: application
+                name: Thunderbird
+                children:
+                  - id: thunderbird-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apk add thunderbird"
+                  - id: thunderbird-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apk del thunderbird"
+
+          - id: browsers
+            type: category
+            name: Browsers
+            description: Web browsers from Alpine's community repository.
+            children:
+              - id: chromium-browser
+                type: application
+                name: Chromium Browser
+                children:
+                  - id: chromium-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apk add chromium"
+                  - id: chromium-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apk del chromium"
+              - id: firefox
+                type: application
+                name: Firefox ESR
+                children:
+                  - id: firefox-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apk add firefox-esr"
+                  - id: firefox-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apk del firefox-esr"
+
+          - id: development
+            type: category
+            name: Development
+            description: Compilers, build systems and language toolchains from Alpine's repositories.
+            children:
+              - id: build-base
+                type: application
+                name: build-base (GCC toolchain)
+                description: Alpine's meta package for gcc, g++, make and musl headers.
+                children:
+                  - id: build-base-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apk add build-base && gcc --version | head -1"
+                  - id: build-base-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apk del build-base"
+              - id: cmake
+                type: application
+                name: CMake
+                children:
+                  - id: cmake-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apk add cmake && cmake --version | head -1"
+                  - id: cmake-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apk del cmake"
+              - id: python3
+                type: application
+                name: Python 3 + pip
+                children:
+                  - id: python3-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apk add python3 py3-pip && python3 --version"
+                  - id: python3-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apk del py3-pip python3"
+              - id: nodejs
+                type: application
+                name: Node.js & npm
+                children:
+                  - id: nodejs-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apk add nodejs npm && node --version"
+                  - id: nodejs-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apk del npm nodejs"
+              - id: golang
+                type: application
+                name: Go
+                children:
+                  - id: golang-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apk add go && go version"
+                  - id: golang-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apk del go"
+              - id: rust
+                type: application
+                name: Rust
+                children:
+                  - id: rust-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apk add rust cargo && rustc --version"
+                  - id: rust-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apk del cargo rust"
+              - id: openjdk
+                type: application
+                name: Java (OpenJDK 21)
+                children:
+                  - id: openjdk-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apk add openjdk21 && java --version"
+                  - id: openjdk-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apk del openjdk21"
+              - id: git
+                type: application
+                name: Git
+                children:
+                  - id: git-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apk add git && git --version"
+                  - id: git-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apk del git"
+
+          - id: networking
+            type: category
+            name: Networking
+            description: Diagnostics and transfer tools.
+            children:
+              - id: net-tools
+                type: application
+                name: Network diagnostics
+                description: ping, dig and traceroute (busybox provides ping; this adds the rest).
+                children:
+                  - id: net-tools-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apk add drill traceroute mtr"
+                  - id: net-tools-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apk del drill traceroute mtr"
+              - id: curl-wget
+                type: application
+                name: curl & wget
+                description: Command-line HTTP clients (busybox wget ships with Alpine; this adds curl).
+                children:
+                  - id: curl-wget-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apk add curl && curl --version | head -1"
+                  - id: curl-wget-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apk del curl"
+              - id: openssh-client
+                type: application
+                name: SSH client
+                children:
+                  - id: openssh-client-install
+                    type: action
+                    name: Install
+                    action: install
+                    command: "apk add openssh-client && ssh -V 2>&1"
+                  - id: openssh-client-remove
+                    type: action
+                    name: Uninstall
+                    action: remove
+                    command: "apk del openssh-client"

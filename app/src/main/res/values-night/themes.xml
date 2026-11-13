@@ -1,0 +1,12 @@
+<resources>
+    <style name="Theme.Linexa" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <!-- Linexa UI/UX 2026 redesign: dark window background, matching the
+             Haven dark `bg` token (#101113 — Terminal Dark charcoal) in
+             ui/theme/Color.kt. Must equal the Compose background so navigation
+             transitions and cold start don't flash a lighter/darker shade
+             behind the UI. -->
+        <item name="android:windowBackground">#101113</item>
+    </style>
+</resources>

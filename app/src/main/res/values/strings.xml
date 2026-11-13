@@ -1,0 +1,1511 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Linexa</string>
+
+    <!-- Common actions / states -->
+    <string name="common_back">Back</string>
+    <string name="common_cancel">Cancel</string>
+    <string name="common_copy">Copy</string>
+    <string name="common_copied">Copied to clipboard</string>
+    <string name="common_open">Open</string>
+    <string name="common_delete">Delete</string>
+    <!-- 2026-09-02: guided desktop installer buttons (shared with its panels). -->
+    <string name="common_done">Done</string>
+    <string name="common_close">Close</string>
+    <!-- UI/UX Phase 5C: clears the Commands list's custom-run result row. -->
+    <string name="common_dismiss">Dismiss</string>
+    <string name="dialog_delete_workspace_title">Delete workspace?</string>
+    <string name="dialog_delete_workspace_message">This will permanently remove \"%1$s\" and all its files. This cannot be undone.</string>
+    <!-- §1.117: a delete refused because the runtime could not be confirmed stopped. -->
+    <string name="dialog_delete_workspace_failed_title">Couldn\'t delete workspace</string>
+    <string name="common_ok">OK</string>
+    <string name="dialog_exit_workspace_title">Leave workspace?</string>
+    <string name="dialog_exit_workspace_message">\"%1$s\" can keep running in the background while you are away — long-running commands, downloads and the desktop continue. Choose Stop to shut it down now.</string>
+    <string name="dialog_exit_workspace_confirm">Stop workspace</string>
+    <string name="dialog_exit_workspace_background">Keep running</string>
+    <string name="desktop_external_running">Desktop is running via %1$s — the display renders in the external app\'s window.</string>
+    <string name="desktop_external_open">Open display</string>
+    <string name="common_not_connected">Not connected</string>
+    <string name="common_ready">Ready</string>
+    <string name="common_rename">Rename</string>
+    <string name="common_retry">Retry</string>
+    <string name="common_share">Share</string>
+    <!-- § export: the RootFS backup action (workspace card menu → Export). -->
+    <string name="common_export">Export</string>
+    <string name="common_unknown">Unknown</string>
+
+    <!-- RootFS export (§ export: workspace card menu → Export → save picker →
+         progress/completion/failure dialogs on Home). The failed-state reasons
+         themselves come from ExportCoordinator, like the install flow\'s
+         coordinator-produced reasons. -->
+    <string name="export_dialog_progress_title">Exporting \"%1$s\"</string>
+    <string name="export_step_preparing">Preparing…</string>
+    <string name="export_step_packing">Packing RootFS…</string>
+    <string name="export_step_finalizing">Finishing…</string>
+    <string name="export_step_verifying">Verifying archive…</string>
+    <string name="export_success_title">Export complete</string>
+    <string name="export_success_body">\"%1$s\" was saved (%2$s). Use Add a Workspace → Import RootFS to install this backup again.</string>
+    <string name="export_success_skipped">%1$d files could not be included in the backup.</string>
+    <string name="export_failed_title">Couldn\'t export workspace</string>
+    <string name="export_cleanup_note">The incomplete export file could not be removed automatically — delete it manually.</string>
+
+    <!-- Install flow (§1.84; three stages §1.88, collapsed to one screen in UI/UX Phase 1) -->
+    <string name="install_flow_title">Install RootFS</string>
+    <string name="install_section_rootfs">Root Filesystem</string>
+    <string name="install_section_confirm">Confirm installation</string>
+    <string name="install_section_installing">Installing</string>
+    <string name="install_subtitle_analyzing">Reading the archive…</string>
+    <string name="install_subtitle_confirm">Review before installing</string>
+    <string name="install_subtitle_installing">Do not close the app</string>
+    <string name="install_source_unknown">Unnamed root filesystem</string>
+    <string name="install_source_local">From local storage</string>
+    <string name="install_source_catalog">From the distribution catalog</string>
+    <string name="install_workspace_name">Workspace name</string>
+    <string name="install_keep_open_hint">Keep this screen open until the installation finishes.</string>
+    <string name="install_step_downloading">Downloading archive…</string>
+    <string name="install_step_analyzing">Analyzing root filesystem…</string>
+    <string name="install_step_extracting">Extracting files…</string>
+    <string name="install_step_fixing">Preparing installation…</string>
+    <string name="install_step_finalizing">Finalizing installation…</string>
+    <string name="install_step_verifying">Verifying root filesystem…</string>
+    <string name="install_step_desc_downloading">Fetching the root filesystem archive…</string>
+    <string name="install_step_desc_analyzing">Validating the archive and planning the extraction…</string>
+    <string name="install_step_desc_extracting">Unpacking files into the workspace…</string>
+    <string name="install_step_desc_fixing">Applying account and environment fixups…</string>
+    <string name="install_step_desc_finalizing">Committing the workspace and cleaning up…</string>
+    <string name="install_step_desc_verifying">Confirming the installation is complete…</string>
+    <string name="install_processing_label">Now processing:</string>
+    <string name="install_title_installing_format">Installing &quot;%1$s&quot;</string>
+    <string name="install_confirm_subtitle">Review the details before installing.</string>
+    <string name="install_distribution">Distribution</string>
+    <string name="install_architecture">Architecture</string>
+    <string name="install_required_storage">Required storage</string>
+    <string name="install_free_storage">Free storage</string>
+    <string name="install_archive_size">Archive size</string>
+    <string name="install_entries">Files</string>
+    <string name="install_entries_value">%1$d files</string>
+    <string name="install_undetected_note">Distribution and architecture could not be detected automatically — using your selection.</string>
+    <string name="install_declared_note">This archive describes itself, so these details were read from it rather than guessed.</string>
+    <string name="install_legacy_declared_note">This archive carries Tiny Container metadata, so its name and description were read from it. Everything else was detected.</string>
+    <string name="install_overwrite_warning">This container already exists and will be overwritten. Existing data cannot be recovered.</string>
+    <string name="install_confirm_button">Confirm Install</string>
+    <string name="install_failed_title">Installation failed</string>
+    <string name="install_close">Close</string>
+    <string name="install_fail_hint_title">If installation fails</string>
+    <string name="install_fail_hint_body">"Installation failed" states the reason and offers Close — nothing is left half-written.</string>
+
+    <!-- 2026-09-02 (desktop prerequisites): the guided Debian/Ubuntu + APT
+         desktop installation flow. Every number shown is real (apt-get -s
+         quote or a filesystem measurement); "unknown" is rendered as an em
+         dash, never as an estimate dressed as a value. -->
+    <string name="desktop_install_check">Install %1$s in this workspace…</string>
+    <string name="desktop_install_checking">Checking whether %1$s can be installed…</string>
+    <string name="desktop_install_quote_title">Install %1$s — review before installing</string>
+    <string name="desktop_install_quote_download">Download size (approximate, from apt)</string>
+    <string name="desktop_install_quote_installed">Installed size (approximate, from apt)</string>
+    <string name="desktop_install_quote_free">Free space in this workspace</string>
+    <string name="desktop_install_quote_packages">%1$d new packages would be installed.</string>
+    <string name="desktop_install_quote_unknown">apt could not report sizes (offline index or a failed simulation) — install only if you have plenty of free space.</string>
+    <string name="desktop_install_already">%1$s is already installed in this workspace — nothing to do.</string>
+    <string name="desktop_install_confirm">Install %1$s</string>
+    <string name="desktop_install_cancel">Stop installation</string>
+    <string name="desktop_install_complete">%1$s installed</string>
+    <string name="desktop_install_complete_body">Verified %1$s in the workspace after installation.</string>
+    <string name="desktop_install_failed">Desktop installation failed</string>
+    <string name="desktop_install_verify_failed">apt-get reported success, but no %1$s session was found in the workspace — the installation did not complete. You can retry from this panel.</string>
+    <string name="desktop_install_phase_updating">Updating package index…</string>
+    <string name="desktop_install_phase_downloading">Resolving and downloading packages…</string>
+    <string name="desktop_install_phase_installing">Installing packages…</string>
+    <string name="desktop_install_block_distro">This workspace is not Debian or Ubuntu — the guided installer supports Debian and Ubuntu only. Use the Package Manager to install a desktop manually.</string>
+    <string name="desktop_install_block_no_apt">No APT package manager was found in this workspace.</string>
+    <string name="desktop_install_block_no_rootfs">This workspace has no usable root filesystem.</string>
+    <string name="desktop_install_block_no_session">The workspace session is not running — start the workspace first; the installer runs through it.</string>
+    <string name="desktop_install_block_no_preset">Select a desktop preset first.</string>
+    <string name="desktop_install_block_storage">Not enough free space in this workspace for the sizes apt reported. Free up space or choose a smaller preset.</string>
+    <!-- 2026-09-02 (desktop prerequisites, Phase 2): the Desktop row\'s
+         explanation when enabling was refused for a missing environment. -->
+    <string name="feature_desktop_missing_status">No desktop environment found in this workspace. Choose a preset below and install it, or switch the run mode to Web.</string>
+
+    <!-- Home -->
+    <string name="home_add_workspace">Add a Workspace</string>
+    <string name="home_import_title">Import RootFS</string>
+    <string name="home_import_subtitle">Bring in a Linux root filesystem from local storage, or download one.</string>
+    <string name="home_download_title">Download a Distribution</string>
+    <string name="home_download_subtitle">Debian, Ubuntu, Alpine, Arch Linux, or Fedora</string>
+    <string name="home_choose_distro">Choose a Distribution</string>
+    <string name="home_choose_file">Choose a local .tar.gz, .tar.xz, or .tar.zst archive</string>
+    <string name="home_choose_file_button">Choose File</string>
+    <string name="home_empty_title">No workspaces yet</string>
+    <string name="home_empty_subtitle">Tap + to import a Linux RootFS and create your first workspace.</string>
+    <string name="home_mgmt_terminal">Linexa Terminal</string>
+    <!-- UI/UX Phase 3: Home's app bar title. Shown in BOTH states — opening the
+         terminal overlay adds the subtitle below, it never replaces this. -->
+    <string name="home_title">Linexa Linux Workspace</string>
+    <!-- The secondary line, present only while the terminal overlay is open: it
+         names the surface currently on top, under the unchanged title. -->
+    <string name="home_terminal_subtitle">Terminal</string>
+    <string name="home_more_actions">More actions</string>
+    <!-- UI Phase 2 Workspace card. "Total size" and not "Storage used": the
+         number is the whole workspaces/{id}/ directory (rootfs + config.yaml +
+         logs + any download cache), i.e. what deleting the workspace reclaims. -->
+    <string name="home_card_total_size">Total size</string>
+    <string name="home_card_preview_description">Desktop preview of this workspace</string>
+    <string name="home_rename_title">Rename workspace</string>
+    <string name="home_rename_hint">New name</string>
+    <string name="home_bottom_workspaces">Workspaces</string>
+    <string name="home_bottom_global_settings">Global Settings</string>
+    <string name="home_loading">Loading workspaces…</string>
+    <string name="home_error_title">Couldn’t load workspaces</string>
+    <string name="home_error_body">Something went wrong while reading your workspaces.</string>
+
+    <!-- What's New card. Shown on Home once after an update, above the workspace
+         list, and removed for good once dismissed (a later version's card is a
+         different, higher versionCode, so it appears again).
+
+         The changelog TEXT itself is deliberately not here: it lives in
+         ReleaseNotesCatalog.kt as literal prose. It is per-release copy that is
+         superseded by the following version, so one string resource per line per
+         release would accumulate permanently for text nothing reads again. These
+         strings are only the card's fixed furniture. -->
+    <string name="whats_new_title">What\u2019s New</string>
+    <!-- %1$s is the version, already formatted as "1.0 (3)" by AppVersionLabel. -->
+    <string name="whats_new_version">Version %1$s</string>
+    <string name="whats_new_dismiss">Dismiss What\u2019s New</string>
+    <string name="whats_new_got_it">Got it</string>
+    <!-- %1$d is how many further changes are hidden while the card is collapsed. -->
+    <plurals name="whats_new_show_more">
+        <item quantity="one">Show %1$d more change</item>
+        <item quantity="other">Show %1$d more changes</item>
+    </plurals>
+    <string name="whats_new_show_less">Show less</string>
+    <string name="whats_new_category_new">New</string>
+    <string name="whats_new_category_improved">Improved</string>
+    <string name="whats_new_category_fixed">Fixed</string>
+    <string name="whats_new_category_changed">Changed</string>
+
+    <!-- Global Settings (§ Home redesign — bottom-nav destination) -->
+    <string name="global_settings_debug_title">Enable debug info</string>
+    <!--
+      UI/UX Phase 7: says "Collect", because the toggle now disables the underlying
+      capture (the app log sink and the runtime trace) rather than only hiding it.
+      This is the same switch as the Workspace tab's — one app-scoped setting, so
+      the two descriptions must not imply different behaviour.
+    -->
+    <string name="global_settings_debug_desc">Collect runtime traces and app logs. Off means nothing is recorded.</string>
+
+    <!-- UI/UX Phase 4: three groups over machinery that already shipped but had
+         no control surface — the light/dark choice, the terminal font size
+         (previously pinch-only), and the app log (previously unreadable). -->
+    <string name="global_settings_appearance_group">Appearance</string>
+    <string name="global_settings_theme_title">Theme</string>
+    <string name="global_settings_theme_system">System</string>
+    <string name="global_settings_theme_light">Light</string>
+    <string name="global_settings_theme_dark">Dark</string>
+    <!-- Names the fallback explicitly: "System" alone reads as "unset". -->
+    <string name="global_settings_theme_system_desc">Follow the device light/dark setting</string>
+
+    <!-- UI/UX Phase 7: Color Theme — an independent axis from light/dark.
+         Picking a color theme changes the app's primary/secondary accents;
+         it does not affect whether the app is in light or dark mode, and
+         switching light/dark must not reset the chosen color theme. -->
+    <string name="global_settings_color_theme_title">Color theme</string>
+    <!-- States plainly that the two axes are independent — the most common
+         misreading is "I picked Forest, why did dark mode undo it?" -->
+    <string name="global_settings_color_theme_desc">Applies to the whole app, separate from light/dark</string>
+    <string name="global_settings_color_theme_alpine_blue">Alpine Blue</string>
+    <string name="global_settings_color_theme_lavender">Lavender</string>
+    <string name="global_settings_color_theme_forest">Forest</string>
+    <string name="global_settings_color_theme_sunset">Sunset</string>
+
+    <string name="global_settings_terminal_group">Terminal</string>
+    <string name="global_settings_font_size_title">Font size</string>
+    <!-- Tells the user the pinch gesture exists — it was undiscoverable, which is
+         half the reason this row exists at all. -->
+    <string name="global_settings_font_size_desc">Applies to every terminal. You can also pinch to zoom.</string>
+    <string name="global_settings_font_decrease">Decrease font size</string>
+    <string name="global_settings_font_increase">Increase font size</string>
+
+    <string name="global_settings_diagnostics_group">Diagnostics</string>
+    <string name="global_settings_logs_title">App logs</string>
+    <!-- "%1$s across %2$d files": the file count is shown because rotation means
+         the size is spread over several files, and clearing removes all of them. -->
+    <string name="global_settings_logs_present">%1$s across %2$d files</string>
+    <string name="global_settings_logs_empty">No logs written yet</string>
+    <string name="global_settings_logs_clear">Clear app logs</string>
+    <!-- Says plainly what is NOT touched: a workspace's own install logs are
+         diagnostic evidence and are deliberately kept (§1.18/§1.53). -->
+    <string name="global_settings_logs_clear_desc">Removes the app\'s own log files. Workspace install logs are kept.</string>
+    <string name="global_settings_logs_cleared">Cleared %1$s</string>
+    <string name="global_settings_logs_cleared_nothing">Nothing to clear</string>
+    <string name="global_settings_logs_path">Stored in %1$s</string>
+
+    <!-- UI/UX Phase 4 (2): Help and the project's own pages. The URLs themselves are
+         deliberately NOT here — a URL is not translatable copy, and keeping it in
+         HelpLink.kt is what lets a test reject an invented one. -->
+    <string name="global_settings_help_group">Help</string>
+    <string name="global_settings_help_title">How to use Linexa</string>
+    <string name="global_settings_source_title">Project on GitHub</string>
+    <string name="global_settings_issues_title">Report a problem</string>
+
+    <string name="global_settings_community_group">Community</string>
+    <string name="global_settings_telegram_channel_title">Telegram channel</string>
+    <!-- Named as a personal contact, not as support: it is one developer's private
+         chat, and calling it support would promise a response time nobody owes. -->
+    <string name="global_settings_developer_title">Contact the developer</string>
+
+    <!-- Issue #11 (2026-09-03): row subtitles replace the raw URLs the rows used
+         to print — the settings screen shows clean Help/Community buttons and the
+         destination is revealed on tap, not advertised as an address. -->
+    <string name="global_settings_help_subtitle">Open the user guide</string>
+    <string name="global_settings_source_subtitle">Browse the source code</string>
+    <string name="global_settings_issues_subtitle">Open an issue on GitHub</string>
+    <string name="global_settings_telegram_channel_subtitle">Join the Telegram channel</string>
+    <string name="global_settings_developer_subtitle">Message the developer on Telegram</string>
+
+    <!-- §1.130: About / open-source attribution. Linexa distributes 17 prebuilt
+         native projects and 12 library coordinates, several copyleft. -->
+    <string name="global_settings_about_group">About</string>
+    <string name="global_settings_about_title">Open source licenses</string>
+    <string name="global_settings_about_desc">The projects Linexa ships, their licenses, and where their source is</string>
+
+    <!-- UI/UX Phase 4 (3): the footer under the app icon. The value is the build's own
+         versionName/versionCode — never a literal. -->
+    <string name="global_settings_version">Version %1$s</string>
+
+    <string name="about_title">Open source licenses</string>
+    <!-- States plainly that these are OTHER people's programs shipped inside the
+         APK — which is what makes the attribution meaningful rather than a list. -->
+    <string name="about_intro">Linexa runs Linux on Android by bundling programs written by other people. Everything below is included in this app, under the license shown. Source for each project is linked.</string>
+
+    <string name="about_group_binaries">Bundled programs</string>
+    <string name="about_group_binaries_desc">Native executables shipped in the app and run on your device.</string>
+    <string name="about_group_libraries">Bundled libraries</string>
+    <string name="about_group_libraries_desc">Shared libraries the bundled programs link against.</string>
+    <string name="about_group_dependencies">App libraries</string>
+    <string name="about_group_dependencies_desc">Code compiled into Linexa itself.</string>
+    <string name="about_group_icons">Icon artwork</string>
+    <string name="about_group_icons_desc">Vector drawables derived from icon packs.</string>
+
+    <string name="about_licenses_group">Licenses</string>
+    <string name="about_licenses_group_desc">The full text of every license above.</string>
+    <string name="about_source">Source: %1$s</string>
+    <string name="about_read_license">Read license</string>
+    <!-- Written offer for GPL/LGPL corresponding source. This is intentionally in the
+         APK as well as in THIRD_PARTY_NOTICES.md: the offer must accompany the binaries. -->
+    <string name="about_source_offer">Complete corresponding source for the GPL- and LGPL-licensed programs is available at the source links above and in the repository\'s THIRD_PARTY_NOTICES.md. If a link is unavailable, open an issue on the project\'s GitHub tracker; Linexa will provide the source for at least three years from this release.</string>
+    <!-- A statement of fact, not an error: a public-domain component has no license
+         document to reproduce, and inventing one would misstate its terms. -->
+    <string name="about_license_no_document">Public domain — no license text to reproduce.</string>
+    <!-- Distinct from the above on purpose: this one means the app failed to read a
+         document it claims to ship, which is a packaging fault. -->
+    <string name="about_license_unavailable">This license text couldn’t be read from the app package.</string>
+
+    <!-- Workspace detail -->
+    <string name="workspace_title_label">WORKSPACE</string>
+    <string name="workspace_back_to_home">Back to Home</string>
+    <!-- §1.133: the shared workspace app bar's subtitle names the active
+         *section*, and the terminal/session-overview sections are overlays
+         rather than destinations — so these are not tab labels. -->
+    <string name="workspace_section_terminal">Terminal</string>
+    <string name="workspace_section_sessions">Terminal sessions</string>
+    <string name="workspace_section_desktop">Desktop</string>
+    <!-- §1.133: the leading arrow dismisses ONE overlay layer, so it must not be
+         announced as "Back to Home" — it does not leave the workspace. Which of
+         these two applies is decided by WorkspaceChromeState, per section. -->
+    <string name="workspace_close_terminal">Close terminal</string>
+    <string name="workspace_back_to_terminal">Back to terminal</string>
+    <string name="workspace_tab_shortcuts">Shortcuts</string>
+    <string name="workspace_tab_features">Features</string>
+    <string name="workspace_tab_settings">Settings</string>
+    <string name="workspace_tab_terminal">Terminal</string>
+    <string name="workspace_tab_desktop">Desktop</string>
+    <string name="workspace_tab_packages">Packages</string>
+    <string name="workspace_tab_files">Files</string>
+    <!-- UI/UX Phase 5C: the Commands section below the performance panel. The
+         header's "+" is the only way to run an arbitrary command — it is no
+         longer a card at the end of the list, so the list holds commands only. -->
+    <string name="workspace_commands_title">Commands</string>
+    <string name="workspace_commands_add">Run a command</string>
+    <!-- Shown when the image declared `shortcuts: []` — it offers none
+         deliberately, which is a statement and not a gap to apologise for. -->
+    <string name="workspace_commands_empty">This image declares no commands. Use + to run one.</string>
+    <!-- UI/UX Phase 5C hierarchy: command titles encode levels with `>`
+         (`Software Management>Krita>Install`), which the tree navigates instead
+         of printing. A category card shows how many commands are under it,
+         because neither metadata path carries a group description to show. -->
+    <plurals name="workspace_commands_category_count">
+        <item quantity="one">%1$d command</item>
+        <item quantity="other">%1$d commands</item>
+    </plurals>
+    <string name="workspace_commands_up">Up one level</string>
+    <!-- A leaf command runs in a NEW terminal session, so these are the only
+         outcomes this list can report: the session is opening, the command was
+         handed to session Tn, or it never got that far. Anything after the
+         hand-off is the terminal's to show. -->
+    <string name="workspace_commands_opening">Opening a new terminal…</string>
+    <string name="workspace_commands_launched">Sent to terminal %1$s</string>
+    <string name="workspace_commands_launch_failed">Couldn\'t open a terminal: %1$s</string>
+    <string name="shortcut_connecting">Connecting to workspace…</string>
+    <string name="shortcut_result_running">Running…</string>
+    <string name="shortcut_result_success">Done — exit %1$d</string>
+    <string name="shortcut_result_failure">Failed — exit %1$d</string>
+    <string name="shortcut_result_error">Run failed</string>
+    <string name="shortcut_custom_dialog_title">Run custom command</string>
+    <string name="shortcut_custom_dialog_label">Command</string>
+    <string name="shortcut_custom_dialog_hint">e.g. uname -a</string>
+    <string name="shortcut_custom_dialog_run">Run</string>
+    <!-- Quick Commands re-architecture: the header "+" opens the Add Custom
+         Command form (Save = store, never run). Saved commands render in the
+         user's own "My Commands" section and run like every other leaf. -->
+    <string name="workspace_commands_add_custom">Add a custom command</string>
+    <string name="workspace_commands_mine">My Commands</string>
+    <string name="custom_command_add_title">Add Custom Command</string>
+    <string name="custom_command_edit_title">Edit Command</string>
+    <string name="custom_command_name_label">Name</string>
+    <string name="custom_command_name_hint">e.g. Update System</string>
+    <string name="custom_command_command_label">Command</string>
+    <string name="custom_command_command_hint">e.g. sudo apt update</string>
+    <string name="custom_command_too_long">Command is too long (max %1$d characters, single line)</string>
+    <string name="custom_command_run_once">Run once, don\'t save</string>
+    <string name="custom_command_edit_row">Edit this command</string>
+    <string name="custom_command_delete_title">Delete command?</string>
+    <string name="custom_command_delete_message">“%1$s” will be removed from My Commands. Built-in commands are not affected.</string>
+    <string name="custom_commands_empty">No custom commands yet. Use + to save a command you run often.</string>
+    <string name="workspace_error_copied">Error details copied to clipboard</string>
+    <string name="workspace_debug_title">Debug</string>
+    <string name="workspace_debug_runtime_trace_title">Runtime startup trace</string>
+    <!--
+      UI/UX Phase 7: the two buttons are labelled "Copy" and "Save" (common_copy /
+      common_save — the same words the diagnostics viewer already uses for the same
+      two actions). These remain as the icon buttons' *accessible* descriptions:
+      the visible label is legible only because it sits under the "Runtime startup
+      trace" heading, and a screen reader announcing a bare "Copy" would not say
+      what is being copied.
+    -->
+    <string name="workspace_debug_copy_trace_desc">Copy runtime trace</string>
+    <string name="workspace_debug_save_trace_desc">Save runtime trace</string>
+    <string name="workspace_debug_trace_copied">Runtime trace copied to clipboard</string>
+    <string name="workspace_debug_trace_empty">No startup trace yet — start the workspace to capture one.</string>
+    <string name="workspace_debug_enable_title">Enable debug info</string>
+    <!--
+      UI/UX Phase 7: the toggle now controls *collection*, not just display, so its
+      description says so. Reading "Show the runtime startup trace" would understate
+      what turning it on costs and overstate what turning it off achieves.
+    -->
+    <string name="workspace_debug_enable_desc">Collect and show the runtime startup trace and app logs</string>
+    <string name="workspace_debug_disabled_hint">Log collection is off. Turn on “Enable debug info” to start capturing the runtime trace.</string>
+    <string name="workspace_debug_trace_saved">Runtime trace saved</string>
+    <string name="workspace_debug_save_failed">Could not save the runtime trace</string>
+    <!--
+      §1.165: the desktop render counters (§1.153), surfaced on-device because their
+      only other outlet is logcat and the app-private log file — both unreachable on
+      an unrooted device without adb, which is what blocked the VNC verification pass.
+      Shown only while "Enable debug info" is on, in the same Debug group as the
+      runtime trace.
+    -->
+    <string name="workspace_debug_vnc_stats_title">VNC render stats</string>
+    <string name="workspace_debug_vnc_stats_empty">No desktop session recorded yet — open the Desktop, then come back.</string>
+    <string name="workspace_debug_vnc_stats_copied">VNC render stats copied to clipboard</string>
+    <string name="workspace_debug_vnc_stats_reset">Reset</string>
+    <string name="workspace_debug_vnc_stats_reset_desc">Reset VNC render stats counters</string>
+    <string name="workspace_debug_vnc_stats_reset_done">Counters reset — the measurement window starts now</string>
+    <!--
+      Shown when Reset is pressed with no desktop connected. Says what happened rather
+      than failing silently: there is nothing to reset, and the retained numbers from
+      the previous session are deliberately left alone.
+    -->
+    <string name="workspace_debug_vnc_stats_reset_no_session">No live desktop session to reset</string>
+    <string name="workspace_debug_vnc_stats_refresh_desc">Refresh VNC render stats</string>
+    <string name="workspace_debug_vnc_stats_copy_desc">Copy VNC render stats</string>
+    <string name="workspace_diagnostics_report">Diagnostics Report</string>
+    <string name="workspace_jump_to_section">Jump to section</string>
+    <string name="workspace_search_report">Search report…</string>
+    <string name="workspace_diagnostics_saved">Diagnostics saved to: %1$s</string>
+    <string name="workspace_persistent_logs">Persistent Logs</string>
+    <string name="workspace_logs_location">Log files saved to: %1$s</string>
+    <string name="common_save">Save</string>
+    <string name="diagnostic_clear">Clear</string>
+    <string name="diagnostic_section_lines">%1$d lines</string>
+    <string name="diagnostic_share_chooser">Share diagnostics</string>
+    <string name="diagnostic_save_failed">Failed to save: %1$s</string>
+    <string name="diagnostic_actions">More actions</string>
+    <string name="diagnostic_log_files">Log files: bootstrap.log, extraction.log, runtime.log, diagnostics.log, proot-command.log, environment.log, latest-error.log</string>
+    <string name="diagnostic_meta_id">ID</string>
+    <string name="diagnostic_meta_size">Size</string>
+    <string name="diagnostic_meta_sections">Sections</string>
+    <string name="diagnostic_meta_distro">Distro</string>
+    <string name="diagnostic_meta_stage">Stage</string>
+    <string name="diagnostic_meta_time">Time</string>
+    <string name="workspace_delete_title">Delete workspace?</string>
+    <string name="workspace_delete_message">This permanently removes \"%1$s\" and all its files. This cannot be undone.</string>
+    <string name="workspace_installing">Installing %1$s…</string>
+    <string name="workspace_not_found">Workspace not found</string>
+    <string name="workspace_status_importing">Installing… %1$d%%</string>
+    <string name="workspace_status_installed">Finishing up…</string>
+    <string name="workspace_status_not_installed">Not installed</string>
+    <string name="workspace_status_broken">Installation failed — tap to fix</string>
+    <string name="workspace_status_repairing">Repairing…</string>
+    <string name="workspace_status_deleting">Deleting…</string>
+
+    <!-- Settings -->
+    <!-- §1.104: the Access group now surfaces the three real device-level
+         settings instead of the placeholder "Permissions" row. -->
+    <string name="settings_access">Access</string>
+    <string name="settings_file_access">File Access</string>
+    <string name="settings_file_access_desc">Allow access to files stored on this device</string>
+    <string name="settings_battery_optimization">Disable Battery Optimization</string>
+    <string name="settings_battery_optimization_desc">Keep the workspace runtime alive in the background</string>
+    <string name="settings_notifications">Notifications</string>
+    <string name="settings_notifications_desc">Show the running workspace notification</string>
+    <string name="setting_status_on">On</string>
+    <string name="setting_status_off">Off</string>
+    <string name="settings_phantom_limit_title">Process limit</string>
+    <string name="settings_phantom_limit_desc_on">The system reports the phantom-process monitor as on.</string>
+    <string name="settings_phantom_limit_desc_off">The system reports the phantom-process monitor as off.</string>
+    <string name="settings_phantom_limit_desc_unknown_android_12">Android 12 has no monitor on/off setting. Linexa cannot read its state; the guidance below uses Android 12’s process limit instead.</string>
+    <string name="settings_phantom_limit_desc_unknown_android_12l_13">Linexa does not read this setting on Android 12L–13, so it cannot confirm the current state.</string>
+    <string name="settings_phantom_limit_desc_unknown_modern">Linexa could not read this setting. It may be unset, or the settings provider may have blocked it.</string>
+    <string name="settings_phantom_limit_desc_not_applicable">Android 11 and older have no phantom-process monitor.</string>
+    <string name="settings_phantom_limit_status_on">Monitor on</string>
+    <string name="settings_phantom_limit_status_off">Monitor off</string>
+    <string name="settings_phantom_limit_status_unknown">Unknown</string>
+    <string name="settings_phantom_limit_status_not_applicable">N/A</string>
+    <string name="settings_phantom_limit_caveat">Configuration state only; runtime enforcement is not verified.</string>
+    <string name="settings_phantom_limit_guidance_android_12">Android 12 has no monitor switch. This raises the ActivityManager phantom-process limit instead. Some devices ignore it, and this is not a guaranteed fix.</string>
+    <string name="settings_phantom_limit_guidance_on">To turn this monitor off yourself, run this once from a computer with USB debugging. Some devices ignore it, and this is not a guaranteed fix.</string>
+    <string name="settings_phantom_limit_guidance_unknown">If a workspace is being stopped in the background, this setting is commonly involved. You can try this from a computer with USB debugging. Some devices ignore it, and this is not a guaranteed fix.</string>
+    <string name="settings_phantom_limit_copy_command">Copy command</string>
+    <!-- §1.78: Files / Packages surface under Settings now -->
+    <string name="settings_tools">Tools</string>
+    <string name="settings_tools_files_desc">Browse files in this workspace rootfs</string>
+    <string name="settings_tools_packages_desc">Install, remove, and upgrade packages</string>
+    <string name="settings_danger_zone">Danger Zone</string>
+    <string name="settings_delete_workspace">Delete Workspace</string>
+    <string name="settings_delete_workspace_desc">Permanently remove this workspace</string>
+
+    <!-- §1.100 / §P0: the SettingsTab Session group (Start/Stop/Restart) was
+         removed — Workspace lifecycle is enter/leave only. -->
+
+    <!-- UI/UX Phase 5B: workspace performance panel (top of the workspace
+         surface). The scope subtitle is load-bearing rather than decorative —
+         these metrics describe one workspace's process tree, not the phone and
+         not the Linexa app, and a resource readout with an unstated denominator
+         is the easiest kind of number to misread. -->
+    <string name="resource_monitor_title">Performance</string>
+    <string name="resource_monitor_scope">This workspace</string>
+    <string name="resource_cpu">CPU</string>
+    <string name="resource_ram">RAM</string>
+    <string name="resource_storage">Storage</string>
+    <!-- Qualifies the CPU share: the value is normalised across all cores, so a
+         tree saturating two of eight reads 25%, not 200%. -->
+    <string name="resource_cpu_cores">of %1$d cores</string>
+    <!-- Shown when the memory total is a sum of VmRSS rather than Pss and
+         therefore double-counts pages shared between proot and its children. -->
+    <string name="resource_ram_approximate">approx.</string>
+    <string name="resource_storage_free">%1$s free</string>
+
+    <!-- Desktop (VNC) -->
+    <string name="desktop_title">Desktop</string>
+    <string name="desktop_start">Start Desktop</string>
+    <string name="desktop_starting">Starting…</string>
+    <string name="desktop_stop">Stop</string>
+    <string name="desktop_stopped">Stopped</string>
+    <string name="desktop_start_hint">Start a desktop session to view the live VNC stream.</string>
+    <string name="desktop_error">Error: %1$s</string>
+    <string name="desktop_not_connected">Desktop not connected</string>
+    <string name="desktop_connecting">Connecting…</string>
+    <!-- §1.114: a VNC connection/stream failure, shown instead of a permanent "Connecting…". -->
+    <string name="desktop_vnc_error">Desktop connection failed: %1$s</string>
+    <string name="desktop_xvnc_missing">Xvnc is not installed in this workspace. Install it (e.g. apt install tigervnc-standalone-server) and try again.</string>
+    <string name="desktop_xvnc_installing">Installing Xvnc in this workspace…</string>
+    <string name="desktop_xvnc_probe_timeout">Could not detect this workspace\'s package manager within the time limit. Try installing Xvnc manually (e.g. apt install tigervnc-standalone-server).</string>
+    <string name="desktop_xvnc_install_failed">Could not auto-install Xvnc: %1$s</string>
+    <string name="desktop_xvnc_install_timeout">Xvnc installation timed out. Check the workspace\'s network connection and try again.</string>
+    <string name="desktop_xvnc_start_failed">Failed to launch Xvnc</string>
+    <!-- Pre-release audit fix (2026-09-02): when the user configured a VNC
+         password but provisioning it inside the guest failed, the start path
+         used to degrade SILENTLY to an unauthenticated desktop. Any local
+         app could then attach to the loopback VNC server with no credential
+         (Android grants no per-app localhost isolation). Failing closed with
+         this message is the safe behavior: the user can install vncpasswd in
+         the guest or clear the configured password. -->
+    <string name="desktop_vnc_auth_provision_failed">VNC password could not be set up in this workspace (vncpasswd missing or failed). The desktop was NOT started unauthenticated — install a VNC server in the guest or clear the configured password, then try again.</string>
+    <!-- Phase 07 (OPT-SEC-004, Step B2): an unauthenticated Xvnc start was
+         refused because the guest's Xvnc predates TigerVNC 1.11 (it rejects
+         -localhost), so the server could not have been restricted to
+         loopback-only. Failing closed keeps every local app — Android grants
+         no per-app localhost isolation — from reaching an unauthenticated
+         desktop. -->
+    <string name="desktop_vnc_loopback_unsupported">This workspace\'s Xvnc does not support restricting the server to loopback (-localhost), so the desktop was NOT started. Set a VNC password for this workspace or upgrade the guest\'s TigerVNC, then try again.</string>
+    <!-- Phase 07 (OPT-SEC-004, Step B3): the post-start bind verification
+         caught the Xvnc listening on a non-loopback address; the server was
+         stopped before any session attached. %1$s is the offending
+         address:port list parsed from the guest\'s own listener listing. -->
+    <string name="desktop_vnc_loopback_bind_violation">Xvnc was listening on a non-loopback address (%1$s), so the desktop was stopped. Set a VNC password for this workspace or upgrade the guest\'s TigerVNC so -localhost is honored, then try again.</string>
+    <string name="desktop_xvnc_port_timeout">Xvnc did not start listening on port %1$d within %2$d ms</string>
+    <!-- 2026-09-05 (Xvnc exit-1 forensics): when the Xvnc process itself died
+         during startup, the port timeout is the wrong message — the real
+         reason is in the daemon log the runtime already keeps on the host.
+         Surfacing its tail is the difference between "exit code 1" and the
+         actual X11 fatal error ("Server is already active for display",
+         "could not open default font \'fixed\'", "Failed to bind socket"…). -->
+    <string name="desktop_xvnc_died_during_start">Xvnc exited during startup (see its log for the X11 fatal error):\n%1$s</string>
+    <string name="desktop_unknown_error">Unknown error</string>
+    <string name="desktop_session_not_running">Workspace session is not running. Start it from the workspace screen first.</string>
+    <!-- §1.114: Xvnc came up but the guest's desktop session (DE/WM/xterm) would not start. -->
+    <string name="desktop_session_start_failed">The desktop session (%1$s) failed to start.</string>
+    <!-- §1.114: an X server with no X client installed — a state the user resolves, not a fault to retry. -->
+    <string name="desktop_no_session">No desktop environment is installed in this workspace. Install one (e.g. apt install xfce4, or just xterm) and start the desktop again — or switch the Desktop run mode to Web in Features.</string>
+    <!-- UI/UX Phase 8 (§1.138): the fullscreen desktop hides the app bar, so the
+         keyboard needs its own control. Tap-to-show was removed because a tap is a
+         left click on the remote desktop. -->
+    <string name="desktop_keyboard_toggle">Show or hide the keyboard</string>
+    <string name="desktop_zoom_reset">Reset zoom</string>
+
+    <!-- Desktop Modes (2026-08): the WebView run mode's user-facing strings. -->
+    <string name="desktop_web_command_missing">No web server command is configured. Set one under Features → Desktop → Web mode, then start the desktop again.</string>
+    <string name="desktop_web_start_failed">The web server daemon failed to start. Check the command configured in Features → Desktop.</string>
+    <string name="desktop_web_port_timeout">The guest web server did not start listening on port %1$d within the time limit. Check the command and port in Features → Desktop.</string>
+    <string name="desktop_web_share_lan">Share this URL over the local network</string>
+    <string name="desktop_web_open_browser">Open this URL in the device browser</string>
+
+    <!-- Desktop Modes (2026-08): the Desktop feature row's settings panel. -->
+    <string name="feature_settings_desktop_mode_label">Run mode</string>
+    <string name="feature_settings_desktop_mode_vnc">VNC</string>
+    <string name="feature_settings_desktop_mode_webview">Web</string>
+    <string name="feature_settings_desktop_summary_vnc">VNC desktop</string>
+    <string name="feature_settings_desktop_summary_webview">Web (guest server in app browser)</string>
+    <string name="feature_settings_desktop_resolution_label">Framebuffer resolution (VNC)</string>
+    <string name="feature_settings_desktop_resolution_auto">Auto</string>
+    <string name="feature_settings_desktop_resolution_720p">720p</string>
+    <string name="feature_settings_desktop_resolution_900p">900p</string>
+    <string name="feature_settings_desktop_resolution_1080p">1080p</string>
+    <string name="feature_settings_desktop_zrle_label">Compressed updates (ZRLE)</string>
+    <string name="feature_settings_desktop_zrle_help">Lower bandwidth, higher CPU. Only useful over a network tunnel (e.g. adb reverse) — leave off for on-device use.</string>
+    <string name="feature_settings_desktop_touch_label">Touch input</string>
+    <string name="feature_settings_desktop_touch_relative">Touchpad</string>
+    <string name="feature_settings_desktop_touch_direct">Direct</string>
+    <string name="feature_settings_desktop_touch_help">Touchpad: your finger moves the cursor relatively (precise). Direct: tap where you want to click; drag to drag; long-press for right-click. Applies immediately.</string>
+    <string name="feature_settings_desktop_password_label">VNC password (optional)</string>
+    <string name="feature_settings_desktop_password_help">Empty = no authentication. When set, other apps on this device must authenticate to reach the desktop. Applied on the next desktop start.</string>
+    <string name="feature_settings_desktop_password_generate">Generate a random password</string>
+    <string name="feature_settings_desktop_web_port_label">Web server port</string>
+    <string name="feature_settings_desktop_web_port_help">The port your guest web server listens on (default %1$d is fine for most).</string>
+    <string name="feature_settings_desktop_web_port_error">Enter a port between %1$d and %2$d</string>
+    <string name="feature_settings_desktop_web_command_label">Guest start command</string>
+    <string name="feature_settings_desktop_web_command_help">Runs inside the workspace when the desktop starts — e.g. a webtop service, noVNC, or: python3 -m http.server 8080</string>
+
+    <!-- Workspace Features (§1.109: the SSH toggle's guest-side condition) -->
+    <string name="feature_ssh_unavailable">Will start when the workspace is running</string>
+    <string name="feature_ssh_probing">Checking for an SSH server…</string>
+    <string name="feature_ssh_installing">Installing OpenSSH server via %1$s…</string>
+    <string name="feature_ssh_starting">Starting SSH server…</string>
+    <string name="feature_ssh_running">Listening on port %1$d</string>
+
+    <!-- Workspace Features (§1.111: the Notifications toggle's guest-side condition) -->
+    <string name="feature_notifications_unavailable">Will start when the workspace is running</string>
+    <string name="feature_notifications_active">notify-send is bridged to Android</string>
+    <string name="feature_notifications_blocked">Allow notifications for Linexa to see these</string>
+
+    <!-- Workspace Features (§1.112: the Clipboard toggle's guest-side condition) -->
+    <string name="feature_clipboard_unavailable">Will start when the workspace is running</string>
+    <string name="feature_clipboard_active">Bridged via linexa-clip-copy / linexa-clip-paste</string>
+    <string name="feature_clipboard_active_aliases">Bridged via %1$s</string>
+
+    <!-- Workspace Features (§1.113: the Audio toggle's guest-side condition) -->
+    <string name="feature_audio_unavailable">Will start when the workspace is running</string>
+    <string name="feature_audio_active">Workspace sound plays through Android</string>
+    <string name="feature_audio_active_via">Workspace sound plays through Android (%1$s)</string>
+    <string name="feature_audio_unsupported">This device did not provide an audio output</string>
+    <string name="feature_audio_conflict">This workspace has its own ALSA setup, which was left alone</string>
+
+    <!-- Workspace Features (UI/UX Phase 6: the two features whose backends take a
+         parameter. Audio, Shared Storage and Notifications deliberately have no
+         settings panel — see FeatureSettings' KDoc for the per-feature audit. -->
+    <string name="feature_settings_expand">Show settings</string>
+    <string name="feature_settings_collapse">Hide settings</string>
+    <!-- UI/UX Phase 6: the visible label of the secondary configuration row
+         (below the toggle line, end-anchored chevron). -->
+    <string name="feature_settings_more">Additional settings</string>
+    <string name="feature_settings_ssh_port_label">Listen port</string>
+    <string name="feature_settings_ssh_port_summary">Port %1$d</string>
+    <string name="feature_settings_ssh_port_help">Connect with: ssh -p %1$d root@localhost</string>
+    <!-- Shown when the daemon is already running on a different port than the one
+         just saved: the setting is real, it applies at the next start, and saying
+         so is better than either lying about the live port or killing the user's
+         open connections. -->
+    <string name="feature_settings_ssh_port_pending">Saved. The running server keeps port %1$d until SSH is restarted.</string>
+    <string name="feature_settings_ssh_port_error_number">Enter a port number</string>
+    <string name="feature_settings_ssh_port_error_privileged">Ports below %1$d need privileges Linexa does not have on the host</string>
+    <string name="feature_settings_ssh_port_error_range">The highest port is %1$d</string>
+    <string name="feature_settings_clipboard_aliases_label">Guest commands</string>
+    <string name="feature_settings_clipboard_aliases_help">Extra command names the workspace gets for copy and paste. An alias is skipped if the workspace already has a real tool of that name.</string>
+    <string name="feature_settings_clipboard_all">All %1$d commands</string>
+    <string name="feature_settings_clipboard_none">Only linexa-clip-copy / linexa-clip-paste</string>
+    <string name="feature_settings_clipboard_some">%1$d of %2$d commands</string>
+    <string name="feature_settings_clipboard_kind_copy">copies</string>
+    <string name="feature_settings_clipboard_kind_paste">pastes</string>
+    <string name="feature_settings_clipboard_kind_xclip">copies, pastes with -o</string>
+    <string name="feature_settings_clipboard_kind_xsel">pastes, copies with -i</string>
+
+    <!-- Terminal (§1.102: no generic "Connecting to workspace session" state —
+         the terminal placeholder mirrors the actual TerminalState lifecycle) -->
+    <string name="terminal_session_error">Session error: %1$s</string>
+    <string name="terminal_unavailable">This terminal is not available. It may have been closed, or the workspace may not be running.</string>
+    <!-- §1.191: the SIGKILL (-9) case. A killed process cannot report anything
+         itself, so this is the only explanation the user can get. Copy hedges
+         ("may have") because a guest-side `kill -9` produces the same status. -->
+    <string name="terminal_killed_title">Terminal stopped by Android</string>
+    <string name="terminal_killed_body">This terminal was force-stopped (signal 9). Android may have reclaimed it to free memory, which is more likely when Linexa is in the background. Allowing unrestricted background use helps keep terminals alive.</string>
+    <string name="terminal_killed_action">Battery settings</string>
+    <string name="terminal_killed_action_granted">Review battery settings</string>
+    <string name="terminal_state_starting">Starting</string>
+    <string name="terminal_state_running">Running</string>
+    <string name="terminal_state_stopping">Stopping</string>
+    <string name="terminal_state_stopped">Stopped</string>
+    <string name="terminal_state_error">Error</string>
+    <string name="terminals_empty">No terminals open. Tap + to create one.</string>
+    <string name="terminals_new">New terminal</string>
+    <string name="terminals_creating">Starting…</string>
+    <string name="terminals_close">Close terminal</string>
+    <string name="terminals_overview_title">Recent Sessions</string>
+    <string name="terminals_recent_title">Recent Sessions</string>
+    <string name="terminals_overview_count">%1$d open</string>
+    <string name="terminals_switch_to">Switch to terminal %1$s</string>
+    <string name="terminal_desktop_close">Close terminal desktop</string>
+    <string name="terminal_desktop_subtitle">%1$d windows</string>
+    <string name="terminal_desktop_idle_empty">No terminal windows open</string>
+    <string name="terminal_desktop_idle_minimized">%1$d window minimized</string>
+    <string name="terminal_desktop_idle_body">Restore a minimized terminal or open a new window.</string>
+    <string name="terminal_window_minimized">Minimized</string>
+    <string name="terminal_window_maximized">Maximized</string>
+    <string name="terminal_window_closing">Closing</string>
+    <string name="terminal_window_close">Close window</string>
+    <string name="terminal_window_minimize">Minimize window</string>
+    <string name="terminal_window_maximize">Maximize window</string>
+    <string name="terminal_window_restore">Restore window</string>
+    <string name="terminal_window_close_title">Close terminal window?</string>
+    <string name="terminal_window_close_message">“%1$s” is still running. Closing it ends the process and its output.</string>
+    <string name="terminal_overview_no_output">No output yet</string>
+    <string name="terminal_overview_empty_title">No sessions yet</string>
+    <string name="terminal_overview_empty_body">Open a terminal to see it here.</string>
+    <string name="terminal_overview_prompt">linexa:~$ █</string>
+    <string name="terminal_overview_waiting">Waiting for output…</string>
+    <string name="terminal_overview_active">Active session</string>
+    <string name="terminal_overview_open">Open session</string>
+    <string name="terminal_overview_back">Back to terminal</string>
+    <string name="terminal_overview_new_session">New Session</string>
+    <string name="management_terminal_host_shell">Host shell</string>
+    <string name="management_terminal_connecting">Starting Linexa Terminal…</string>
+
+    <!-- Terminal settings (2026-11 Settings pass): the two app-scoped terminal
+         UI preferences. Recent Sessions has two genuinely different layouts,
+         and the keyboard toolbar is user-configurable. -->
+    <string name="terminal_settings_recent_layout_title">Recent Sessions</string>
+    <string name="terminal_settings_recent_layout_vertical">Vertically · two-column grid</string>
+    <string name="terminal_settings_recent_layout_horizontal">Horizontally · one per page</string>
+    <string name="terminal_settings_toolbar_title">Keyboard toolbar</string>
+    <string name="terminal_settings_toolbar_desc">%1$s · %2$s</string>
+    <string name="terminal_settings_open">Open %1$s</string>
+
+    <string name="terminal_layout_title">Recent Sessions layout</string>
+    <string name="terminal_layout_subtitle">Choose how open sessions are arranged. Applies immediately, everywhere.</string>
+    <string name="terminal_layout_vertical_title">Vertically</string>
+    <string name="terminal_layout_vertical_desc">A two-column grid. Scroll down for more sessions.</string>
+    <string name="terminal_layout_horizontal_title">Horizontally</string>
+    <string name="terminal_layout_horizontal_desc">One large session per page. Swipe sideways to switch.</string>
+    <string name="terminal_layout_selected">%1$s selected</string>
+    <string name="terminal_layout_new_session_note">The New Session action stays at the end of the list in both layouts. Switching layout never restarts a terminal.</string>
+
+    <string name="terminal_toolbar_screen_title">Keyboard toolbar</string>
+    <string name="terminal_toolbar_screen_subtitle">Choose the keys above your keyboard, their order, and how many rows they use.</string>
+    <string name="terminal_toolbar_preview_label">Preview</string>
+    <string name="terminal_toolbar_presets_label">Presets</string>
+    <string name="terminal_toolbar_preset_compact">Compact</string>
+    <string name="terminal_toolbar_preset_navigation">Navigation</string>
+    <string name="terminal_toolbar_preset_developer">Developer</string>
+    <string name="terminal_toolbar_preset_shell">Shell</string>
+    <string name="terminal_toolbar_preset_custom">Custom</string>
+    <string name="terminal_toolbar_preset_hint">Tap a preset to apply it. Editing any preset switches the toolbar to Custom; the presets themselves never change.</string>
+    <string name="terminal_toolbar_rows_label">Rows</string>
+    <string name="terminal_toolbar_row_single">Single Row</string>
+    <string name="terminal_toolbar_row_double">Double Row</string>
+    <string name="terminal_toolbar_row_1">Row 1</string>
+    <string name="terminal_toolbar_row_2">Row 2</string>
+    <string name="terminal_toolbar_custom_label">Custom shortcuts</string>
+    <string name="terminal_toolbar_custom_hint">Reorder with the arrows. The other-row action moves a shortcut between Row 1 and Row 2.</string>
+    <string name="terminal_toolbar_add_label">Add shortcut</string>
+    <string name="terminal_toolbar_add_empty">Every shortcut is already on the toolbar.</string>
+    <string name="terminal_toolbar_empty_row">No shortcuts in this row.</string>
+    <string name="terminal_toolbar_restore">Restore defaults</string>
+    <string name="terminal_toolbar_restored">Toolbar restored to defaults</string>
+    <string name="terminal_toolbar_remove">Remove %1$s</string>
+    <string name="terminal_toolbar_move_earlier">Move %1$s earlier</string>
+    <string name="terminal_toolbar_move_later">Move %1$s later</string>
+    <string name="terminal_toolbar_move_other_row">Move %1$s to the other row</string>
+    <string name="terminal_toolbar_row_full">This row is full. Remove a shortcut first.</string>
+    <string name="terminal_toolbar_single_row_note">Row 2 is hidden while Single Row is selected; its shortcuts are kept.</string>
+
+    <!-- Package Manager -->
+    <string name="pkg_manager_title">Package Manager</string>
+    <string name="pkg_manager_tab_installed">Installed</string>
+    <string name="pkg_manager_tab_store">Store</string>
+    <string name="pkg_manager_search_hint">Search packages…</string>
+    <string name="pkg_manager_search">Search</string>
+    <string name="pkg_manager_refresh">Refresh package lists</string>
+    <string name="pkg_manager_update">Update</string>
+    <string name="pkg_manager_upgrade">Upgrade all</string>
+    <string name="pkg_manager_install">Install</string>
+    <string name="pkg_manager_store_hint">Search the distro\'s repositories to find and install packages.</string>
+    <string name="pkg_manager_empty_installed">No packages installed.</string>
+    <string name="pkg_manager_no_results">No packages match your search.</string>
+    <string name="pkg_manager_dismiss">Dismiss</string>
+    <!-- §1.147 compact card actions. Deliberately terse, uppercase labels to
+         match the reference design; the contentDescription strings above carry
+         the full words for screen readers. -->
+    <string name="pkg_manager_action_del">DEL</string>
+    <string name="pkg_manager_action_up">UP</string>
+    <string name="pkg_manager_action_open">OPEN</string>
+    <string name="pkg_manager_action_install">INSTALL</string>
+    <string name="pkg_manager_remove">Remove</string>
+    <string name="pkg_manager_open_repository">Open project page</string>
+    <string name="pkg_manager_protected">Cannot be removed — required by the system</string>
+    <string name="pkg_manager_update_available">Update to %1$s</string>
+    <!-- §1.147 Installed-tab sorting. -->
+    <string name="pkg_manager_sort">Sort</string>
+    <string name="pkg_manager_sort_name">Name</string>
+    <string name="pkg_manager_sort_updates">Updates</string>
+    <string name="pkg_manager_sort_size">Size</string>
+    <string name="pkg_manager_op_install">Installing</string>
+    <string name="pkg_manager_op_remove">Removing</string>
+    <string name="pkg_manager_op_update">Updating</string>
+    <string name="pkg_manager_op_upgrade">Upgrading all packages</string>
+    <string name="pkg_manager_op_refresh">Refreshing package lists</string>
+    <string name="pkg_manager_unsupported">This workspace\'s package manager is not supported.</string>
+    <string name="pkg_manager_unsupported_none">No supported package manager was found in this workspace.</string>
+
+    <!-- File Manager -->
+    <string name="file_manager_title">File Manager</string>
+    <string name="file_manager_new_folder">New Folder</string>
+    <string name="file_manager_folder_name_hint">Folder name</string>
+    <string name="file_manager_import">Import file</string>
+    <string name="file_manager_delete_title">Delete file?</string>
+    <string name="file_manager_delete_message">Delete \"%1$s\"? This cannot be undone.</string>
+    <string name="file_manager_rename">Rename</string>
+    <!-- §1.115: File Manager copy/move/export + real states -->
+    <string name="file_manager_copy">Copy</string>
+    <string name="file_manager_cut">Move</string>
+    <string name="file_manager_paste">Paste here</string>
+    <string name="file_manager_export">Export…</string>
+    <string name="file_manager_more_actions">More actions</string>
+    <string name="file_manager_empty">This folder is empty.</string>
+    <string name="file_manager_unbound">Waiting for the workspace runtime…</string>
+    <string name="file_manager_device_node">Device node</string>
+
+    <!-- Issue #10 (2026-09-04): single plus entry + bottom action sheet. -->
+    <string name="file_manager_add">Add</string>
+
+    <!-- Issue #9 (2026-09-03): create-file, editor, selection and inspection. -->
+    <string name="file_manager_new_file">New File</string>
+    <string name="file_manager_file_name_hint">File name (e.g. notes.txt)</string>
+    <string name="file_manager_template">Template</string>
+    <string name="file_manager_template_none">Empty file</string>
+    <string name="file_manager_edit">Edit</string>
+    <string name="file_manager_info">Properties</string>
+    <string name="file_manager_select">Select</string>
+    <string name="file_manager_selection_title">%1$d selected</string>
+    <string name="file_manager_selection_cancel">Cancel selection</string>
+    <string name="file_manager_delete_selected">Delete selected</string>
+    <string name="file_manager_editor_save">Save</string>
+    <string name="file_manager_editor_saved">Saved</string>
+    <string name="file_manager_editor_modified">Modified</string>
+    <string name="file_manager_editor_discard_body">Discard unsaved changes?</string>
+    <string name="file_manager_info_path">Path</string>
+    <string name="file_manager_info_type">Type</string>
+    <string name="file_manager_info_size">Size</string>
+    <string name="file_manager_info_permissions">Permissions</string>
+    <string name="file_manager_info_modified">Modified</string>
+    <string name="file_manager_info_target">Links to</string>
+    <string name="common_create">Create</string>
+    <string name="common_refresh">Refresh</string>
+
+    <!-- ── Linexa UI/UX 2026 redesign: unified runtime status labels ────────
+         These power the LinexaRuntimeStatus enum + LinexaRuntimeStatusPresentation
+         mapping used by every status-aware screen (Home, Terminal, Desktop,
+         Environment, Performance, Diagnostics). The label is the user-facing
+         short name of the status; the icon and color live in
+         ui.theme.LinexaRuntimeStatus.kt. -->
+    <string name="linexa_status_not_installed">Not installed</string>
+    <string name="linexa_status_installing">Installing</string>
+    <string name="linexa_status_installed">Installed</string>
+    <string name="linexa_status_starting">Starting</string>
+    <string name="linexa_status_running">Running</string>
+    <string name="linexa_status_stopping">Stopping</string>
+    <string name="linexa_status_stopped">Stopped</string>
+    <string name="linexa_status_error">Error</string>
+    <string name="linexa_status_degraded">Degraded</string>
+    <string name="linexa_status_disconnected">Disconnected</string>
+
+    <!-- ── Linexa UI/UX 2026 redesign: navigation destinations ───────────────
+         The new adaptive bottom-bar / navigation-rail labels. Five
+         destinations: Home, Terminal, Performance, Diagnostics, Settings. -->
+    <string name="nav_home">Home</string>
+    <string name="nav_terminal">Terminal</string>
+    <string name="nav_performance">Performance</string>
+    <string name="nav_diagnostics">Diagnostics</string>
+    <string name="nav_settings">Settings</string>
+
+    <!-- ── Linexa UI/UX 2026 redesign: Home command center ─────────────────── -->
+    <string name="home_runtime_status">Runtime status</string>
+    <string name="home_quick_actions">Quick actions</string>
+    <string name="home_resources">Resources</string>
+    <string name="home_subsystems">Runtime subsystems</string>
+    <string name="home_recent_activity">Recent activity</string>
+    <string name="home_action_terminal">Open Terminal</string>
+    <string name="home_action_desktop">Open Desktop</string>
+    <string name="home_action_restart">Restart</string>
+    <string name="home_action_stop">Stop</string>
+    <string name="home_action_start">Start</string>
+    <string name="home_resource_cpu">CPU</string>
+    <string name="home_resource_ram">Memory</string>
+    <string name="home_resource_disk">Disk</string>
+    <string name="home_resource_net">Network</string>
+    <string name="home_subsystem_container">Container</string>
+    <string name="home_subsystem_terminal">Terminal</string>
+    <string name="home_subsystem_desktop">Desktop</string>
+    <string name="home_state_mounted">Mounted</string>
+    <string name="home_state_not_mounted">Not mounted</string>
+    <string name="home_state_connected">Connected</string>
+    <string name="home_state_disconnected">Disconnected</string>
+    <string name="home_state_running">Running</string>
+    <string name="home_state_stopped">Stopped</string>
+    <string name="home_no_recent_activity">No recent activity</string>
+
+    <!-- ── Linexa UI/UX 2026 redesign: Performance dashboard ───────────────── -->
+    <string name="perf_overall_health">Overall health</string>
+    <string name="perf_cpu">CPU</string>
+    <string name="perf_cpu_per_core">Per-core usage</string>
+    <string name="perf_cpu_average">Average</string>
+    <string name="perf_memory">Memory</string>
+    <string name="perf_memory_used">Used</string>
+    <string name="perf_memory_available">Available</string>
+    <string name="perf_memory_swap">Swap</string>
+    <string name="perf_storage">Storage</string>
+    <string name="perf_storage_used">Used</string>
+    <string name="perf_storage_free">Free</string>
+    <string name="perf_storage_io">I/O activity</string>
+    <string name="perf_network">Network</string>
+    <string name="perf_network_download">Download</string>
+    <string name="perf_network_upload">Upload</string>
+    <string name="perf_runtime">Runtime</string>
+    <string name="perf_runtime_uptime">Uptime</string>
+    <string name="perf_runtime_sessions">Sessions</string>
+    <string name="perf_runtime_processes">Processes</string>
+    <string name="perf_runtime_services">Services</string>
+
+    <!-- Host device identity (Android-authoritative, 2026-08-26 host-info track) -->
+    <string name="perf_device">Host device</string>
+    <string name="perf_device_android">Android</string>
+    <string name="perf_device_kernel_host">Kernel (host)</string>
+    <string name="perf_device_model">Device</string>
+    <string name="perf_device_arch">Architecture</string>
+    <string name="perf_device_battery">Battery</string>
+    <string name="perf_device_thermal">Thermal</string>
+    <string name="perf_device_network">Network type</string>
+    <!-- UI/UX Phase 3: settings_performance_row_title/desc removed with the
+         Performance Dashboard settings row and destination. -->
+
+    <!-- ── Device & System Information screen (host-info UI track) ──────────── -->
+    <!-- Navigation / chrome -->
+    <string name="device_info_title">Device &amp; System</string>
+    <string name="device_info_subtitle">Android host facts via the Linexa Host Info provider</string>
+    <string name="device_info_row_title">Device &amp; system information</string>
+    <string name="device_info_row_desc">Android-host identity, CPU, memory, storage, battery, thermal and network — the authoritative source behind every workspace</string>
+    <string name="device_info_refresh">Refresh now</string>
+    <string name="device_info_updated_at">Updated %1$s</string>
+    <string name="device_info_updated_never">Not collected yet…</string>
+    <string name="device_info_content_desc_summary">Device summary</string>
+    <string name="device_info_expand_details">Show details</string>
+    <string name="device_info_collapse_details">Hide details</string>
+    <!-- Summary header -->
+    <string name="device_info_summary_model">Model</string>
+    <string name="device_info_summary_android">Android</string>
+    <string name="device_info_summary_cpu">CPU</string>
+    <string name="device_info_summary_ram">RAM</string>
+    <string name="device_info_summary_storage">Storage</string>
+    <string name="device_info_summary_battery">Battery</string>
+    <string name="device_info_summary_uptime">Uptime</string>
+    <!-- Section titles -->
+    <string name="device_section_device">Device</string>
+    <string name="device_section_android">Android</string>
+    <string name="device_section_kernel_host">Kernel · Android host</string>
+    <string name="device_section_runtime_linexa">Linexa Linux environment</string>
+    <string name="device_section_cpu">CPU</string>
+    <string name="device_section_cpu_cores_detail">Per-core detail</string>
+    <string name="device_section_memory_linux">Memory · Linux view (what guests see)</string>
+    <string name="device_section_memory_android">Memory · Android view</string>
+    <string name="device_section_swap_zram">Swap / zRAM</string>
+    <string name="device_section_storage">Storage · Android host volumes</string>
+    <string name="device_section_storage_other">Other mounted volumes</string>
+    <string name="device_section_battery">Battery</string>
+    <string name="device_section_thermal">Thermal</string>
+    <string name="device_section_network">Network</string>
+    <string name="device_section_self_footprint">Linexa process footprint</string>
+    <string name="device_section_capabilities">Capabilities &amp; availability</string>
+    <string name="device_section_footer_rootfs_note">RootFS storage and live workspace metrics are intentionally NOT shown here — they belong to each workspace\'s own surfaces. This screen reports the Android host only.</string>
+    <!-- Row labels -->
+    <string name="device_row_manufacturer">Manufacturer</string>
+    <string name="device_row_brand">Brand</string>
+    <string name="device_row_model">Model</string>
+    <string name="device_row_device_name">Device name</string>
+    <string name="device_row_codename">Codename</string>
+    <string name="device_row_product">Product</string>
+    <string name="device_row_board">Board</string>
+    <string name="device_row_hardware">Hardware</string>
+    <string name="device_row_bootloader">Bootloader</string>
+    <string name="device_row_android_version">Version</string>
+    <string name="device_row_sdk">SDK level</string>
+    <string name="device_row_security_patch">Security patch</string>
+    <string name="device_row_build_id">Build ID</string>
+    <string name="device_row_incremental">Build incremental</string>
+    <string name="device_row_abi_list">Supported ABIs</string>
+    <string name="device_row_fingerprint">Build fingerprint</string>
+    <string name="device_row_kernel_release">Kernel release</string>
+    <string name="device_row_kernel_version">Kernel build string</string>
+    <string name="device_row_kernel_arch">Machine architecture</string>
+    <string name="device_row_selinux">SELinux</string>
+    <string name="device_row_uptime">Uptime</string>
+    <string name="device_row_deep_sleep">Deep sleep total</string>
+    <string name="device_row_boot_time">Boot time (estimated)</string>
+    <string name="device_row_cores_online">Cores online / configured</string>
+    <string name="device_row_cpu_architecture">Architecture</string>
+    <string name="device_row_cpu_abis">ABIs</string>
+    <string name="device_row_cpu_model">Model name</string>
+    <string name="device_row_cpu_implementation">Implementer / part</string>
+    <string name="device_row_freq_min">Min frequency</string>
+    <string name="device_row_freq_max">Max frequency</string>
+    <string name="device_row_freq_current">Current frequency</string>
+    <string name="device_row_load_avg">Load average</string>
+    <string name="device_row_cpu_temp">CPU temperature</string>
+    <string name="device_section_gpu">GPU</string>
+    <string name="device_row_gpu_model">GPU model</string>
+    <string name="device_row_gpu_vendor">GPU vendor</string>
+    <string name="device_row_gpu_freq_current">Current clock</string>
+    <string name="device_row_gpu_freq_max">Max clock</string>
+    <string name="device_row_gpu_busy">Utilization</string>
+    <string name="device_row_gpu_temp">GPU temperature</string>
+    <string name="device_row_gpu_source">Detected via</string>
+
+    <!-- Distro catalog: 2026-09-01 install gate (Debian/Ubuntu only) -->
+    <string name="home_distro_locked">Locked</string>
+    <string name="device_row_mem_total">Total RAM</string>
+    <string name="device_row_mem_used">Used</string>
+    <string name="device_row_mem_available">Available</string>
+    <string name="device_row_mem_free">Free</string>
+    <string name="device_row_mem_buffers_cached">Buffers / cached</string>
+    <string name="device_row_am_total">Total RAM</string>
+    <string name="device_row_am_available">Available to apps</string>
+    <string name="device_row_am_threshold">Low-memory kill threshold</string>
+    <string name="device_row_memory_class">App heap class</string>
+    <string name="device_row_swap_total">Swap total</string>
+    <string name="device_row_swap_used">Swap used</string>
+    <string name="device_row_swap_free">Swap free</string>
+    <string name="device_row_zram">zRAM device</string>
+    <string name="device_row_primary_path">Primary volume path</string>
+    <string name="device_row_battery_source">Power source</string>
+    <string name="device_row_battery_health">Health</string>
+    <string name="device_row_battery_temperature">Temperature</string>
+    <string name="device_row_battery_voltage">Voltage</string>
+    <string name="device_row_battery_current">Current now</string>
+    <string name="device_row_charge_counter">Remaining charge</string>
+    <string name="device_row_capacity_design">Design capacity</string>
+    <string name="device_row_power_save">Power save mode</string>
+    <string name="device_row_thermal_headroom">Thermal headroom</string>
+    <string name="device_row_net_validated">Internet reachability</string>
+    <string name="device_row_net_interface">Interface</string>
+    <string name="device_row_net_downlink">Link bandwidth estimate</string>
+    <string name="device_row_private_dns">Private DNS</string>
+    <string name="device_row_process_pid">This app PID</string>
+    <string name="device_row_process_rss">Resident set (RSS)</string>
+    <string name="device_row_process_pss">Proportional set (PSS)</string>
+    <string name="device_row_core_label">Core %1$d</string>
+    <string name="device_row_core_offline">offline</string>
+    <!-- Honest unavailability notes -->
+    <string name="device_note_no_value">Unavailable</string>
+    <string name="device_memory_pressure_low">The system reports low memory right now</string>
+    <string name="availability_category_memory">Memory</string>
+    <string name="device_note_unavailable_suffix">%1$s · unavailable: %2$s</string>
+    <string name="device_reason_platform_withheld">the platform withholds this on Android</string>
+    <string name="device_thermal_sensor_caption">Android exposes thermal SEVERITY to apps, not per-zone sensor values — CPU/GPU/skin temperatures are hardware-withheld. Battery temperature below is the one real reading.</string>
+    <string name="device_current_sign_hint">Positive current usually means discharging; OEM sensors vary.</string>
+    <string name="device_bandwidth_estimate_hint">Modem-reported radio estimate, not a throughput measurement.</string>
+    <!-- Availability statuses + reason -->
+    <string name="availability_available">Available</string>
+    <string name="availability_unavailable">Unavailable</string>
+    <string name="availability_permission_denied">Permission denied</string>
+    <string name="availability_unsupported">Unsupported</string>
+    <string name="availability_restricted">Restricted</string>
+    <string name="availability_error">Error</string>
+    <string name="availability_legend">Values marked Restricted are blocked by Android security policy for any app — no permission prompt can unlock them. Unavailable means the OS gave no value for that field this cycle. Everything else was genuinely measured by the Host Info provider at the timestamp shown.</string>
+    <string name="availability_last_collected">%1$s collected at %2$s</string>
+
+    <!-- ── Linexa UI/UX 2026 redesign: Processes screen ────────────────────── -->
+    <string name="processes_title">Processes</string>
+    <string name="processes_pid">PID</string>
+    <string name="processes_cpu">CPU</string>
+    <string name="processes_memory">Memory</string>
+    <string name="processes_state">State</string>
+    <string name="processes_command">Command</string>
+    <string name="processes_terminate">Terminate</string>
+    <string name="processes_force_terminate">Force terminate</string>
+    <string name="processes_terminate_confirm">Terminate this process?</string>
+    <string name="processes_force_terminate_confirm">Force-terminate this process? The runtime may be left in an inconsistent state.</string>
+    <string name="processes_empty">No processes are running.</string>
+
+    <!-- ── Linexa UI/UX 2026 redesign: Storage screen ───────────────────────── -->
+    <string name="storage_title">Storage</string>
+    <string name="storage_total">Total storage</string>
+    <string name="storage_used">Used storage</string>
+    <string name="storage_available">Available</string>
+    <string name="storage_rootfs">Root filesystem</string>
+    <string name="storage_runtime">Runtime storage</string>
+    <string name="storage_mounted_paths">Mounted paths</string>
+    <string name="storage_shared">Shared storage</string>
+    <string name="storage_external">External storage</string>
+
+    <!-- ── Linexa UI/UX 2026 redesign: Empty / error states ────────────────── -->
+    <string name="state_loading">Loading…</string>
+    <string name="state_empty_default">Nothing to show yet.</string>
+    <string name="state_error_default">Something went wrong.</string>
+    <string name="state_disconnected">Linexa runtime is not connected.</string>
+    <string name="state_action_retry">Retry</string>
+    <string name="state_action_view_diagnostics">View diagnostics</string>
+
+    <!-- ── Linexa UI/UX 2026 redesign: About / project overview ────────────── -->
+    <string name="about_tagline">Android Linux Runtime &amp; Container Environment</string>
+    <string name="about_components">Components</string>
+    <string name="about_runtime_status">Runtime status</string>
+    <string name="about_environment_info">Environment information</string>
+    <string name="about_architecture">Architecture</string>
+    <string name="about_kernel">Kernel</string>
+    <string name="about_distribution">Distribution</string>
+    <string name="about_runtime_version">Runtime version</string>
+    <string name="about_app_version">App version</string>
+    <string name="about_storage_info">Storage information</string>
+    <string name="about_diagnostics">Diagnostics</string>
+    <string name="about_credits">Open source credits</string>
+
+    <!-- ── Linexa UI/UX 2026 redesign: Settings groups ────────────────────── -->
+    <string name="settings_group_appearance">Appearance</string>
+    <string name="settings_group_terminal">Terminal</string>
+    <string name="settings_group_runtime">Runtime</string>
+    <string name="settings_group_linux_env">Linux environment</string>
+    <string name="settings_group_desktop">Desktop</string>
+    <string name="settings_group_performance">Performance</string>
+    <string name="settings_group_storage">Storage</string>
+    <string name="settings_group_notifications">Notifications</string>
+    <string name="settings_group_advanced">Advanced</string>
+    <string name="settings_group_diagnostics">Diagnostics</string>
+    <string name="settings_group_about">About Linexa</string>
+
+    <!-- Core Runtime & Desktop Transformation additions -->
+    <!-- Desktop Backends (X11 preferred / VNC fallback) -->
+    <string name="desktop_x11_failed">X11 desktop failed: %1$s</string>
+    <string name="desktop_x11_fallback_vnc">Start with VNC instead</string>
+    <string name="desktop_x11_socket_timeout">The X11 socket (%1$s) never appeared within the timeout</string>
+    <string name="feature_settings_desktop_backend_label">GUI backend</string>
+    <string name="feature_settings_desktop_backend_x11">X11</string>
+    <string name="feature_settings_desktop_backend_vnc">VNC</string>
+    <string name="feature_settings_desktop_backend_help">X11 is the preferred local backend (X-socket readiness plus an X11 environment for the whole workspace). VNC is the compatibility fallback; if X11 fails you can always start with it.</string>
+    <string name="feature_settings_desktop_preset_label">Desktop preset (installed when no desktop is found)</string>
+    <string name="feature_settings_desktop_preset_none">None</string>
+    <string name="feature_settings_desktop_preset_xfce">XFCE</string>
+    <string name="feature_settings_desktop_preset_lxqt">LXQt</string>
+    <string name="feature_settings_desktop_preset_openbox">Openbox</string>
+    <string name="feature_settings_desktop_preset_help">When the workspace has no desktop session, the selected preset is installed through the guest\'s own package manager (idempotent, resumable by starting again).</string>
+    <string name="desktop_preset_no_package_manager">No supported package manager was found in the guest — cannot install the desktop preset</string>
+    <string name="desktop_preset_install_failed">Desktop preset %1$s install failed: %2$s</string>
+    <!-- Session persistence -->
+    <string name="settings_persistence_label">Persistent terminal sessions</string>
+    <string name="settings_persistence_help">Run terminals wrapped in the workspace\'s tmux backend so a closed terminal can be reopened with its state intact while the workspace is running. Does not survive an app process death or an Android kill.</string>
+    <!-- Workspace network settings -->
+    <string name="settings_network_title">Network</string>
+    <string name="settings_network_dns_mode_label">Custom DNS</string>
+    <string name="settings_network_dns_disabled">Disabled</string>
+    <string name="settings_network_dns_enabled">Enabled</string>
+    <string name="settings_network_dns_servers_label">DNS servers (comma separated, IP addresses)</string>
+    <string name="settings_network_dns_servers_error">Enter at least one valid IP address (max %1$d)</string>
+    <string name="settings_network_dns_help">Disabled (default): the workspace uses the phone\'s normal network DNS automatically — servers below are ignored. Enabled: these servers are applied to this workspace every time it starts.</string>
+    <string name="settings_network_mirror_mode_label">Package mirror</string>
+    <string name="settings_network_mirror_default">Default</string>
+    <string name="settings_network_mirror_custom">Custom</string>
+    <string name="settings_network_mirror_url_label">Mirror URL (https://…)</string>
+    <string name="settings_network_mirror_help">Switches the guest\'s package repositories to this mirror on the next workspace start (per package manager, with backup).</string>
+    <string name="settings_network_rootfs_mirror_label">RootFS download mirror</string>
+    <string name="settings_network_rootfs_mirror_help">Used instead of the catalog URL when this workspace is (re)installed. Checksums still come from the official source and are still enforced.</string>
+    <string name="settings_network_apply_note">Changes take effect at the next workspace start.</string>
+    <string name="settings_network_invalid_mirror">Enter a valid http(s) mirror URL</string>
+
+    <!-- ═══ HAVEN rebuild (concept-2-haven) — new surfaces ═══ -->
+    <string name="haven_workspaces_title">Workspaces</string>
+    <string name="haven_settings_title">Settings</string>
+    <string name="haven_workspace_options">Workspace options</string>
+    <string name="haven_whats_new">What\'s New</string>
+    <string name="haven_dismiss">Dismiss</string>
+    <string name="haven_got_it">Got it</string>
+    <string name="haven_view_all">View all</string>
+    <string name="haven_import_note">The archive is verified and staged before anything is written.</string>
+    <string name="haven_catalog_from">From the distribution catalog</string>
+    <string name="haven_rename_hint">Pick a short, lowercase name.</string>
+    <string name="haven_status_running">Running</string>
+    <string name="haven_status_starting">Starting</string>
+    <string name="haven_status_ready">Ready</string>
+    <string name="haven_status_error">Error</string>
+    <string name="haven_status_installing">Installing</string>
+    <string name="haven_status_repairing">Repairing</string>
+    <string name="haven_status_stopping">Stopping</string>
+    <string name="haven_status_created">Created</string>
+    <string name="haven_close_terminal">Close terminal</string>
+    <string name="haven_open_terminal">Terminal</string>
+    <string name="haven_open_desktop">Desktop</string>
+    <string name="haven_segment_commands">Commands</string>
+    <string name="haven_segment_features">Features</string>
+    <string name="haven_segment_settings">Settings</string>
+    <string name="haven_files">Files</string>
+    <string name="haven_packages">Packages</string>
+    <string name="haven_root_shell">Root shell</string>
+    <string name="haven_commands_title">Commands</string>
+    <string name="haven_command_opening">Opening a new terminal…</string>
+    <string name="haven_command_sent">Sent to terminal</string>
+    <string name="haven_ws_debug">Debug</string>
+    <string name="haven_ws_debug_desc">Collect runtime traces and app logs</string>
+    <string name="haven_ws_trace_empty">No trace captured yet. Debug info is recorded while the workspace runs.</string>
+    <string name="haven_ws_network">Network</string>
+    <string name="haven_ws_danger">Danger Zone</string>
+    <string name="haven_ws_delete">Delete Workspace</string>
+    <string name="haven_ws_delete_desc">Permanently remove this workspace</string>
+
+    <!-- ── HAVEN rebuild: Insights screens (Performance + Device & System) ──── -->
+    <string name="insights_eyebrow">Insights</string>
+    <string name="perf_title">Performance</string>
+    <string name="device_section_memory_swap">Memory &amp; Swap</string>
+    <string name="device_section_storage_battery_thermal">Storage · Battery · Thermal</string>
+    <string name="device_row_mem_view_linux">Linux view</string>
+    <string name="device_row_mem_view_android">Android view</string>
+    <string name="device_row_storage_internal">Internal</string>
+    <string name="device_row_cpu_usage">Usage</string>
+    <string name="device_network_metered">metered</string>
+    <string name="device_network_unmetered">unmetered</string>
+    <string name="device_capability_note">Values marked Restricted are blocked by Android security policy for any app — Linexa reports them rather than guessing.</string>
+
+    <!-- ── App-grid redesign: the Commands launcher grid ─────────────────────
+         The workspace Commands segment rendered as a three-column app grid
+         (reference-launcher structure on Haven surfaces). -->
+    <string name="grid_search_hint">Search %1$d commands</string>
+    <string name="grid_chip_all">All</string>
+    <string name="grid_chip_favorites">Favorites (%1$d)</string>
+    <string name="grid_pinned_section">Pinned</string>
+    <string name="grid_one_command">1 command</string>
+    <string name="grid_command_count">%1$d commands</string>
+    <string name="grid_search_empty">Nothing matches “%1$s”</string>
+    <string name="grid_favorites_empty">No favorites yet — long-press a command and choose Add to favorites.</string>
+    <string name="grid_empty_catalog">This workspace declares no commands.</string>
+    <string name="grid_badge_pinned">Pinned</string>
+    <string name="grid_badge_favorite">Favorite</string>
+    <string name="grid_menu_run">Run</string>
+    <string name="grid_menu_pin">Pin to top</string>
+    <string name="grid_menu_unpin">Unpin</string>
+    <string name="grid_menu_favorite">Add to favorites</string>
+    <string name="grid_menu_unfavorite">Remove from favorites</string>
+    <string name="grid_menu_edit">Edit command</string>
+    <string name="grid_menu_delete">Delete</string>
+
+    <!-- ── App-grid redesign: the File Manager's storage hero card + places ──
+         Real values only: workspace usage from the rootfs walk, free space
+         from the volume statfs. -->
+    <string name="fm_storage_title">Workspace storage</string>
+    <string name="fm_storage_used_of_free">%1$s used · %2$s free</string>
+    <string name="fm_storage_used_only">%1$s used</string>
+    <string name="fm_storage_caption">Rootfs, config and caches — what deleting this workspace reclaims</string>
+    <string name="fm_places_title">Places</string>
+    <string name="fm_place_root">Filesystem</string>
+    <string name="fm_place_root_desc">/ — the whole workspace tree</string>
+    <string name="fm_place_home">Home</string>
+    <string name="fm_place_home_desc">Your Workspace home directory</string>
+    <string name="fm_place_root_home">Root Home</string>
+    <string name="fm_place_tmp">Temporary</string>
+    <string name="fm_place_tmp_desc">/tmp — cleared on restart</string>
+    <string name="fm_place_etc">Configuration</string>
+    <string name="fm_place_etc_desc">/etc — system settings</string>
+    <string name="fm_place_opt">Add-on software</string>
+    <string name="fm_place_opt_desc">/opt — installed apps</string>
+    <string name="fm_place_usr">System files</string>
+    <string name="fm_place_usr_desc">/usr — programs and resources</string>
+
+    <!-- ── App-grid redesign: the Sessions task manager ──────────────────────
+         The terminal session overview gains the reference's task-manager
+         hero card (CPU/Memory bars + process list). All values workspace-
+         scoped and /proc-real, or an explicit dash. -->
+    <string name="tm_card_title">Task manager</string>
+    <string name="tm_close_all">Close all</string>
+    <string name="tm_close_all_confirm_title">Close all terminals?</string>
+    <string name="tm_close_all_confirm_message">%1$d open session(s) will end. Running commands stop with them.</string>
+    <string name="tm_cpu_label">CPU</string>
+    <string name="tm_memory_label">Memory</string>
+    <string name="tm_cpu_cores">%1$d cores</string>
+    <string name="tm_no_processes">No process data right now</string>
+    <string name="tm_process_kill">End process</string>
+    <string name="tm_process_root_locked">This is the workspace’s own process — close the session to end it</string>
+
+    <!-- ── App Launcher redesign: the launcher grid ──────────────────────── -->
+    <string name="launcher_search_hint">Search %1$d apps</string>
+    <string name="launcher_empty">This workspace declares no applications.</string>
+    <string name="launcher_status_installed">Installed</string>
+    <string name="launcher_status_not_installed">Not installed</string>
+    <string name="launcher_status_unknown">Unknown state</string>
+    <string name="launcher_status_installing">Installing…</string>
+    <string name="launcher_status_removing">Removing…</string>
+    <string name="launcher_status_verifying">Verifying…</string>
+    <string name="launcher_status_failed">Install failed</string>
+    <string name="launcher_status_cancelled">Cancelled</string>
+    <string name="launcher_install_title">Install %1$s?</string>
+    <string name="launcher_install_message">%1$s is not installed in this workspace. Would you like to install it?</string>
+    <string name="launcher_install_action">Install</string>
+    <string name="launcher_uninstall_title">Uninstall %1$s?</string>
+    <string name="launcher_uninstall_message">%1$s and its packages will be removed from this workspace.</string>
+    <string name="launcher_uninstall_action">Uninstall</string>
+    <string name="launcher_menu_launch">Launch</string>
+    <string name="launcher_menu_home_screen">Add to home screen</string>
+    <string name="launcher_menu_edit_command">Edit command</string>
+    <string name="launcher_menu_uninstall">Uninstall</string>
+    <string name="launcher_edit_command_title">Edit %1$s command</string>
+    <string name="launcher_edit_command_hint">Command to run when tapped</string>
+    <string name="launcher_phase_queued">%1$s — queued</string>
+    <string name="launcher_phase_installing">Installing %1$s…</string>
+    <string name="launcher_phase_verifying">Verifying %1$s…</string>
+    <string name="launcher_phase_removing">Removing %1$s…</string>
+    <string name="launcher_phase_installed">%1$s installed</string>
+    <string name="launcher_phase_removed">%1$s removed</string>
+    <string name="launcher_phase_failed">%1$s — failed</string>
+    <string name="launcher_phase_cancelled">%1$s — cancelled</string>
+    <string name="launcher_dismiss_indicator">Dismiss status</string>
+    <string name="launcher_sheet_install_button">Install %1$s</string>
+    <string name="launcher_sheet_open_button">Open %1$s</string>
+    <string name="launcher_sheet_hint">Installs in the background. You can close this sheet; progress also shows at the top of Apps.</string>
+    <string name="launcher_sheet_checking">Checking install status…</string>
+    <string name="launcher_sheet_failed">The operation didn\'t finish. You can try again.</string>
+    <string name="launcher_sheet_cancelled">The operation was cancelled before it started. You can try again.</string>
+    <string name="launcher_segment_apps">Apps</string>
+
+    <!-- ── Task Manager screen (resource monitor redesign) ───────────────── -->
+    <string name="tm_screen_title">Task manager</string>
+    <string name="tm_device_section">Device</string>
+    <string name="tm_app_section">Linexa app</string>
+    <string name="tm_workspace_section">Workspace</string>
+    <string name="tm_storage_section">Storage</string>
+    <string name="tm_processes_section">Workspace processes</string>
+    <string name="tm_open_task_manager">Open task manager</string>
+    <string name="tm_total_memory">Total RAM</string>
+    <string name="tm_available_memory">Available</string>
+    <string name="tm_app_memory">App memory (PSS)</string>
+    <string name="tm_app_threads">%1$d threads</string>
+    <string name="tm_app_threads_unavailable">Thread detail unavailable on this device.</string>
+    <string name="tm_app_busiest_thread">Busiest thread: %1$s (%2$s)</string>
+    <string name="tm_workspace_memory">Workspace memory</string>
+    <string name="tm_overall_cpu">Overall CPU</string>
+    <string name="tm_app_cpu">Linexa CPU</string>
+    <string name="tm_workspace_cpu">Workspace CPU</string>
+    <string name="tm_workspace_storage_used">Workspace storage used</string>
+    <string name="tm_process_parent">Parent %1$d</string>
+    <string name="tm_end_task">End task</string>
+    <string name="tm_end_confirm_title">End %1$s?</string>
+    <string name="tm_end_confirm_message">The process %1$s (PID %2$d) will be terminated. Unsaved work in it is lost.</string>
+    <string name="tm_end_failed">Could not end %1$s: %2$s</string>
+    <string name="tm_refresh">Refresh</string>
+    <string name="tm_search_processes">Search processes</string>
+    <string name="tm_no_match">No process matches the filter.</string>
+    <string name="tm_root_protected">Protected — the workspace root process</string>
+
+    <!-- ── Workspace segment tabs ─────────────────────────────────────────
+         2026-11 pass: the second tab (the old Sessions tab) is named
+         Activity everywhere the user sees it; its inner section header
+         remains `activity_section_sessions` ("Terminal sessions").
+    -->
+    <string name="haven_segment_sessions">Activity</string>
+    <string name="sessions_count">%1$d open</string>
+    <string name="sessions_search">Search sessions</string>
+    <string name="sessions_filter_all">All</string>
+    <string name="sessions_filter_running">Running</string>
+    <string name="sessions_filter_ended">Ended</string>
+    <string name="sessions_sort_newest">Newest</string>
+    <string name="sessions_sort_oldest">Oldest</string>
+    <string name="sessions_sort_name">Name</string>
+    <string name="sessions_empty_title">No active sessions</string>
+    <string name="sessions_empty_body">Start a terminal to run commands in this workspace.</string>
+    <string name="sessions_empty_stopped">Start the workspace to open a terminal.</string>
+    <string name="sessions_new_terminal">New terminal</string>
+    <string name="sessions_open">Open</string>
+    <string name="sessions_end">End</string>
+    <string name="sessions_restart">Restart</string>
+    <string name="sessions_view_details">View details</string>
+    <string name="sessions_menu">Session actions</string>
+    <string name="sessions_ending">Ending…</string>
+    <string name="sessions_restarting">Restarting…</string>
+    <string name="sessions_end_confirm_title">End %1$s?</string>
+    <string name="sessions_end_confirm_body">Running commands in this session stop. If it is the last session, a replacement terminal opens.</string>
+    <string name="sessions_restart_confirm_title">Restart %1$s?</string>
+    <string name="sessions_restart_confirm_body">A new terminal opens and the current session ends. Unsaved work in it is lost.</string>
+    <string name="sessions_details_title">Session %1$s</string>
+    <string name="sessions_details_pid">PID</string>
+    <string name="sessions_details_started">Started</string>
+    <string name="sessions_details_uptime">Uptime</string>
+    <string name="sessions_details_processes">Processes</string>
+    <string name="sessions_details_status">Status</string>
+    <string name="sessions_details_cpu">CPU</string>
+    <string name="sessions_details_ram">RAM</string>
+    <string name="sessions_resources">Resources</string>
+    <string name="sessions_processes_count">%1$d processes</string>
+    <string name="sessions_kind_terminal">Terminal</string>
+    <string name="sessions_kind_shell">Shell</string>
+    <string name="sessions_kind_claude">Claude Code</string>
+    <string name="sessions_kind_python">Python</string>
+    <string name="sessions_kind_node">Node.js</string>
+    <string name="sessions_kind_git">Git</string>
+    <string name="sessions_kind_package">Package manager</string>
+    <string name="sessions_process_protected">Protected — end the session to stop this process</string>
+    <string name="sessions_process_ended">%1$s ended.</string>
+    <string name="sessions_process_end_failed">Could not end %1$s: %2$s</string>
+    <string name="sessions_process_signal_failed">signal was not delivered</string>
+    <string name="sessions_process_still_running">process is still running</string>
+    <string name="sessions_open_failed">Could not open terminal: %1$s</string>
+    <string name="sessions_end_failed">Could not end session: %1$s</string>
+    <string name="sessions_end_not_verified">Session close was requested but the terminal is still present.</string>
+    <string name="sessions_end_replaced">Session ended. A replacement terminal (%1$s) opened.</string>
+    <string name="sessions_end_ok">Session %1$s ended.</string>
+    <string name="sessions_restart_failed">Could not restart session: %1$s</string>
+    <string name="sessions_restart_ok">Session %1$s restarted as %2$s.</string>
+    <string name="sessions_restart_not_verified">The old session ended, but the new terminal could not be verified.</string>
+
+    <!-- ── File Manager: Android storage section ─────────────────────────── -->
+    <string name="fm_android_title">Phone storage</string>
+    <string name="fm_android_caption">Android shared storage — %1$s</string>
+    <string name="fm_android_access_hint">Grant All files access in Settings to browse Android storage here.</string>
+    <string name="fm_dir_downloads">Downloads</string>
+    <string name="fm_dir_movies">Movies</string>
+    <string name="fm_dir_music">Music</string>
+    <string name="fm_dir_pictures">Pictures</string>
+    <string name="fm_dir_documents">Documents</string>
+    <string name="fm_dir_dcim">Camera (DCIM)</string>
+    <string name="fm_android_grant">Grant access</string>
+    <string name="fm_linux_title">Linux workspace</string>
+    <string name="fm_collapse">Collapse</string>
+    <string name="fm_expand">Expand</string>
+
+    <!-- Activity tab / Sessions redesign: resource scopes -->
+    <string name="activity_section_resources">Resources</string>
+    <string name="activity_section_processes">Host processes</string>
+    <string name="activity_section_sessions">Terminal sessions</string>
+    <string name="activity_section_recent">Recent activity</string>
+    <string name="activity_host_readable">%1$d readable</string>
+    <string name="activity_host_scope_complete">All %1$d readable host processes. Android still withholds pids this app may not inspect.</string>
+    <string name="activity_host_scope_limited">Showing %1$d readable host processes; %2$d pids could not be read. Android hides most other apps from unprivileged /proc access, so this is not the whole device.</string>
+    <string name="activity_host_uid">UID %1$d</string>
+    <string name="activity_host_threads">%1$d threads</string>
+    <string name="activity_host_core">last CPU %1$d</string>
+    <string name="activity_host_self">Linexa (this process)</string>
+    <string name="activity_host_protected">Protected workspace process</string>
+    <string name="activity_host_not_signalable">Not signalable — another UID or the Linexa app itself</string>
+    <string name="activity_device_title">Device</string>
+    <string name="activity_device_caption">Whole phone</string>
+    <string name="activity_app_title">Linexa app</string>
+    <string name="activity_app_caption">Linexa process only</string>
+    <string name="activity_workspace_caption">Monitored workspace</string>
+    <string name="activity_cpu">CPU</string>
+    <string name="activity_ram">RAM</string>
+    <string name="activity_cores">%1$d cores</string>
+    <string name="activity_measuring">Measuring…</string>
+    <string name="activity_of_device_cpu">of device CPU</string>
+    <string name="activity_of_device_ram">%1$s of device RAM</string>
+    <string name="activity_ram_of">of %1$s</string>
+    <string name="activity_ram_upper_bound">Approximate (upper bound)</string>
+    <string name="activity_cpu_device_unavailable">Not exposed by this Android version</string>
+    <string name="activity_cpu_unavailable">Unavailable</string>
+    <string name="activity_workspace_unreadable">Workspace processes not readable</string>
+    <string name="activity_pressure_normal">Memory normal</string>
+    <string name="activity_pressure_high">Memory high</string>
+    <string name="activity_pressure_critical">Memory critical</string>
+    <string name="activity_status_running">Running</string>
+    <string name="activity_status_starting">Starting</string>
+    <string name="activity_terminal_one">1 terminal open</string>
+    <string name="activity_terminals_n">%1$d terminals open</string>
+    <string name="activity_uptime">up %1$s</string>
+    <string name="activity_nothing_running">Nothing is running</string>
+    <string name="activity_nothing_running_body">Open a workspace to start its Linux system. Its CPU and RAM appear here.</string>
+    <string name="sessions_workspace_title">Workspace</string>
+    <string name="sessions_workspace_caption">This workspace’s processes only</string>
+    <string name="sessions_not_running">Not running</string>
+    <string name="sessions_status_stopped">Stopped</string>
+    <string name="sessions_status_stopping">Stopping</string>
+    <string name="sessions_status_error">Error</string>
+    <string name="sessions_status_disconnected">Disconnected</string>
+    <string name="sessions_context_device_cpu">Device CPU</string>
+    <string name="sessions_context_device_ram">Device RAM</string>
+    <string name="sessions_sort_label">Sort</string>
+    <string name="sessions_sort_cpu">CPU</string>
+    <string name="sessions_sort_ram">RAM</string>
+    <string name="sessions_no_match">No session matches the search or filter.</string>
+    <string name="sessions_remove">Remove</string>
+    <string name="sessions_restart_ended_body">A new terminal opens and this ended session is removed.</string>
+    <string name="sessions_ended_clean">Exited normally.</string>
+    <string name="sessions_ended_killed">Killed by the system (SIGKILL).</string>
+    <string name="sessions_ended_error">Ended unexpectedly.</string>
+    <string name="desktop_vnc_password_unreadable">The saved VNC password can\'t be read on this device, so the desktop was NOT started unauthenticated. Open the Desktop settings and set a new password (or clear it to run without one), then try again.</string>
+    <string name="feature_settings_desktop_password_unreadable">The saved password can\'t be read. Type a new one or tap Generate. Clearing the field on purpose runs the desktop without a password.</string>
+    <string name="home_search_hint">Search workspaces</string>
+    <string name="home_filter_all">All</string>
+    <string name="home_filter_ready">Ready</string>
+    <string name="home_filter_in_progress">In progress</string>
+    <string name="home_filter_broken">Broken</string>
+    <string name="home_sort_label">Sort: %1$s</string>
+    <string name="home_sort_newest">Newest</string>
+    <string name="home_sort_oldest">Oldest</string>
+    <string name="home_sort_name">Name</string>
+    <string name="home_no_results_title">No matching workspaces</string>
+    <string name="home_no_results_subtitle">Try a different search or filter.</string>
+    <string name="home_no_results_clear">Clear search and filters</string>
+
+    <!-- UI/UX Phase 4 (FM-1): File Manager browse search + sort. -->
+    <string name="fm_search_hint">Search this folder</string>
+    <string name="fm_no_results_title">No matching files</string>
+    <string name="fm_no_results_description">No file in this folder matches your search.</string>
+    <string name="fm_no_results_clear">Clear search</string>
+    <string name="fm_sort_native">Native</string>
+    <string name="fm_sort_name">Name</string>
+    <string name="fm_sort_size">Size</string>
+    <string name="fm_sort_modified">Modified</string>
+    <string name="fm_sort_type">Type</string>
+    <string name="fm_sort_ascending">Ascending</string>
+    <string name="fm_sort_descending">Descending</string>
+
+    <!-- UI/UX Phase 4 (ACT-2): the host-process section header carries the
+         readable count and is the single expand/collapse control. The
+         action and the state are separate so TalkBack announces both. -->
+    <string name="activity_host_header">Host processes · %1$d</string>
+    <string name="activity_host_expand">Expand host processes</string>
+    <string name="activity_host_collapse">Collapse host processes</string>
+    <string name="activity_host_expanded">Expanded</string>
+    <string name="activity_host_collapsed">Collapsed</string>
+
+    <!-- UI/UX Phase 4 (PKG-1): existing PackageOperationCoordinator state. -->
+    <string name="pkg_manager_queue_title">Package queue</string>
+    <string name="pkg_manager_queue_active">Active: %1$s</string>
+    <string name="pkg_manager_queue_running">Another package operation is running</string>
+    <plurals name="pkg_manager_queue_waiting">
+        <item quantity="one">%1$d queued</item>
+        <item quantity="other">%1$d queued</item>
+    </plurals>
+    <!-- Motion pass 2: search icon-to-field morph (HSearchMorphBar). -->
+    <string name="haven_search_open">Open search</string>
+    <string name="haven_search_close">Close search</string>
+    <string name="haven_search_clear">Clear search</string>
+</resources>

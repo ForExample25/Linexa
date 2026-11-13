@@ -1,0 +1,79 @@
+# §1.146 — Fedora built-in RootFS profile.
+#
+# Verified against the real test image
+# `Fedora-Container-Base-Generic-42-1.1.aarch64.oci.tar.xz`:
+#
+#   * This is NOT a rootfs tarball. It is an OCI image layout:
+#
+#       oci-layout                       {"imageLayoutVersion":"1.0.0"}
+#       index.json                       -> manifest digest
+#       blobs/sha256/cf9e82…             the manifest (JSON)
+#       blobs/sha256/cfc0be…             the rootfs LAYER (gzip tar)  <-- rootfs
+#       blobs/sha256/f8c61c…             the config (JSON)
+#
+#     The outer tar has no `etc/` at all, so before §1.146 it failed BOTH
+#     detection (no signals) and the post-extraction required-directories check
+#     ("Extracted rootfs is incomplete"). `archive_kind: oci_image_layout` plus
+#     the `unwrap_oci_layer` step tells the pipeline to resolve the layer blob
+#     and treat THAT tar as the rootfs.
+#
+#   * Inside the layer, entries are packed WITHOUT a leading "./".
+#   * `etc/fedora-release`, `etc/os-release` and `etc/redhat-release` are ALL
+#     symlinks (-> ../usr/lib/fedora-release, ../usr/lib/os-release,
+#     fedora-release). The real files are `usr/lib/fedora-release` (26 bytes)
+#     and `usr/lib/os-release` (741 bytes). Listing only the `etc/` paths would
+#     capture nothing, since a symlink entry has no readable content.
+#   * `usr/bin/bash` is a real ELF binary (verified e_machine 0xB7 = EM_AARCH64).
+#
+# Note: the OCI layer tar is itself gzip-compressed INSIDE the xz-compressed
+# outer tar, i.e. two nested compression layers. The pipeline sniffs each
+# independently via CompressedArchiveStream.
+id: fedora
+name: Fedora
+
+detection:
+  os_release_ids:
+    - fedora
+  marker_files:
+    # Real-file paths first — the `etc/` spellings are symlinks in the official
+    # image and yield no content.
+    - usr/lib/fedora-release
+    - usr/lib/os-release
+    - etc/fedora-release
+    - etc/redhat-release
+    - etc/os-release
+  # `usr/lib/fedora-release` reads "Fedora release 42 (Adams)" — not a bare
+  # version, so it is NOT used as version_from; os-release's VERSION_ID is the
+  # clean source and the probe prefers it automatically.
+  architecture_hints:
+    aarch64-linux-gnu: arm64
+    ld-linux-aarch64: arm64
+    x86_64-linux-gnu: x86_64
+    ld-linux-x86-64: x86_64
+  elf_probe_paths:
+    - usr/bin/bash
+    - usr/bin/dnf
+    - usr/bin/coreutils
+
+supported_architectures: [arm64, x86_64]
+
+layout:
+  required_directories: [etc, usr, var]
+  shell_candidates: [usr/bin/bash, bin/bash, usr/bin/sh, bin/sh]
+  archive_kind: oci_image_layout
+
+install:
+  # MUST come first: every later step operates on the unwrapped rootfs.
+  - unwrap_oci_layer
+  - ensure_tmp
+  - ensure_dev_shm
+  - ensure_run
+  - ensure_proc_snapshots
+  - ensure_hostinfo_bin
+  - android_account_fixup
+  - seed_resolv_conf
+
+environment:
+  login_shell: /bin/bash
+  shell_args: ["--login"]
+  package_manager: dnf

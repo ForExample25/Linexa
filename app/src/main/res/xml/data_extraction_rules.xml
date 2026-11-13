@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Pre-release audit fix (2026-09-02, security finding S3): the API 31+
+  (dataExtractionRules) half of the backup-surface fix. See backup_rules.xml
+  for the rationale: the workspace database stores the desktop VNC password
+  in plaintext (workspace attributes), and the workspaces tree holds every
+  rootfs — multi-GB payload a device transfer should never carry. Cloud
+  backup AND device-to-device transfer both exclude these roots.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="database" path="linexa.db" />
+        <exclude domain="database" path="linexa.db-wal" />
+        <exclude domain="database" path="linexa.db-shm" />
+        <exclude domain="file" path="workspaces" />
+        <exclude domain="file" path="logs" />
+        <exclude domain="file" path="bootstrap" />
+        <exclude domain="sharedpref" path="linexa_settings.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="database" path="linexa.db" />
+        <exclude domain="database" path="linexa.db-wal" />
+        <exclude domain="database" path="linexa.db-shm" />
+        <exclude domain="file" path="workspaces" />
+        <exclude domain="file" path="logs" />
+        <exclude domain="file" path="bootstrap" />
+        <exclude domain="sharedpref" path="linexa_settings.xml" />
+    </device-transfer>
+</data-extraction-rules>

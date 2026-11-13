@@ -1,0 +1,79 @@
+# §1.146 — Alpine Linux built-in RootFS profile.
+#
+# Verified against the real test image
+# `alpine-minirootfs-3.24.1-aarch64.tar.gz`:
+#
+#   * ALL 515 entries carry a leading "./" — this is the packing convention
+#     that made Alpine undetectable before §1.146, because the scan compared
+#     raw entry names against bare literals. Detection now normalizes first
+#     (see ArchiveEntryPath), so the paths below are written bare and match
+#     either convention.
+#   * `./etc/alpine-release` is a real 7-byte file ("3.24.1"), so it supplies
+#     both identity and version with no os-release needed.
+#   * `./etc/os-release` is a SYMLINK to `../usr/lib/os-release`; the real file
+#     is `./usr/lib/os-release` and appears EARLIER in the tar (entry 31 vs
+#     453). Both are listed.
+#   * There is NO bash anywhere in the image. `./bin/sh` is a symlink to
+#     busybox. A bash-first shell list would report "no shell" for a perfectly
+#     good rootfs, so sh comes first here.
+#   * `./tmp/` IS shipped (unlike Debian), so `ensure_tmp` is an idempotent
+#     no-op — kept because the mode still needs to be 1777 for `apk`.
+#   * `./sbin/apk` is a real ELF binary (not a symlink), so the package manager
+#     probe finds it.
+id: alpine
+name: Alpine Linux
+
+detection:
+  os_release_ids:
+    - alpine
+  marker_files:
+    - etc/alpine-release
+    - etc/os-release
+    - usr/lib/os-release
+  # A bare version string ("3.24.1") — Alpine's release marker is the version.
+  version_from: etc/alpine-release
+  # musl, not glibc: there are no multiarch directories at all. The musl loader
+  # name carries the architecture and is the only name-based signal available.
+  architecture_hints:
+    ld-musl-aarch64: arm64
+    ld-musl-armhf: armv7l
+    ld-musl-x86_64: x86_64
+  # `./bin/busybox` is the one real ELF binary every Alpine image ships (verified
+  # e_machine 0xB7 = EM_AARCH64 in the test image). `./sbin/apk` is also real.
+  # `bin/sh` is deliberately NOT probed: it is a symlink, so the scan sees no
+  # content for it.
+  elf_probe_paths:
+    - bin/busybox
+    - sbin/apk
+    - lib/ld-musl-aarch64.so.1
+
+supported_architectures: [arm64, armv7l, x86_64, i686]
+
+layout:
+  # Deliberately shorter than Debian's list. Alpine minirootfs ships bin, etc,
+  # lib, usr and var, but requiring more than is genuinely load-bearing turns a
+  # working image into a failed import for no benefit.
+  required_directories: [bin, etc, lib, usr]
+  # sh FIRST: Alpine has no bash. This ordering is what makes the shell probe
+  # succeed on the first candidate instead of falling through four misses.
+  shell_candidates: [bin/sh, usr/bin/sh, bin/ash, bin/busybox]
+
+install:
+  - ensure_tmp
+  - ensure_dev_shm
+  # R-5/R-6 runtime parity: Alpine's own /run is a boot-time tmpfs and its
+  # /proc is the restricted Android one, so both must be prepared exactly as
+  # on Debian. Idempotent when the image already ships them.
+  - ensure_run
+  - ensure_proc_snapshots
+  - ensure_hostinfo_bin
+  - android_account_fixup
+  # Alpine ships no /etc/resolv.conf at all, so without this the guest cannot
+  # resolve names and `apk update` fails with a DNS error.
+  - seed_resolv_conf
+
+environment:
+  # busybox ash. Declaring it skips the runtime's bash-first probe entirely.
+  login_shell: /bin/sh
+  shell_args: ["--login"]
+  package_manager: apk

@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 2026-08-29 workspace DNS fix: ACCESS_NETWORK_STATE is what
+         ConnectivityManager.getAllNetworks()/getLinkProperties() require.
+         Without it AndroidHostDnsProvider always returned an empty server
+         list (SecurityException → fail-open empty), so neither the
+         install-time resolv.conf seed nor the boot-time DNS provisioning
+         ever wrote a resolver into the guest — every workspace started with
+         NO /etc/resolv.conf and "Temporary failure resolving" in the
+         terminal and in apt. Normal (install-time) permission; no prompt. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- §1.104: surfaced as the "File Access" row in Workspace Settings (API 30+).
+         Granted only when the user opts in via the system "All files access"
+         screen — never requested automatically. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <!-- §1.104: lets the "Disable Battery Optimization" row show the system
+         whitelist-request dialog for the long-lived workspace runtime. -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- §1.142: the Workspace-runtime wake lock (§1.100(5)) — a PARTIAL_WAKE_LOCK
+         taken only when the user turns it on from the runtime notification, with a
+         hard 60-minute ceiling (WakeLockPolicy.MAX_HOLD_MS) and released by every
+         teardown path. Never held for a workspace that is not running. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <application
+        android:name=".LinexaApplication"
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:supportsRtl="true"
+        android:enableOnBackInvokedCallback="true"
+        android:theme="@style/Theme.Linexa">
+        <!-- Security fix (2026-09-02): allowBackup stays true (preferences and
+             misc state remain restorable), but the backup/transfer surface is
+             now explicitly scoped by @xml/backup_rules (API ≤ 30) and
+             @xml/data_extraction_rules (API 31+): the Room DB (workspace
+             attributes carry the desktop VNC password as plaintext), the
+             workspaces tree (rootfs payloads), the runtime logs and the
+             bootstrap dir are excluded from cloud backup AND device transfer. -->
+        <!-- UI/UX Phase 9: opt into Android's modern (predictive) back
+             dispatch. With this flag, every back press — Compose BackHandler,
+             the NavHosts' pop, dialogs — is routed by androidx.activity
+             (OnBackPressedDispatcher → OnBackInvokedCallback) through the
+             platform's back-invocation system on API 33+, so the system can
+             animate the predictive back gesture; on older APIs the attribute
+             is ignored and the classic dispatcher path is used. No custom
+             swipe handling was added: the back DESTINATION is still resolved
+             exclusively by the existing navigation/back-handler hierarchy
+             (terminal sheet → session overview → terminal overlay → commands
+             drill-in → workspace exit confirmation → nav stack pop). -->
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Linexa"
+            android:windowSoftInputMode="adjustResize"
+            android:screenOrientation="fullUser"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboard|keyboardHidden|density|uiMode">
+            <!-- UI/UX Phase 8 (§1.138): `configChanges` covers the rotation the
+                 Desktop surface requests for itself. Without it the activity is
+                 destroyed and recreated on entering AND leaving the desktop, which
+                 restarts the nav graph, drops the VNC socket and re-runs the
+                 workspace session's screen-level effects mid-session. `fullUser` is
+                 the app-wide default and NOT a forced orientation — it keeps the
+                 app rotating with the device, honouring the user's rotation lock;
+                 the landscape request is made per-surface by DesktopScreen and
+                 restored on dispose (DesktopWindowMode). -->
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".service.runtime.RuntimeService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <!-- §W6 bug fix: Android 14+ REQUIRES the FGS subtype property on
+                 specialUse services, and the missing property also left the
+                 foreground notification un-publishable on some devices. -->
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="workspace-runtime" />
+        </service>
+
+        <service
+            android:name=".service.importservice.ImportService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse" />
+
+        <service
+            android:name=".service.distro.DownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- §1.74: SAF DocumentsProvider. Browses every workspace rootfs and
+             the Public shared folder; create/delete/rename/write are allowed
+             for inactive workspaces and the Public root, refused while a
+             workspace is Starting/Running/Stopping (OPT-SEC-001). -->
+        <provider
+            android:name=".ui.misc.LinexaDocumentsProvider"
+            android:authorities="${applicationId}.docs"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+    </application>
+
+</manifest>

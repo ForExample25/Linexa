@@ -1,0 +1,20 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!--
+      §1.133 — the terminal session overview action.
+
+      A 2x2 grid of equal panes (Material Symbols "grid-view"), the same visual
+      idea as the tab-overview icon in a mobile browser, which is what
+      TerminalSessionOverview is. Kept as a local vector rather than
+      `Icons.Outlined.Apps` because the shared app bar's TopBarAction takes a
+      @DrawableRes (every other action in the bar is one of the ic_custom_*
+      set), and mixing an ImageVector in would need a second code path through
+      LinexaTopBar. Path data derived from the IconSvg material-symbols pack.
+    -->
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M3 11V3h8v8zm0 10v-8h8v8zm10-10V3h8v8zm0 10v-8h8v8z" />
+</vector>

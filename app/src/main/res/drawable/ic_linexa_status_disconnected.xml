@@ -1,0 +1,21 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="?android:attr/colorControlNormal">
+
+    <!-- Linexa glyph monoline — Status: Disconnected.
+         A circle with a horizontal line through it — the disconnected affordance. -->
+    <path
+        android:pathData="M12,2 m-10,0 a10,10 0,1,1 20,0 a10,10 0,1,1 -20,0"
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="2"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M3,12 L21,12"
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="2"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+</vector>

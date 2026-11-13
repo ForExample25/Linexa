@@ -1,0 +1,210 @@
+# ══════════════════════════════════════════════════════════════════════════
+# Linexa bundled RootFS metadata — Alpine Linux (generic profile)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# Applied by DownloadService when the downloaded minirootfs carries no native
+# declaration of its own (the official Alpine tarballs never do). It is
+# validated by the same fail-hard pipeline as an archive-authored file and is
+# persisted as the workspace's config.yaml.
+#
+# Alpine specifics, all deliberate:
+#  - /bin/sh is busybox ash, not bash; declaring it skips the runtime's
+#    bash-first probe and the login shell is the one the image actually has.
+#  - the package manager is apk; the shortcuts use apk's own commands rather
+#    than pretending apt works.
+#  - /etc/resolv.conf does not exist in the tarball; the profile install plan
+#    seeds it (see assets/rootfs/profiles/alpine.yaml).
+linexa:
+  schema_version: 2
+
+  distro:
+    id: alpine
+    name: Alpine Linux
+    version: "3.24"
+
+  architecture: arm64
+
+  rootfs:
+    type: base
+    compressed_format: tar.gz
+
+  desktop:
+    enabled: false
+
+  package_manager:
+    type: apk
+
+  environment:
+    shell: /bin/sh
+    shell_args:
+      - --login
+    user: linexa
+    home: /home/linexa
+    variables:
+      LINEXA_WORKSPACE: /home/linexa
+
+  workspace:
+    directory: /home/linexa
+
+  shell_config:
+    aliases:
+      la: "ls -A"
+      ll: "ls -alF"
+      l: "ls -CF"
+
+  init:
+    post_install:
+      - "mkdir -p /home/linexa/projects /home/linexa/scripts /home/linexa/bin"
+    first_boot: []
+
+  health_check:
+    command: "test -x /bin/sh && test -x /sbin/apk"
+
+  metadata:
+    display_name: Alpine Linux
+    description: "Alpine Linux minirootfs (musl, busybox), installed from Linexa's bundled profile."
+
+  shortcuts:
+    - id: system-management
+      label: System Management
+      description: Package database and system information operations.
+      children:
+        - id: update-system
+          label: Check for updates and upgrade
+          action: update
+          command: apk update && apk upgrade
+        - id: clean-package-cache
+          label: Clean package cache
+          description: Removes downloaded .apk archives and refreshes the index next update.
+          command: rm -rf /var/cache/apk/*
+        - id: system-info
+          label: System information
+          action: check
+          command: "echo '--- CPU ---'; grep -E 'model name|Processor' /proc/cpuinfo | head -2; echo '--- MEMORY ---'; free -h; echo '--- LINEXA FEED ---'; linexa-hostinfo 2>/dev/null || echo 'linexa-hostinfo feed not available'"
+        - id: disk-usage
+          label: Disk usage
+          action: check
+          command: df -h
+        - id: root-shell
+          label: Root shell
+          as_root: true
+          description: Opens a terminal running as the emulated root account.
+
+    - id: development
+      label: Development
+      description: Core build tools and interpreters from Alpine's repositories.
+      children:
+        - id: build-base
+          label: GCC & build tools
+          children:
+            - id: build-base-install
+              label: Install
+              action: install
+              command: apk add --no-cache build-base pkgconf && gcc --version | head -1
+            - id: build-base-remove
+              label: Remove
+              action: remove
+              command: apk del build-base pkgconf
+        - id: python3
+          label: Python 3 + pip
+          children:
+            - id: python3-install
+              label: Install
+              action: install
+              command: apk add --no-cache python3 py3-pip && python3 --version
+            - id: python3-remove
+              label: Remove
+              action: remove
+              command: apk del python3 py3-pip
+        - id: git
+          label: Git
+          children:
+            - id: git-install
+              label: Install
+              action: install
+              command: apk add --no-cache git && git --version
+            - id: git-remove
+              label: Remove
+              action: remove
+              command: apk del git
+        - id: nodejs
+          label: Node.js & npm
+          children:
+            - id: nodejs-install
+              label: Install
+              action: install
+              command: apk add --no-cache nodejs npm && node --version
+            - id: nodejs-remove
+              label: Remove
+              action: remove
+              command: apk del nodejs npm
+
+    - id: shell-utilities
+      label: Shell & Utilities
+      description: Everyday command-line helpers.
+      children:
+        - id: core-tools
+          label: Core command-line tools
+          children:
+            - id: core-tools-install
+              label: Install
+              action: install
+              command: apk add --no-cache curl wget nano less htop unzip zip man-pages mandoc bash-completion
+            - id: core-tools-remove
+              label: Remove
+              action: remove
+              command: apk del curl wget nano less htop unzip zip man-pages mandoc bash-completion
+        - id: bash
+          label: Bash
+          description: Alpine ships busybox ash; install bash for scripts that require it.
+          children:
+            - id: bash-install
+              label: Install
+              action: install
+              command: apk add --no-cache bash && bash --version | head -1
+            - id: bash-remove
+              label: Remove
+              action: remove
+              command: apk del bash
+        - id: vim
+          label: Vim
+          children:
+            - id: vim-install
+              label: Install
+              action: install
+              command: apk add --no-cache vim && vim --version | head -1
+            - id: vim-remove
+              label: Remove
+              action: remove
+              command: apk del vim
+
+    - id: networking
+      label: Networking
+      description: Diagnostics and transfer tools.
+      children:
+        - id: net-tools
+          label: Network diagnostics
+          children:
+            - id: net-tools-install
+              label: Install
+              action: install
+              command: apk add --no-cache iputils bind-tools net-tools traceroute mtr
+            - id: net-tools-remove
+              label: Remove
+              action: remove
+              command: apk del iputils bind-tools net-tools traceroute mtr
+        - id: curl-wget
+          label: curl & wget
+          children:
+            - id: curl-wget-install
+              label: Install
+              action: install
+              command: apk add --no-cache curl wget && curl --version | head -1
+            - id: curl-wget-remove
+              label: Remove
+              action: remove
+              command: apk del curl wget
+        - id: network-info
+          label: Network info
+          action: check
+          command: hostname -i; echo; cat /etc/resolv.conf

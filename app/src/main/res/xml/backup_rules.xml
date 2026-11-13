@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Pre-release audit fix (2026-09-02, security finding S3): the app previously
+  shipped android:allowBackup="true" with NO backup rules, so Android's
+  Auto Backup uploaded the Room database (whose workspace `attributes` column
+  stores the desktop VNC password as plaintext), the per-workspace config
+  files, and the runtime logs to the user's cloud backup.
+
+  This file is the API ≤ 30 (fullBackupContent) half of the fix; the API 31+
+  half lives in data_extraction_rules.xml. Both exclude exactly the sensitive
+  roots: the workspace database (credentials), the per-workspace config/log
+  trees, and the no-backup marker dir the runtime writes. Everything else
+  (preferences, shared storage links) backs up as before.
+-->
+<full-backup-content>
+    <exclude domain="database" path="linexa.db" />
+    <exclude domain="database" path="linexa.db-wal" />
+    <exclude domain="database" path="linexa.db-shm" />
+    <exclude domain="file" path="workspaces" />
+    <exclude domain="file" path="logs" />
+    <exclude domain="file" path="bootstrap" />
+    <exclude domain="sharedpref" path="linexa_settings.xml" />
+</full-backup-content>

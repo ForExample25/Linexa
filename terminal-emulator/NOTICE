@@ -1,0 +1,12 @@
+Termux terminal-emulator
+Copyright (c) 2012-2024 the Termux project contributors (termux/termux-app)
+and the Jackpal Android-Terminal-Emulator lineage this library derives from.
+
+Vendored into the Linexa project from termux/termux-app, tag v0.118.3,
+commit 5b657c6adf4304e5198951ce815fe0205dcac29c. This library is licensed
+under the Apache License, Version 2.0 (see LICENSE) — the upstream
+repository's LICENSE.md names terminal-emulator explicitly as the
+Apache-2.0-licensed component of that tree.
+
+This product includes software developed as part of the Termux project
+(https://github.com/termux/termux-app).

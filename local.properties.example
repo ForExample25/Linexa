@@ -1,0 +1,11 @@
+# Machine-local build inputs template for Linexa.
+# Copy to local.properties (gitignored) and fill in.
+# The real local.properties and release keystore hold signing SECRETS and
+# must never be committed.
+
+sdk.dir=/path/to/your/android-sdk
+
+signing.storeFile=/path/to/your/release.jks
+signing.storePassword=<STORE_PASSWORD_SECRET>
+signing.keyAlias=<KEY_ALIAS>
+signing.keyPassword=<KEY_PASSWORD_SECRET>

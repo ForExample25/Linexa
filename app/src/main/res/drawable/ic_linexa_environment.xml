@@ -1,0 +1,30 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="?android:attr/colorControlNormal">
+
+    <!-- Linexa glyph monoline — Environment / Linux.
+         A penguin silhouette in profile, the universal "Linux environment"
+         symbol. Stroke + minimal fill so the silhouette reads at small sizes. -->
+    <path
+        android:pathData="M14,3 C16,3 17,5 17,7 C17,9 16,11 16,12 C16,13 17,14 18,16 C19,18 19,20 18,21 L10,21 C9,20 9,18 10,16 C11,14 12,13 12,12 C12,11 11,9 11,7 C11,5 12,3 14,3 Z"
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M11,18 C11,19 11,20 12,20"
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M8,9 C8,11 9,12 10,13"
+        android:strokeColor="@android:color/white"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000" />
+</vector>

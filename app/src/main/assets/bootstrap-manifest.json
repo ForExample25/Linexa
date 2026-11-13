@@ -1,0 +1,295 @@
+{
+ "schemaVersion": 1,
+ "note": "Linexa bundled bootstrap binaries (\u00a71.71, Roadmap Item 5). sha256 must match the file bytes in jniLibs/<abi>/; CI enforces lockstep. Extends jniLibs/BINARY-MANIFEST.md human-readable provenance into a manifest the app validates itself during BootstrapManager.setup().",
+ "artifacts": [
+  {
+   "file": "lib__bin__busybox__.so",
+   "abi": "arm64-v8a",
+   "version": "busybox 1.38.0-1",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "db7f2a847ab051086c71d1c8c367e71adf59a3c39c8323ff801126ff11c84058"
+  },
+  {
+   "file": "lib__bin__loader__.so",
+   "abi": "arm64-v8a",
+   "version": "loader from the Linexa proot 5.1.107.89 build (patches 0002/0004 pair, 2026-08-25)",
+   "buildId": "linexa-l2s-fix-2026-08-25",
+   "sha256": "b5b856b8b0d00d881d44d9fabfd6386499a607ceb9e8a5b95df94a3a2b7b451e"
+  },
+  {
+   "file": "lib__bin__tar__.so",
+   "abi": "arm64-v8a",
+   "version": "GNU tar 1.35-3",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "66b641dee510d75e2270d40972e9808988eb1b3d3e054fa46adfcc62d03c39cf"
+  },
+  {
+   "file": "lib__bin__tmux__.so",
+   "abi": "arm64-v8a",
+   "version": "tmux 3.7b",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "d9d5479f2f62b02a17cb42b4b9ce164ad6915d35eee01d75c55575b0a8dfdee7"
+  },
+  {
+   "file": "lib__bin__zstd__.so",
+   "abi": "arm64-v8a",
+   "version": "zstd 1.5.7-1",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "2764819fb697bd7d931242b35a0a73141d54bc1ad43c819002ade960337df9f8"
+  },
+  {
+   "file": "lib__lib__libacl.so__.so",
+   "abi": "arm64-v8a",
+   "version": "libacl 2.4.0",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "650b7bea7c8e663e01afad0d0f1681dc5b925185e6934b7edd2dc50a7daa1563"
+  },
+  {
+   "file": "lib__lib__libandroid-glob.so__.so",
+   "abi": "arm64-v8a",
+   "version": "libandroid-glob 0.6-3",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "e47405b23e40aea9bd5aad4c3cbf518065cba8ef1c4e24c8aae7fd77e10fe850"
+  },
+  {
+   "file": "lib__lib__libandroid-selinux.so__.so",
+   "abi": "arm64-v8a",
+   "version": "libandroid-selinux 14.0.0.11-1",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "d769bc3757df751e4c302cdb55062a33cda2041ba0483d953d93100cd321a810"
+  },
+  {
+   "file": "lib__lib__libandroid-shmem.so__.so",
+   "abi": "arm64-v8a",
+   "version": "libandroid-shmem 0.7",
+   "buildId": "termux-lineage-2026-07-29",
+   "sha256": "84475798e07c8174dbbfaec70a827fdb02f19ffa69a589380c13e7507fd0e731"
+  },
+  {
+   "file": "lib__lib__libandroid-support.so__.so",
+   "abi": "arm64-v8a",
+   "version": "libandroid-support 29-1",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "739cf829511d71dafd6c67fdbb70f3f0c6048642ea2e1967790ee961fde14430"
+  },
+  {
+   "file": "lib__lib__libbusybox.so.1.38.0__.so",
+   "abi": "arm64-v8a",
+   "version": "busybox 1.38.0-1",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "b8153ac191754afcd6dd1896f961c7ecf3965cafd727a2690f648fdd9ba57cc1"
+  },
+  {
+   "file": "lib__lib__libevent_core-2.1.so__.so",
+   "abi": "arm64-v8a",
+   "version": "libevent 2.1.13",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "049d2d08c28d91a1b2a3eac884fca5f7d0dc0c06e38a77b792c2bf5bb4b5eadc"
+  },
+  {
+   "file": "lib__lib__libiconv.so__.so",
+   "abi": "arm64-v8a",
+   "version": "libiconv 1.18-1",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "53349c7a84ad06da53c3976754c742d6a79f3297562f0fbe61b7ee620f783667"
+  },
+  {
+   "file": "lib__lib__liblzma.so.5__.so",
+   "abi": "arm64-v8a",
+   "version": "liblzma 5.8.3",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "daa0cf43130e6aa1aa8239c4f0ec4d2fc34ccebc69e6f518b67556b6ab0d588b"
+  },
+  {
+   "file": "lib__lib__libncursesw.so.6__.so",
+   "abi": "arm64-v8a",
+   "version": "ncurses 6.6",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "795f855f5a988d9e89116847b2c9aa03720cedbc02026259ca735be25398c4c5"
+  },
+  {
+   "file": "lib__lib__libpcre2-8.so__.so",
+   "abi": "arm64-v8a",
+   "version": "pcre2 10.47",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "a6bbeb410e269e50aee795b4fd1b11cbddb8b54959d1cfcd927b55b04dc19f5c"
+  },
+  {
+   "file": "lib__lib__libtalloc.so.2__.so",
+   "abi": "arm64-v8a",
+   "version": "libtalloc 2.4.3 (soname libtalloc.so.2)",
+   "buildId": "termux-lineage-2026-07-29",
+   "sha256": "3c9b207c0a6ea2896b7523e03f55d9ab0d9e88baa115d4c32b84058ff4246fbb"
+  },
+  {
+   "file": "lib__lib__libz.so.1__.so",
+   "abi": "arm64-v8a",
+   "version": "zlib 1.3.2",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "c47748ed4b6ca6a2ecd664bab04795f3493956ab1f5cddc4ba0efa737ef3b711"
+  },
+  {
+   "file": "lib__lib__libzstd.so.1__.so",
+   "abi": "arm64-v8a",
+   "version": "zstd 1.5.7-1",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "1677d5e828c1839f111f0261697c08f99a5e4e80434659ab88e5ff859a1374f7"
+  },
+  {
+   "file": "libproot.so",
+   "abi": "arm64-v8a",
+   "version": "proot 5.1.107.89 (termux lineage source + Linexa patches 0001/0002/0003/0004, NDK r29, Android 28+) \u2014 L2S relative-target + guest-env-filter fixes (F-1/F-2 + F-8)",
+   "buildId": "linexa-l2s-fix-2026-08-25",
+   "sha256": "8a22200070ec93448bd54aae9538d8032defc479a6e4d72404754052cb857743"
+  },
+  {
+   "file": "lib__bin__busybox__.so",
+   "abi": "armeabi-v7a",
+   "version": "busybox 1.38.0-1",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "4b318987d91698dc87476b546049619e12b4debed9574c12533a3ab1568a11e9"
+  },
+  {
+   "file": "lib__bin__loader__.so",
+   "abi": "armeabi-v7a",
+   "version": "loader from the Linexa proot 5.1.107.89 build (patches 0002/0004 pair, 2026-08-25)",
+   "buildId": "linexa-l2s-fix-2026-08-25",
+   "sha256": "24ec27c80c7f107dded094af60cfdd600f374b62772b149b84949c2910105b90"
+  },
+  {
+   "file": "lib__bin__tar__.so",
+   "abi": "armeabi-v7a",
+   "version": "GNU tar 1.35-3",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "3729470b30b27454fed6071e1117f168d395f20b9bdb904032ca27ad6e38f33f"
+  },
+  {
+   "file": "lib__bin__tmux__.so",
+   "abi": "armeabi-v7a",
+   "version": "tmux 3.7b",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "1e82b34bb53c7489a75721fd3ed237f520223b6903feea9bc58528367638bb32"
+  },
+  {
+   "file": "lib__bin__zstd__.so",
+   "abi": "armeabi-v7a",
+   "version": "zstd 1.5.7-1",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "8702180f913d7ce68fc62d3d6f242eaeeaf153be2deb5ffc807ff564bd44ce75"
+  },
+  {
+   "file": "lib__lib__libacl.so__.so",
+   "abi": "armeabi-v7a",
+   "version": "libacl 2.4.0",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "2fb1e644d87e2e10b22a67eb72c0e86cbff8906b92f310dd2ef2db17f78bc55e"
+  },
+  {
+   "file": "lib__lib__libandroid-glob.so__.so",
+   "abi": "armeabi-v7a",
+   "version": "libandroid-glob 0.6-3",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "5653efd7e250c4a15dab73589349c30cb1b43b02fa854119ec388c97547c854e"
+  },
+  {
+   "file": "lib__lib__libandroid-selinux.so__.so",
+   "abi": "armeabi-v7a",
+   "version": "libandroid-selinux 14.0.0.11-1",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "9e1b0da7f14a4e6f62537f5a884659a1e3297a551598d757d0a783f512ce6dd0"
+  },
+  {
+   "file": "lib__lib__libandroid-shmem.so__.so",
+   "abi": "armeabi-v7a",
+   "version": "libandroid-shmem 0.7 (NDK r29 build for the v7a proot pair)",
+   "buildId": "linexa-l2s-fix-2026-08-25",
+   "sha256": "488e736578b48f3ae2f5fdcc9f878b1b6d2416e5714f832414288c9a10352e79"
+  },
+  {
+   "file": "lib__lib__libandroid-support.so__.so",
+   "abi": "armeabi-v7a",
+   "version": "libandroid-support 29-1",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "2d569da2ffc5515fd4d634f22ab5d13c2686d38e8869ceed847ad3319c6bf999"
+  },
+  {
+   "file": "lib__lib__libbusybox.so.1.38.0__.so",
+   "abi": "armeabi-v7a",
+   "version": "busybox 1.38.0-1",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "1a44181483e89f2d353c63aa12825ea145d1e013f563ad323064c7bdb4174767"
+  },
+  {
+   "file": "lib__lib__libevent_core-2.1.so__.so",
+   "abi": "armeabi-v7a",
+   "version": "libevent 2.1.13",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "ea5e49da97498c02b28b0911a34c4952df19c0ade07ac11a93b265438c64cd67"
+  },
+  {
+   "file": "lib__lib__libiconv.so__.so",
+   "abi": "armeabi-v7a",
+   "version": "libiconv 1.18-1",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "1d4f74e065e08a135b70909328e82e44346091bc26ba414190c0b2e9509c9381"
+  },
+  {
+   "file": "lib__lib__liblzma.so.5__.so",
+   "abi": "armeabi-v7a",
+   "version": "liblzma 5.8.3",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "a346636858062fc1f7719970f5df50c8719a103e0a5076246cc0ef150a89e54e"
+  },
+  {
+   "file": "lib__lib__libncursesw.so.6__.so",
+   "abi": "armeabi-v7a",
+   "version": "ncurses 6.6",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "e7c301bc235e39984ab71f1906b00cc8cdfaea3451207597bc96132c8e247ca9"
+  },
+  {
+   "file": "lib__lib__libpcre2-8.so__.so",
+   "abi": "armeabi-v7a",
+   "version": "pcre2 10.47",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "34eec1274d74400263b1be5cdf2d9a1686cead7204ce5facf208e5e27d36d4f5"
+  },
+  {
+   "file": "lib__lib__libtalloc.so.2__.so",
+   "abi": "armeabi-v7a",
+   "version": "talloc 2.4.2 (NDK r29 build for the v7a proot pair)",
+   "buildId": "linexa-l2s-fix-2026-08-25",
+   "sha256": "a4f0c168f10263db08ad96b82a7815c283e3f9ff575bcf38a94f2716e2dbf0b5"
+  },
+  {
+   "file": "lib__lib__libz.so.1__.so",
+   "abi": "armeabi-v7a",
+   "version": "zlib 1.3.2",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "da58b50bc1f2a109f8af85e1bfceebb8a1ae6ea1c1e6050e526c899b8311ac90"
+  },
+  {
+   "file": "lib__lib__libzstd.so.1__.so",
+   "abi": "armeabi-v7a",
+   "version": "zstd 1.5.7-1",
+   "buildId": "termux-verified-2026-08-02",
+   "sha256": "50e5f96b00edac3a6cee3d8ade21b3da15dfd7c540603021b32d5f7474b6c17b"
+  },
+  {
+   "file": "libproot.so",
+   "abi": "armeabi-v7a",
+   "version": "proot 5.1.107.89 (termux lineage source + Linexa patches 0001/0002/0003/0004, NDK r29, Android 28+) \u2014 replaces \u00a71.55 static v5.3.0; L2S relative-target + guest-env-filter fixes (F-1/F-2 + F-8)",
+   "buildId": "linexa-l2s-fix-2026-08-25",
+   "sha256": "6f116962f85cde72bdfe8bd234105df778c995f59944fb3733b21e98ac480cd3"
+  }
+ ],
+ "pairs": [
+  {
+   "label": "loader must come from the same build as proot",
+   "members": [
+    "libproot.so",
+    "lib__bin__loader__.so"
+   ]
+  }
+ ]
+}

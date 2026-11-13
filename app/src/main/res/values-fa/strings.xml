@@ -1,0 +1,257 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Linexa — Persian (فارسی) locale strings.
+
+  This is a STARTER translation covering the most common UI strings: app name,
+  common actions/states, the most-frequent dialogs, navigation labels, and
+  home-screen strings. Strings not yet translated fall back to English
+  (the default `values/strings.xml`). To complete the translation, copy any
+  missing keys from `values/strings.xml` and translate their text.
+
+  RTL: Android automatically applies RTL layout for `fa`-locale devices
+  (Manifest android:supportsRtl="true"). No code changes required.
+
+  Translation conventions:
+    - "workspace" → «فضای کار» (lit. "work space")
+    - "terminal" → «ترمینال» (transliteration, the standard technical term)
+    - "rootfs" → «rootfs» (kept as-is; a technical identifier per the §
+      rule about not localizing technical identifiers)
+    - "PRoot" → «PRoot» (kept as-is)
+    - "Linexa" → «Linexa» (kept as-is, brand name)
+-->
+<resources>
+    <string name="app_name">Linexa</string>
+
+    <!-- Common actions / states -->
+    <string name="common_back">بازگشت</string>
+    <string name="common_cancel">لغو</string>
+    <string name="common_copy">کپی</string>
+    <string name="common_copied">در کلیپ‌بورد کپی شد</string>
+    <string name="common_delete">حذف</string>
+    <string name="common_dismiss">بستن</string>
+    <string name="common_ok">تأیید</string>
+    <string name="common_ready">آماده</string>
+    <string name="common_rename">تغییر نام</string>
+    <string name="common_retry">تلاش مجدد</string>
+    <string name="common_share">اشتراک‌گذاری</string>
+    <string name="common_export">برون‌بری</string>
+    <string name="common_save">ذخیره</string>
+    <string name="common_refresh">به‌روزرسانی</string>
+    <string name="common_create">ساختن</string>
+    <string name="common_unknown">نامشخص</string>
+    <string name="common_not_connected">متصل نیست</string>
+
+    <!-- Dialogs -->
+    <string name="dialog_delete_workspace_title">حذف فضای کار؟</string>
+    <string name="dialog_delete_workspace_message">این عملیات «%1$s» و تمام پرونده‌های آن را به طور دائمی حذف می‌کند. این عمل قابل بازگشت نیست.</string>
+    <string name="dialog_delete_workspace_failed_title">فضای کار حذف نشد</string>
+
+    <!-- RootFS export -->
+    <string name="export_dialog_progress_title">در حال برون‌بری «%1$s»</string>
+    <string name="export_step_preparing">آماده‌سازی…</string>
+    <string name="export_step_packing">بسته‌بندی rootfs…</string>
+    <string name="export_step_finalizing">پایان‌بندی…</string>
+    <string name="export_step_verifying">صحت‌سنجی آرشیو…</string>
+    <string name="export_success_title">برون‌بری کامل شد</string>
+    <string name="export_success_body">«%1$s» ذخیره شد (%2$s). برای نصب دوبارهٔ این پشتیبان، از «افزودن فضای کار ← وارد کردن rootfs» استفاده کنید.</string>
+    <string name="export_success_skipped">%1$d پرونده در پشتیبان قرار نگرفت.</string>
+    <string name="export_failed_title">برون‌بری فضای کار انجام نشد</string>
+    <string name="export_cleanup_note">پروندهٔ ناقص برون‌بری به‌طور خودکار حذف نشد — آن را دستی حذف کنید.</string>
+    <string name="dialog_exit_workspace_title">ترک فضای کار؟</string>
+    <string name="dialog_exit_workspace_message">«%1$s» می‌تواند در پس‌زمینه به کار خود ادامه دهد — دستورهای در حال اجرا، دانلودها و میزکار متوقف نمی‌شوند. با «توقف فضای کار» آن را خاموش کنید.</string>
+    <string name="dialog_exit_workspace_confirm">توقف فضای کار</string>
+    <string name="dialog_exit_workspace_background">ادامهٔ اجرا</string>
+    <string name="desktop_external_running">میزکار از طریق %1$s در حال اجراست — تصویر در پنجرهٔ برنامهٔ خارجی نمایش داده می‌شود.</string>
+    <string name="desktop_external_open">نمایش تصویر</string>
+    <string name="desktop_zoom_reset">بازنشانی بزرگ‌نمایی</string>
+    <string name="feature_settings_desktop_touch_label">ورودی لمسی</string>
+    <string name="feature_settings_desktop_touch_relative">تاچ‌پد</string>
+    <string name="feature_settings_desktop_touch_direct">مستقیم</string>
+    <string name="feature_settings_desktop_touch_help">تاچ‌پد: حرکت انگشت نشانگر را به‌صورت نسبی جابه‌جا می‌کند (دقیق). مستقیم: برای کلیک روی همان‌جا ضربه بزنید؛ برای کشیدن، بکشید؛ برای راست‌کلیک نگه دارید. بلافاصله اعمال می‌شود.</string>
+
+    <!-- Home screen -->
+    <string name="home_title">Linexa</string>
+    <string name="home_empty_title">هنوز هیچ فضای کاری نصب نشده است</string>
+    <string name="home_empty_subtitle">یک توزیع لینوکس را نصب کنید یا یک rootfs موجود را وارد کنید تا شروع کنید.</string>
+    <string name="home_loading">در حال بارگیری فضاهای کار…</string>
+    <string name="home_error_title">بارگیری فضاهای کار ناموفق بود</string>
+    <string name="home_rename_title">تغییر نام فضای کار</string>
+    <string name="home_rename_hint">نام جدید</string>
+
+    <!-- Workspace -->
+    <string name="workspace_title_label">فضای کار</string>
+    <string name="workspace_back_to_home">بازگشت به خانه</string>
+    <string name="workspace_tab_shortcuts">میانبرها</string>
+    <string name="workspace_tab_features">امکانات</string>
+    <string name="workspace_tab_settings">تنظیمات</string>
+    <string name="workspace_tab_terminal">ترمینال</string>
+    <string name="workspace_tab_desktop">میز کار</string>
+    <string name="workspace_tab_files">پرونده‌ها</string>
+    <string name="workspace_tab_packages">بسته‌ها</string>
+    <string name="workspace_section_sessions">نشست‌های ترمینال</string>
+
+    <!-- Settings -->
+    <string name="settings_danger_zone">منطقه خطر</string>
+    <string name="settings_delete_workspace">حذف فضای کار</string>
+    <string name="settings_delete_workspace_desc">این فضای کار و تمام داده‌های آن را حذف کن</string>
+    <string name="settings_tools">ابزارها</string>
+    <string name="settings_tools_files_desc">مدیریت پرونده‌ها</string>
+    <string name="settings_tools_packages_desc">مدیریت بسته‌ها</string>
+
+    <!-- About -->
+    <string name="about_title">درباره</string>
+    <string name="about_intro">Linexa یک محیط لینوکس کامل است که روی دستگاه اندروید شما اجرا می‌شود، بدون روت، با استفاده از PRoot.</string>
+
+    <!-- UI/UX Phase 6: the visible label of the secondary configuration row
+         (below the toggle line, end-anchored chevron). -->
+    <string name="feature_settings_more">تنظیمات بیشتر</string>
+
+    <!-- Device info: GPU card + CPU temperature (hardware-info plugin) -->
+    <string name="device_row_cpu_temp">دمای پردازنده</string>
+    <string name="device_section_gpu">پردازنده گرافیکی (GPU)</string>
+    <string name="device_row_gpu_model">مدل GPU</string>
+    <string name="device_row_gpu_vendor">سازنده GPU</string>
+    <string name="device_row_gpu_freq_current">فرکانس فعلی</string>
+    <string name="device_row_gpu_freq_max">حداکثر فرکانس</string>
+    <string name="device_row_gpu_busy">میزان استفاده</string>
+    <string name="device_row_gpu_temp">دمای GPU</string>
+    <string name="device_row_gpu_source">شناسایی از طریق</string>
+
+    <!-- Distro catalog: install gate -->
+    <string name="home_distro_locked">قفل شده</string>
+
+    <!-- 2026-09-02 (desktop prerequisites): نصاب هدایت‌شده دسکتاپ (Debian/Ubuntu + APT).
+         هر عدد نمایش‌داده‌شده واقعی است (خوانش apt-get -s یا اندازه‌گیری فایل‌سیستم)؛
+         مقدار نامعلوم همیشه با خط تیره نمایش داده می‌شود، نه عدد جعلی. -->
+    <string name="common_done">انجام شد</string>
+    <string name="common_close">بستن</string>
+    <string name="desktop_install_check">نصب %1$s در این فضای کار…</string>
+    <string name="desktop_install_checking">بررسی امکان نصب %1$s…</string>
+    <string name="desktop_install_quote_title">نصب %1$s — پیش از نصب بازبینی کنید</string>
+    <string name="desktop_install_quote_download">حجم دانلود (تقریبی، از apt)</string>
+    <string name="desktop_install_quote_installed">حجم پس از نصب (تقریبی، از apt)</string>
+    <string name="desktop_install_quote_free">فضای آزاد این فضای کار</string>
+    <string name="desktop_install_quote_packages">%1$d بسته‌ی جدید نصب خواهد شد.</string>
+    <string name="desktop_install_quote_unknown">apt نتوانست حجم‌ها را گزارش کند (فهرست آفلاین یا شبیه‌سازی ناموفق) — فقط با فضای خالی کافی نصب کنید.</string>
+    <string name="desktop_install_already">%1$s از قبل در این فضای کار نصب است — کاری برای انجام دادن نیست.</string>
+    <string name="desktop_install_confirm">نصب %1$s</string>
+    <string name="desktop_install_cancel">توقف نصب</string>
+    <string name="desktop_install_complete">%1$s نصب شد</string>
+    <string name="desktop_install_complete_body">پس از نصب، %1$s در فضای کار تأیید شد.</string>
+    <string name="desktop_install_failed">نصب دسکتاپ ناموفق بود</string>
+    <string name="desktop_install_verify_failed">apt-get موفقیت گزارش کرد، اما هیچ نشست %1$s در فضای کار پیدا نشد — نصب کامل نشده است. می‌توانید از همین پنل دوباره تلاش کنید.</string>
+    <string name="desktop_install_phase_updating">به‌روزرسانی فهرست بسته‌ها…</string>
+    <string name="desktop_install_phase_downloading">یافتن و دانلود بسته‌ها…</string>
+    <string name="desktop_install_phase_installing">نصب بسته‌ها…</string>
+    <string name="desktop_install_block_distro">این فضای کار Debian یا Ubuntu نیست — نصاب هدایت‌شده فقط از Debian و Ubuntu پشتیبانی می‌کند. برای نصب دستی دسکتاپ از مدیر بسته استفاده کنید.</string>
+    <string name="desktop_install_block_no_apt">هیچ مدیر بسته‌ی APT در این فضای کار پیدا نشد.</string>
+    <string name="desktop_install_block_no_rootfs">این فضای کار فایل‌سیستم ریشه‌ی قابل استفاده‌ای ندارد.</string>
+    <string name="desktop_install_block_no_session">جلسه‌ی فضای کار در حال اجرا نیست — ابتدا فضای کار را اجرا کنید؛ نصاب از طریق آن اجرا می‌شود.</string>
+    <string name="desktop_install_block_no_preset">ابتدا یک دسکتاپ انتخاب کنید.</string>
+    <string name="desktop_install_block_storage">فضای آزاد این فضای کار برای حجم‌های گزارش‌شده‌ی apt کافی نیست. فضا را آزاد کنید یا دسکتاپ کوچک‌تری انتخاب کنید.</string>
+    <string name="feature_desktop_missing_status">هیچ محیط دسکتاپی در این فضای کار پیدا نشد. یک دسکتاپ انتخاب و نصب کنید، یا حالت اجرا را به Web تغییر دهید.</string>
+
+
+    <!-- Issue #10 (2026-09-04): single plus entry + bottom action sheet. -->
+    <string name="file_manager_add">افزودن</string>
+
+    <!-- Issue #9 / #11 (2026-09-03): file-manager editor/selection + settings subtitles. -->
+    <string name="file_manager_new_file">پروندهٔ جدید</string>
+    <string name="file_manager_file_name_hint">نام پرونده (مثلاً notes.txt)</string>
+    <string name="file_manager_template">الگو</string>
+    <string name="file_manager_template_none">پروندهٔ خالی</string>
+    <string name="file_manager_edit">ویرایش</string>
+    <string name="file_manager_info">ویژگی‌ها</string>
+    <string name="file_manager_select">انتخاب</string>
+    <string name="file_manager_selection_title">%1$d مورد انتخاب شد</string>
+    <string name="file_manager_selection_cancel">لغو انتخاب</string>
+    <string name="file_manager_delete_selected">حذف موارد انتخاب‌شده</string>
+    <string name="file_manager_editor_save">ذخیره</string>
+    <string name="file_manager_editor_saved">ذخیره شد</string>
+    <string name="file_manager_editor_modified">تغییر یافته</string>
+    <string name="file_manager_editor_discard_body">تغییرات ذخیره‌نشده لغو شود؟</string>
+    <string name="file_manager_info_path">مسیر</string>
+    <string name="file_manager_info_type">نوع</string>
+    <string name="file_manager_info_size">حجم</string>
+    <string name="file_manager_info_permissions">مجوزها</string>
+    <string name="file_manager_info_modified">آخرین تغییر</string>
+    <string name="file_manager_info_target">پیوند به</string>
+    <string name="global_settings_help_subtitle">گام‌نمای کاربری</string>
+    <string name="global_settings_source_subtitle">مشاهدهٔ کد منبع</string>
+    <string name="global_settings_issues_subtitle">گزارش یک مشکل در گیت‌هاب</string>
+    <string name="global_settings_telegram_channel_subtitle">عضویت در کانال تلگرام</string>
+    <string name="global_settings_developer_subtitle">پیام به توسعه‌دهنده در تلگرام</string>
+
+    <!-- دستورهای سریع: افزودن فرمان سفارشی کاربر -->
+    <string name="workspace_commands_add_custom">افزودن فرمان سفارشی</string>
+    <string name="workspace_commands_mine">فرمان‌های من</string>
+    <string name="custom_command_add_title">افزودن فرمان سفارشی</string>
+    <string name="custom_command_edit_title">ویرایش فرمان</string>
+    <string name="custom_command_name_label">نام</string>
+    <string name="custom_command_name_hint">مثلاً: به‌روزرسانی سیستم</string>
+    <string name="custom_command_command_label">فرمان</string>
+    <string name="custom_command_command_hint">مثلاً: sudo apt update</string>
+    <string name="custom_command_too_long">فرمان بیش از حد بلند است (حداکثر %1$d نویسه، در یک سطر)</string>
+    <string name="custom_command_run_once">اجرای یک‌باره، بدون ذخیره</string>
+    <string name="custom_command_edit_row">ویرایش این فرمان</string>
+    <string name="custom_command_delete_title">فرمان حذف شود؟</string>
+    <string name="custom_command_delete_message">«%1$s» از فرمان‌های من حذف می‌شود. فرمان‌های داخلی تغییر نمی‌کنند.</string>
+    <string name="custom_commands_empty">هنوز فرمان سفارشی ندارید. با + فرمان‌هایی که زیاد اجرا می‌کنید را ذخیره کنید.</string>
+    <string name="settings_phantom_limit_title">محدودیت پردازش</string>
+    <string name="settings_phantom_limit_desc_on">سامانه گزارش می‌دهد که پایش‌گر پردازش فانتوم روشن است.</string>
+    <string name="settings_phantom_limit_desc_off">سامانه گزارش می‌دهد که پایش‌گر پردازش فانتوم خاموش است.</string>
+    <string name="settings_phantom_limit_desc_unknown_android_12">اندروید ۱۲ تنظیم روشن/خاموشی برای این پایش‌گر ندارد. Linexa نمی‌تواند وضعیت آن را بخواند؛ راهنمای زیر به‌جای آن سقف پردازش‌های اندروید ۱۲ را بالا می‌برد.</string>
+    <string name="settings_phantom_limit_desc_unknown_android_12l_13">Linexa این تنظیم را در اندروید ۱۲L تا ۱۳ نمی‌خواند، بنابراین نمی‌تواند وضعیت فعلی را تأیید کند.</string>
+    <string name="settings_phantom_limit_desc_unknown_modern">Linexa نتوانست این تنظیم را بخواند. ممکن است تنظیم نشده باشد یا ارائه‌دهندهٔ تنظیمات دستگاه آن را مسدود کرده باشد.</string>
+    <string name="settings_phantom_limit_desc_not_applicable">اندروید ۱۱ و نسخه‌های پیش‌تر پایش‌گر پردازش فانتوم ندارند.</string>
+    <string name="settings_phantom_limit_status_on">پایش روشن</string>
+    <string name="settings_phantom_limit_status_off">پایش خاموش</string>
+    <string name="settings_phantom_limit_status_unknown">نامشخص</string>
+    <string name="settings_phantom_limit_status_not_applicable">بی‌ربط</string>
+    <string name="settings_phantom_limit_caveat">فقط وضعیت پیکربندی؛ اعمال واقعی در زمان اجرا تأیید نشده است.</string>
+    <string name="settings_phantom_limit_guidance_android_12">اندروید ۱۲ کلید روشن/خاموشی برای این پایش‌گر ندارد. این فرمان به‌جای آن سقف پردازش‌های فانتوم ActivityManager را بالا می‌برد. برخی دستگاه‌ها آن را نادیده می‌گیرند و این یک راه‌حل تضمینی نیست.</string>
+    <string name="settings_phantom_limit_guidance_on">برای خاموش‌کردن این پایش‌گر، یک‌بار این فرمان را از رایانه‌ای با اشکال‌زدایی USB اجرا کنید. برخی دستگاه‌ها آن را نادیده می‌گیرند و این یک راه‌حل تضمینی نیست.</string>
+    <string name="settings_phantom_limit_guidance_unknown">اگر فضای کاری‌ای در پس‌زمینه متوقف می‌شود، این تنظیم معمولاً در این مشکل نقش دارد. می‌توانید آن را از رایانه‌ای با اشکال‌زدایی USB امتحان کنید. برخی دستگاه‌ها آن را نادیده می‌گیرند و این یک راه‌حل تضمینی نیست.</string>
+    <string name="settings_phantom_limit_copy_command">کپی فرمان</string>
+    <string name="desktop_vnc_password_unreadable">رمز VNC ذخیره‌شده روی این دستگاه قابل خواندن نیست، بنابراین دسکتاپ بدون احراز هویت راه‌اندازی نشد. تنظیمات دسکتاپ را باز کنید و رمز جدیدی بگذارید (یا برای اجرا بدون رمز، آن را پاک کنید) و دوباره تلاش کنید.</string>
+    <string name="feature_settings_desktop_password_unreadable">رمز ذخیره‌شده قابل خواندن نیست. رمز جدیدی وارد کنید یا «تولید» را بزنید. پاک کردن عمدی فیلد، دسکتاپ را بدون رمز اجرا می‌کند.</string>
+    <string name="home_search_hint">جستجوی فضاهای کاری</string>
+    <string name="home_filter_all">همه</string>
+    <string name="home_filter_ready">آماده</string>
+    <string name="home_filter_in_progress">در حال انجام</string>
+    <string name="home_filter_broken">خراب</string>
+    <string name="home_sort_label">مرتب‌سازی: %1$s</string>
+    <string name="home_sort_newest">جدیدترین</string>
+    <string name="home_sort_oldest">قدیمی‌ترین</string>
+    <string name="home_sort_name">نام</string>
+    <string name="home_no_results_title">فضای کاری مطابقی پیدا نشد</string>
+    <string name="home_no_results_subtitle">جستجو یا فیلتر دیگری را امتحان کنید.</string>
+    <string name="home_no_results_clear">پاک کردن جستجو و فیلترها</string>
+    <string name="fm_search_hint">جستجو در این پوشه</string>
+    <string name="fm_no_results_title">فایلی پیدا نشد</string>
+    <string name="fm_no_results_description">هیچ فایلی در این پوشه با جستجوی شما مطابقت ندارد.</string>
+    <string name="fm_no_results_clear">پاک کردن جستجو</string>
+    <string name="fm_sort_native">بومی</string>
+    <string name="fm_sort_name">نام</string>
+    <string name="fm_sort_size">اندازه</string>
+    <string name="fm_sort_modified">تغییر</string>
+    <string name="fm_sort_type">نوع</string>
+    <string name="fm_sort_ascending">صعودی</string>
+    <string name="fm_sort_descending">نزولی</string>
+    <string name="activity_host_header">پردازش‌های میزبان · %1$d</string>
+    <string name="activity_host_expand">باز کردن پردازش‌های میزبان</string>
+    <string name="activity_host_collapse">بستن پردازش‌های میزبان</string>
+    <string name="activity_host_expanded">باز شده</string>
+    <string name="activity_host_collapsed">بسته</string>
+    <string name="pkg_manager_queue_title">صف بسته‌ها</string>
+    <string name="pkg_manager_queue_active">فعال: %1$s</string>
+    <string name="pkg_manager_queue_running">یک عملیات بستهٔ دیگر در حال اجراست</string>
+    <plurals name="pkg_manager_queue_waiting">
+        <item quantity="one">%1$d در صف</item>
+        <item quantity="other">%1$d در صف</item>
+    </plurals>
+    <!-- Motion pass 2: search icon-to-field morph (HSearchMorphBar). -->
+    <string name="haven_search_open">باز کردن جستجو</string>
+    <string name="haven_search_close">بستن جستجو</string>
+    <string name="haven_search_clear">پاک کردن جستجو</string>
+</resources>

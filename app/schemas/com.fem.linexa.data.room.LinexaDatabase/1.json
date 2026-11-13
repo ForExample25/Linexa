@@ -1,0 +1,119 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "5f108a1896ca5db7293d41fe48493452",
+    "entities": [
+      {
+        "tableName": "workspaces",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `schemaVersion` INTEGER NOT NULL, `status` TEXT NOT NULL, `distro` TEXT NOT NULL, `displayName` TEXT NOT NULL, `avatarLetter` TEXT NOT NULL, `avatarColorHex` TEXT NOT NULL, `rootfsPath` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, `lastLaunchedAt` INTEGER, `runtimeConfig` TEXT NOT NULL, `terminalSettings` TEXT NOT NULL, `desktopSettings` TEXT, `featureToggles` TEXT NOT NULL, `pluginConfig` TEXT NOT NULL, `attributes` TEXT NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "schemaVersion",
+            "columnName": "schemaVersion",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "distro",
+            "columnName": "distro",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "displayName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "avatarLetter",
+            "columnName": "avatarLetter",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "avatarColorHex",
+            "columnName": "avatarColorHex",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "rootfsPath",
+            "columnName": "rootfsPath",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastLaunchedAt",
+            "columnName": "lastLaunchedAt",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "runtimeConfig",
+            "columnName": "runtimeConfig",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "terminalSettings",
+            "columnName": "terminalSettings",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "desktopSettings",
+            "columnName": "desktopSettings",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "featureToggles",
+            "columnName": "featureToggles",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pluginConfig",
+            "columnName": "pluginConfig",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "attributes",
+            "columnName": "attributes",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '5f108a1896ca5db7293d41fe48493452')"
+    ]
+  }
+}

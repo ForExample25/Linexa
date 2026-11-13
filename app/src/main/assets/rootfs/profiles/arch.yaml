@@ -1,0 +1,71 @@
+# §1.146 — Arch Linux ARM built-in RootFS profile.
+#
+# Verified against an ArchLinuxARM aarch64 rootfs tarball:
+#
+#   * Entries carry a leading "./" (same packing convention as Alpine), which
+#     is why Arch was undetectable before §1.146.
+#   * `./etc/arch-release` is a real 1-byte file. It is EMPTY apart from a
+#     newline, so it identifies the distribution but carries NO version — Arch
+#     is a rolling release and has none. `version_from` is therefore absent
+#     here, unlike Debian/Alpine, and the version resolves to "unknown", which
+#     is the honest answer rather than a fabricated one.
+#   * `./etc/os-release` is a SYMLINK to `../usr/lib/os-release`.
+#   * `./usr/lib/ld-linux-aarch64.so.1` is present and is one of the probe
+#     paths below, but Arch carries no Debian-style multiarch directory whose
+#     name could serve as a layout hint. This profile therefore declares NO
+#     name-based architecture hints (a substring match on "aarch64" would also
+#     hit unrelated files such as the kernel preset). The ELF header is the
+#     authoritative signal. Without it Arch reports RootFsArch.UNKNOWN, and
+#     because detection requires BOTH a distribution and an architecture,
+#     Arch fell through to "could not be detected" even once its marker file
+#     was being seen. This is the reason ElfArchitecture exists.
+#   * Ships /boot with a full kernel image (~44 MB) and initramfs — harmless
+#     under PRoot, but it means Arch archives are much larger than a minirootfs.
+id: arch
+name: Arch Linux ARM
+
+detection:
+  os_release_ids:
+    - arch
+    - archarm
+  marker_files:
+    - etc/arch-release
+    - etc/os-release
+    - usr/lib/os-release
+  # No version_from: `etc/arch-release` is empty (rolling release).
+  # No architecture_hints: see the header note. The ELF probe is the ONLY
+  # architecture signal for this distribution.
+  elf_probe_paths:
+    - usr/bin/bash
+    - usr/bin/pacman
+    - usr/lib/ld-linux-aarch64.so.1
+
+# `aliases` carries `archarm` so an os-release ID of `archarm` (what
+# ArchLinuxARM actually reports) resolves here.
+aliases:
+  - archarm
+  - archlinux
+  - archlinuxarm
+
+supported_architectures: [arm64, armv7l, x86_64]
+
+layout:
+  # `./bin` and `./sbin` are symlinks into `usr/`, and `./lib` likewise — a
+  # fully usr-merged tree. Requiring `bin` would still pass (the symlink
+  # resolves after extraction) but `usr` is the honest requirement.
+  required_directories: [etc, usr, var]
+  shell_candidates: [usr/bin/bash, bin/bash, usr/bin/sh, bin/sh]
+
+install:
+  - ensure_tmp
+  - ensure_dev_shm
+  - ensure_run
+  - ensure_proc_snapshots
+  - ensure_hostinfo_bin
+  - android_account_fixup
+  - seed_resolv_conf
+
+environment:
+  login_shell: /bin/bash
+  shell_args: ["--login"]
+  package_manager: pacman

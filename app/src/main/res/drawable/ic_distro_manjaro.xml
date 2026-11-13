@@ -1,0 +1,14 @@
+<!-- Derived from the official distribution logo artwork in the
+     Linexa IconSvg library (Linexa-Project/IconSvg):
+       assets/icon-packs/linux-distros/manjaro/logos/manjaro.svg
+     Official colors preserved; rendered without any container
+     plate, tint, or border by DistroLogo (ui/components). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="256"
+    android:viewportHeight="256">
+    <path
+        android:fillColor="#35BF5C"
+        android:pathData="M256 0v256h-74.925V0zm-90.54 90.536V256H90.535V90.536zm0-90.536v74.925H74.67V256H0V0z" />
+</vector>

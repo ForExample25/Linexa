@@ -1,0 +1,61 @@
+# §1.146 — Debian built-in RootFS profile.
+#
+# Verified against a Debian rootfs tarball: entries are packed WITHOUT a
+# leading "./", `etc/debian_version` is a real file carrying a bare version
+# string, and `etc/os-release` is a symlink to `../usr/lib/os-release`.
+#
+# The symlink matters: the scan cannot read a symlink's "contents", so
+# os-release is captured from `usr/lib/os-release` when the `etc/` entry is a
+# link. Both paths are listed as markers for that reason.
+id: debian
+name: Debian
+
+detection:
+  os_release_ids:
+    - debian
+  marker_files:
+    - etc/os-release
+    - usr/lib/os-release
+    - etc/debian_version
+  # `etc/debian_version` is a bare version ("12.7", "trixie/sid"), so it can
+  # supply a version when os-release is absent or unreadable.
+  version_from: etc/debian_version
+  # Debian uses multiarch toolchain directories, which name the target CPU
+  # directly. These were the original (and only) hints before §1.146.
+  architecture_hints:
+    aarch64-linux-gnu: arm64
+    ld-linux-aarch64: arm64
+    arm-linux-gnueabihf: armv7l
+    x86_64-linux-gnu: x86_64
+    ld-linux-x86-64: x86_64
+    i386-linux-gnu: i686
+  # Authoritative fallback when the hints find nothing (e.g. a stripped-down
+  # image without multiarch dirs). `bin/dash` is Debian's /bin/sh provider and
+  # is a real ELF binary, unlike `bin/sh` which is a symlink to it.
+  elf_probe_paths:
+    - bin/dash
+    - usr/bin/dash
+    - bin/bash
+    - usr/bin/bash
+
+supported_architectures: [arm64, armv7l, x86_64, i686]
+
+layout:
+  required_directories: [bin, etc, lib, usr, var]
+  shell_candidates: [bin/bash, usr/bin/bash, bin/sh, usr/bin/sh]
+
+# Order matters and is preserved. Debian tarballs ship no /tmp (it is a
+# boot-time tmpfs mount), which is the §1.80 `apt update` mkstemp failure.
+install:
+  - ensure_tmp
+  - ensure_dev_shm
+  - ensure_run
+  - ensure_proc_snapshots
+  - ensure_hostinfo_bin
+  - android_account_fixup
+  - seed_resolv_conf
+
+environment:
+  login_shell: /bin/bash
+  shell_args: ["--login"]
+  package_manager: apt

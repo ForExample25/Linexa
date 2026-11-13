@@ -1,0 +1,52 @@
+From: Linexa Engineering <linexa@fem.linexa>
+Date: 2026-08-04
+Subject: [PATCH] Fix proot-me/proot#182: readlinkat(fd, "", ...) empty-pathname abort
+
+Linexa independent proot build fix. The tracee-side readlinkat() exit
+handler re-reads the translated pathname argument; when the pathname is
+empty (kernel-legal since Linux 2.6.39: the *at syscall then operates on
+dirfd itself), the empty string was passed as the referrer to
+detranslate_path(), which runs compare_paths("/proc", "") -> path.c
+compare_paths2(path_length=0) -> assert(length2 > 0) -> SIGABRT
+(upstream proot-me/proot#182, still open; PR #415 unmerged).
+
+The guard below is the semantically-correct handling of the empty
+pathname: resolve the referrer through /proc/<pid>/fd/<dirfd> instead of
+handing "" to detranslate_path(). This is a byte-equivalent backport of
+the well-tested termux/proot fix (commit c79069fc, 2020-10-17,
+termux/proot#123) which is shipped in termux proot 5.1.107-68.
+
+Upstream status at time of writing (2026-08-04): latest release v5.4.0
+still lacks this guard; proot-me/proot#182 open; PR #415 open/unmerged.
+
+NDEBUG is deliberately NOT used: it would demote the assert to the
+PATHS_ARE_NOT_COMPARABLE fallback, leaving the host target visible as a
+guest path (path-leak/correctness bug) and strip future asserts.
+
+Regression test: test/test-readlinkat-empty-pathname.c (see
+jniLibs/proot-build/test-readlinkat-empty-pathname.c)
+
+diff --git a/src/syscall/exit.c b/src/syscall/exit.c
+index 70dce99..1d47a92 100644
+--- a/src/syscall/exit.c
++++ b/src/syscall/exit.c
+@@ -361,6 +361,19 @@
+ 			break;
+ 		}
+ 
++		if (status == 1) {
++			/* Empty path was passed (""),
++			 * indicating that path is pointed to by fd passed in first argument */
++			word_t dirfd = peek_reg(tracee, ORIGINAL, SYSARG_1);
++			if (syscall_number == PR_readlink || dirfd < 0) {
++				status = -EBADF;
++				break;
++			}
++			status = readlink_proc_pid_fd(tracee->pid, dirfd, referer);
++			if (status < 0)
++				break;
++		}
++
+ 		status = detranslate_path(tracee, referee, referer);
+ 		if (status < 0)
+ 			break;
