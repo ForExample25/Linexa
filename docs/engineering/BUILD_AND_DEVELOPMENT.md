@@ -59,14 +59,10 @@ Out of scope:
 
 ### 4.1 Toolchain
 
-Load the machine's centralized Android toolchain before building:
-
-```bash
-. ~/Tools/env/toolchain.sh                 # Termux
-. /mnt/termux/Tools/env/toolchain.sh       # Ubuntu proot
-```
-
-The environment file provides `JAVA_HOME`, `ANDROID_HOME`/`ANDROID_SDK_ROOT`, `GRADLE_USER_HOME`, and toolchain `PATH` entries.
+Use a full JDK 17 and an Android SDK with platform 34 and build-tools 34.0.0.
+Point Gradle at the SDK with `sdk.dir` in `local.properties` or with
+`ANDROID_HOME`/`ANDROID_SDK_ROOT`. The committed Gradle wrapper downloads the
+pinned Gradle distribution.
 
 | Item | Version | Source |
 |---|---|---|
@@ -119,24 +115,14 @@ Record the exact command and full result on every verification run. Do not repor
 
 The repository contains no `.github/` directory and no CI workflow. CI is therefore not part of this release; run the commands above locally or on your own runner. No lint gate is configured either, so `lintDebug` is report-only.
 
-### 4.7 Termux/Bionic SQLite override
+### 4.7 Termux/Bionic hosts
 
-On an aarch64 Bionic JVM (Termux), a plain build can fail at KSP worker initialization with `UnsatisfiedLinkError: libm.so.6 not found`, because the default SQLite JDBC native is glibc-linked. This is an environment issue, not a project defect.
-
-If that failure occurs, point the JVM at a Bionic-compatible SQLite native before Gradle:
-
-```bash
-export HOME=/data/data/com.termux/files/home
-export TOOLS_ROOT=$HOME/Tools
-. "$TOOLS_ROOT/env/toolchain.sh"
-export JAVA_TOOL_OPTIONS='-Dorg.sqlite.lib.path=/path/to/bionic-sqlite -Dorg.sqlite.lib.name=libsqlitejdbc.so'
-
-./gradlew :app:compileDebugKotlin --offline
-./gradlew :app:compileDebugUnitTestKotlin --offline
-./gradlew :app:testDebugUnitTest --offline     # optional --tests filter
-```
-
-The path is machine-specific; do not check it into the project or replace the centralized toolchain. Without a Bionic SQLite native, use a glibc Linux host.
+On an aarch64 Bionic JVM (Termux), the JVM test suite can fail at KSP worker
+initialization with `UnsatisfiedLinkError: libm.so.6 not found`, because the
+default SQLite JDBC native is glibc-linked. This is an environment issue, not a
+project defect. Use a glibc Linux host or a Bionic-compatible SQLite JDBC
+native when running the suite on Termux. Do not commit machine-specific native
+paths.
 
 ---
 

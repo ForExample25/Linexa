@@ -4,10 +4,12 @@
 
 Copyright (C) 2026 ForExample25.
 
-Linexa is licensed under the GNU General Public License, version 3 or later
-(`GPL-3.0-or-later`). The complete license text is in [`LICENSE`](./LICENSE).
-That license covers Linexa's own source code only. The third-party components
-listed below remain under their own licenses.
+Linexa's own source is licensed under the GNU General Public License,
+version 3 only (`GPL-3.0-only`). The complete license text is in
+[`LICENSE`](./LICENSE). That license covers Linexa's own source code only.
+The third-party components listed below remain under their own licenses.
+Copies published before 2026-11-14 were offered under `GPL-3.0-or-later`;
+that grant remains available for those copies.
 
 This file records every third-party project whose code or artwork is
 distributed in the Linexa APK, with the version shipped, the license, the
@@ -103,6 +105,31 @@ APK and is therefore listed here.
   `LGPL-3.0-or-later`.
 - **libandroid-shmem** — Copyright (c) 2013 Sergii Pylypenko; Copyright (c)
   2017 Fredrik Fornwall.
+
+### 1.2 License compatibility with GPL-3.0-only
+
+Linexa's own source is GPL-3.0-only. The third-party components remain under
+their own licenses; this summary records why the aggregate can be conveyed
+alongside GPLv3 code. It does not replace the license texts.
+
+- **GPL-2.0-or-later** (PRoot): the "or later" option permits use under GPLv3.
+- **GPL-3.0-or-later** (GNU tar): directly compatible with GPLv3.
+- **GPL-2.0-only** (BusyBox): conveyed as a separate executable (`bin/busybox`
+  plus the `libbusybox.so` it loads) and invoked as a host process. It is not
+  linked into the Linexa app; it remains GPL-2.0-only, and its complete source
+  is offered separately under section 5.
+- **Apache-2.0** (Termux terminal modules and app dependencies): compatible
+  with GPLv3.
+- **LGPL-2.1-or-later / LGPL-3.0-or-later** (acl, talloc, and other LGPL
+  libraries): the LGPL permits conveying the combined work under GPLv3 when
+  the LGPL notices and corresponding-source offer are preserved.
+- **Permissive licenses** (BSD-3-Clause, MIT, ISC, 0BSD, Zlib, public domain):
+  compatible with GPLv3.
+- **Zstandard** is conveyed under its BSD-3-Clause option.
+
+No third-party component is relicensed under Linexa's GPL-3.0-only. All
+copyright notices and license texts remain in this file and in
+`app/src/main/assets/licenses/`.
 
 ## 2. App dependencies compiled into the APK
 
@@ -207,10 +234,10 @@ available as follows:
   recipes for the pinned versions. The recipes are public at
   <https://github.com/termux/termux-packages/tree/master/packages>.
 - **Linexa's own source** — the repository that contains this file, which is
-  the complete source of the GPL-3.0-or-later application.
+  the complete source of the GPL-3.0-only application.
 
 **Written offer.** Linexa hereby offers, valid for at least three years from
-the date of the 0.1.0-beta release (2026-11-13), to give any third party a
+the date of the 0.1.0-beta release (2026-11-14), to give any third party a
 complete machine-readable copy of the corresponding source code for the
 GPL- and LGPL-licensed binaries listed above, on a medium customarily used
 for software interchange, for a charge no more than the cost of physically

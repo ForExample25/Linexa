@@ -273,6 +273,7 @@
     <string name="global_settings_version">Version %1$s</string>
 
     <string name="about_title">Open source licenses</string>
+    <string name="about_own_license">Linexa itself is licensed under GPL-3.0-only. The programs listed below remain under their own licenses.</string>
     <!-- States plainly that these are OTHER people's programs shipped inside the
          APK — which is what makes the attribution meaningful rather than a list. -->
     <string name="about_intro">Linexa runs Linux on Android by bundling programs written by other people. Everything below is included in this app, under the license shown. Source for each project is linked.</string>

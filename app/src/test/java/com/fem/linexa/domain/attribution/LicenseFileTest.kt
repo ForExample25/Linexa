@@ -153,8 +153,8 @@ class LicenseFileTest {
         val text = readme.readText()
 
         assertTrue(
-            "the README must name the licence as GPL-3.0-or-later (§1.131)",
-            text.contains("GPL-3.0-or-later")
+            "the README must name the licence as GPL-3.0-only (§1.131)",
+            text.contains("GPL-3.0-only")
         )
         assertTrue(
             "the README must carry the copyright line",

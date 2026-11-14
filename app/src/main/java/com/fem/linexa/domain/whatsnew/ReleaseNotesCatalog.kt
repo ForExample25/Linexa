@@ -75,7 +75,7 @@ object ReleaseNotesCatalog {
                 ),
                 ReleaseChange(
                     ChangeCategory.CHANGED,
-                    "Published under GPL-3.0-or-later, with every bundled third-party " +
+                    "Published under GPL-3.0-only, with every bundled third-party " +
                         "program attributed in Settings → About."
                 )
             )

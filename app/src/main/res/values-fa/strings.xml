@@ -100,6 +100,7 @@
 
     <!-- About -->
     <string name="about_title">درباره</string>
+    <string name="about_own_license">خود Linexa تحت پروانه GPL-3.0-only منتشر می‌شود. برنامه‌های فهرست‌شده در ادامه تحت پروانه‌های خودشان باقی می‌مانند.</string>
     <string name="about_intro">Linexa یک محیط لینوکس کامل است که روی دستگاه اندروید شما اجرا می‌شود، بدون روت، با استفاده از PRoot.</string>
 
     <!-- UI/UX Phase 6: the visible label of the secondary configuration row

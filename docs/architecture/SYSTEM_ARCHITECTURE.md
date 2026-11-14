@@ -59,7 +59,7 @@ Out of scope (covered elsewhere):
 
 | Module | Purpose | License provenance |
 |---|---|---|
-| `:app` | Main application (`com.fem.linexa`) — UI, runtime, DI, Room, package management | Linexa source (GPL-3.0-or-later) |
+| `:app` | Main application (`com.fem.linexa`) — UI, runtime, DI, Room, package management | Linexa source (GPL-3.0-only) |
 | `:terminal-emulator` | Vendored Termux terminal-emulator library (Apache-2.0) | `terminal-emulator/PROVENANCE.md` |
 | `:terminal-view` | Vendored Termux terminal-view library (Apache-2.0) | `terminal-view/PROVENANCE.md` |
 

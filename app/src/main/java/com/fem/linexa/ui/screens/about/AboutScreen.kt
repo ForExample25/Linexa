@@ -187,6 +187,14 @@ private fun ComponentList(
         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
+        item(key = "own-license") {
+            Text(
+                text = stringResource(R.string.about_own_license),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+
         item(key = "intro") {
             Text(
                 text = stringResource(R.string.about_intro),
