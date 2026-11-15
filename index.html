@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Linexa — Linux workspaces on Android, without root</title>
+  <meta name="description" content="Linexa runs isolated Linux workspaces on Android with a real terminal, file manager, package manager, and optional VNC desktop. No root. GPL-3.0. Direct signed APK.">
+  <meta name="theme-color" content="#0A0E0F">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Linexa — Linux workspaces on Android">
+  <meta property="og:description" content="Run isolated Linux workspaces on Android with a terminal, files, packages, and an optional desktop. No root. No account. No analytics.">
+  <meta property="og:url" content="https://forexample25.github.io/Linexa/">
+  <meta property="og:image" content="https://forexample25.github.io/Linexa/assets/feature-graphic.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Linexa — Linux workspaces on Android">
+  <meta name="twitter:description" content="Run isolated Linux workspaces on Android with a terminal, files, packages, and an optional desktop. No root.">
+  <meta name="twitter:image" content="https://forexample25.github.io/Linexa/assets/feature-graphic.png">
+  <link rel="icon" href="assets/favicon.png" type="image/png">
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="alternate" type="application/json" href="release.json" title="Linexa release metadata">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Linexa",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Android 9+",
+    "softwareVersion": "0.1.0-beta",
+    "fileSize": "57257408",
+    "downloadUrl": "https://github.com/ForExample25/Linexa/releases/download/v0.1.0-beta/app-release.apk",
+    "license": "https://www.gnu.org/licenses/gpl-3.0.html",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "author": { "@type": "Organization", "name": "Linexa project", "url": "https://github.com/ForExample25/Linexa" }
+  }
+  </script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/Linexa/" aria-label="Linexa home">
+        <img src="assets/icon.png" width="36" height="36" alt="">
+        <span>Linexa</span>
+      </a>
+      <nav aria-label="Primary">
+        <a href="#features">Features</a>
+        <a href="#screenshots">Screenshots</a>
+        <a href="#install">Install</a>
+        <a href="#verify">Verify</a>
+        <a href="privacy.html">Privacy</a>
+        <a href="https://github.com/ForExample25/Linexa">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero wrap">
+      <div class="hero-copy">
+        <p class="eyebrow"><span class="dot"></span> Android 9+ · arm64-v8a / armeabi-v7a</p>
+        <h1>Linux workspaces<br><span>on Android.</span></h1>
+        <p class="lede">Create isolated Linux environments, open a real PTY terminal, manage files and packages, and connect to an optional VNC desktop — without root, an account, or a cloud service.</p>
+        <div class="actions">
+          <a class="button primary" href="https://github.com/ForExample25/Linexa/releases/download/v0.1.0-beta/app-release.apk">Download signed APK</a>
+          <a class="button ghost" href="https://github.com/ForExample25/Linexa">View source</a>
+        </div>
+        <p class="micro">Beta software · 54.6 MiB · GPL-3.0-only · <a href="#verify">verify the checksum</a></p>
+      </div>
+      <div class="hero-device">
+        <img src="assets/screenshots/01-home.png" width="1080" height="1920" alt="Linexa home screen showing Linux workspace cards">
+      </div>
+    </section>
+
+    <section class="strip">
+      <div class="wrap strip-inner">
+        <div><strong>0.1.0-beta</strong><span>Current release</span></div>
+        <div><strong>57,257,408 B</strong><span>Signed APK</span></div>
+        <div><strong>API 28–34</strong><span>Android 9+</span></div>
+        <div><strong>No root</strong><span>PRoot runtime</span></div>
+        <div><strong>No account</strong><span>Local-first</span></div>
+      </div>
+    </section>
+
+    <section id="features" class="wrap section">
+      <div class="section-head">
+        <p class="kicker">What it does</p>
+        <h2>A Linux environment that fits in your pocket.</h2>
+        <p>Linexa is a workspace manager, not an emulator. Each workspace has its own root filesystem, sessions, packages, and settings.</p>
+      </div>
+      <div class="grid features">
+        <article class="card">
+          <h3>Isolated workspaces</h3>
+          <p>Run multiple Linux environments and switch between them. Each keeps its own files and configuration.</p>
+        </article>
+        <article class="card">
+          <h3>RootFS installer</h3>
+          <p>Import a <code>.tar.gz</code>, <code>.tar.xz</code>, or <code>.tar.zst</code> archive, or download Alpine, Ubuntu, Arch Linux ARM, Debian, or Fedora.</p>
+        </article>
+        <article class="card">
+          <h3>Real PTY terminal</h3>
+          <p>ANSI/cursor rendering, scrollback, selection, copy/paste, pinch-to-zoom, and an extra-keys row.</p>
+        </article>
+        <article class="card">
+          <h3>Package manager</h3>
+          <p>Search, install, update, and remove packages through apt, pacman, apk, dnf, or zypper.</p>
+        </article>
+        <article class="card">
+          <h3>Files and SAF</h3>
+          <p>Browse, edit, import, and export files. The Storage Access Framework provider works without all-files access.</p>
+        </article>
+        <article class="card">
+          <h3>Optional desktop</h3>
+          <p>Connect through the built-in VNC client or a local WebView. VNC mode needs Xvnc inside the guest.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="screenshots" class="wrap section">
+      <div class="section-head">
+        <p class="kicker">Screenshots</p>
+        <h2>Real screens from the beta.</h2>
+        <p>These are unmodified app captures, padded to a 9:16 canvas. No mockups, invented features, or fake ratings.</p>
+      </div>
+      <div class="shots">
+        <figure><img src="assets/screenshots/01-home.png" width="1080" height="1920" loading="lazy" alt="Workspaces home"><figcaption>Workspaces</figcaption></figure>
+        <figure><img src="assets/screenshots/02-activity.png" width="1080" height="1920" loading="lazy" alt="Activity and resource monitor"><figcaption>Activity</figcaption></figure>
+        <figure><img src="assets/screenshots/03-workspace.png" width="1080" height="1920" loading="lazy" alt="Workspace apps and tools"><figcaption>Workspace</figcaption></figure>
+        <figure><img src="assets/screenshots/04-sessions.png" width="1080" height="1920" loading="lazy" alt="Terminal sessions and processes"><figcaption>Sessions</figcaption></figure>
+        <figure><img src="assets/screenshots/05-terminal.png" width="1080" height="1920" loading="lazy" alt="PTY terminal with extra keys"><figcaption>Terminal</figcaption></figure>
+        <figure><img src="assets/screenshots/06-recent-sessions.png" width="1080" height="1920" loading="lazy" alt="Recent terminal sessions"><figcaption>Recent sessions</figcaption></figure>
+        <figure><img src="assets/screenshots/07-package-manager.png" width="1080" height="1920" loading="lazy" alt="Package manager"><figcaption>Packages</figcaption></figure>
+        <figure><img src="assets/screenshots/08-file-manager.png" width="1080" height="1920" loading="lazy" alt="File manager"><figcaption>Files</figcaption></figure>
+      </div>
+    </section>
+
+    <section id="install" class="wrap section">
+      <div class="split">
+        <div class="section-head">
+          <p class="kicker">Install</p>
+          <h2>Direct download, four steps.</h2>
+          <p>Linexa is distributed as a signed APK from GitHub Releases. There is no account and no in-app updater.</p>
+        </div>
+        <ol class="steps">
+          <li><strong>Download</strong> the APK from the release page.</li>
+          <li><strong>Allow</strong> installs from your browser or file manager when Android asks. This is the normal sideload warning.</li>
+          <li><strong>Open</strong> the APK and install it.</li>
+          <li><strong>Launch</strong> Linexa, choose <em>Add a workspace</em>, then import a RootFS archive or download a distribution.</li>
+        </ol>
+      </div>
+      <div class="notice">
+        <strong>Beta notice.</strong> Interfaces, supported guests, and device behaviour may change. Back up important workspace data before upgrading. Linexa does not require root; PRoot provides a user-space guest environment. The app itself runs with ordinary Android permissions.
+      </div>
+    </section>
+
+    <section id="verify" class="wrap section">
+      <div class="section-head">
+        <p class="kicker">Verify</p>
+        <h2>Check what you downloaded.</h2>
+        <p>Every release publishes the SHA-256 and the signing certificate fingerprint. Future updates must use the same certificate.</p>
+      </div>
+      <div class="verify-grid">
+        <div class="code-card">
+          <div class="code-head"><span>SHA-256</span><button data-copy="6ce2d01922ff9a73dea0b37787e5f5e4e83f1b7c52157d3670510ab510293680" type="button">Copy</button></div>
+          <code class="hash">6ce2d01922ff9a73dea0b37787e5f5e4e83f1b7c52157d3670510ab510293680</code>
+        </div>
+        <div class="code-card">
+          <div class="code-head"><span>Certificate SHA-256</span><button data-copy="AA:AB:44:EC:CF:4D:B1:5C:88:16:BD:34:F6:08:64:D7:70:54:32:BF:4F:60:5D:52:0C:00:D5:73:EE:63:C5:20" type="button">Copy</button></div>
+          <code class="hash">AA:AB:44:EC:CF:4D:B1:5C:88:16:BD:34:F6:08:64:D7:70:54:32:BF:4F:60:5D:52:0C:00:D5:73:EE:63:C5:20</code>
+        </div>
+      </div>
+      <pre class="terminal"><code><span class="prompt">$</span> sha256sum app-release.apk
+6ce2d01922ff9a73dea0b37787e5f5e4e83f1b7c52157d3670510ab510293680  app-release.apk
+
+<span class="prompt">$</span> apksigner verify --print-certs app-release.apk
+Verified using v2 scheme: true
+Certificate SHA-256 digest: aaab44ec…63c520</code></pre>
+      <p class="micro">The APK is signed with the project's release key. Do not install a build with a different certificate over this one. The release page also carries the checksum and install notes.</p>
+    </section>
+
+    <section class="wrap section">
+      <div class="split">
+        <div class="section-head">
+          <p class="kicker">Privacy</p>
+          <h2>Local-first by design.</h2>
+          <p>No analytics, advertising, crash reporting, or tracking SDKs. Workspace metadata stays in Room on your device.</p>
+        </div>
+        <div class="privacy-points">
+          <p><strong>No account.</strong> There is no sign-up, login, or cloud sync.</p>
+          <p><strong>Network only when you choose.</strong> RootFS downloads go to public distribution mirrors after you tap Download. Guest software controls its own traffic.</p>
+          <p><strong>No data sale.</strong> We do not receive your workspace data.</p>
+          <p><a href="privacy.html">Read the full privacy policy →</a></p>
+        </div>
+      </div>
+    </section>
+
+    <section class="wrap section">
+      <div class="section-head">
+        <p class="kicker">Distribution</p>
+        <h2>Where to get Linexa.</h2>
+        <p>GitHub Releases is the only currently published channel. Store listings are being prepared and are not claimed here until the platform confirms them.</p>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Channel</th><th>Status</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><strong>GitHub Releases</strong></td><td><span class="pill live">Available</span></td><td>Signed APK, checksum, release notes, source tag.</td></tr>
+            <tr><td>Google Play</td><td><span class="pill pending">Not published</span></td><td>Requires targetSdk 36, an AAB, and a Play Console account.</td></tr>
+            <tr><td>Samsung · Xiaomi · Huawei</td><td><span class="pill pending">Not published</span></td><td>Seller/developer accounts and review are pending.</td></tr>
+            <tr><td>Amazon · Aptoide · Uptodown · APKPure</td><td><span class="pill pending">Not published</span></td><td>Free developer accounts and review are pending.</td></tr>
+            <tr><td>F-Droid · IzzyOnDroid · Accrescent</td><td><span class="pill pending">Not published</span></td><td>Build-policy, size, or target-SDK gates apply.</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="micro">No store badge on this page means no confirmed listing. The detailed status and blockers are in <a href="https://github.com/ForExample25/Linexa/blob/main/docs/distribution/PUBLICATION_STATUS.md">PUBLICATION_STATUS.md</a>.</p>
+    </section>
+
+    <section class="wrap section">
+      <div class="section-head">
+        <p class="kicker">Project</p>
+        <h2>Free software, public source.</h2>
+        <p>Linexa is licensed under GPL-3.0-only. Third-party components keep their own licences; the notices and corresponding-source offer are in the repository.</p>
+      </div>
+      <div class="links">
+        <a href="https://github.com/ForExample25/Linexa">Source code</a>
+        <a href="https://github.com/ForExample25/Linexa/issues">Issues</a>
+        <a href="https://github.com/ForExample25/Linexa/releases">Releases</a>
+        <a href="https://github.com/ForExample25/Linexa/blob/main/THIRD_PARTY_NOTICES.md">Third-party notices</a>
+        <a href="https://github.com/ForExample25/Linexa/blob/main/LICENSE">GPL-3.0 license</a>
+        <a href="https://github.com/ForExample25/Linexa/security/advisories/new">Security report</a>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap footer-inner">
+      <div>
+        <strong>Linexa</strong> · Linux workspaces on Android.
+        <p class="micro">No cookies, no analytics, no external fonts. This page is static.</p>
+      </div>
+      <div class="footer-links">
+        <a href="privacy.html">Privacy</a>
+        <a href="release.json">Release JSON</a>
+        <a href="https://github.com/ForExample25/Linexa">GitHub</a>
+      </div>
+    </div>
+  </footer>
+
+  <script>
+    for (const button of document.querySelectorAll("[data-copy]")) {
+      button.addEventListener("click", async () => {
+        const text = button.getAttribute("data-copy");
+        try {
+          await navigator.clipboard.writeText(text);
+          const old = button.textContent;
+          button.textContent = "Copied";
+          setTimeout(() => { button.textContent = old; }, 1500);
+        } catch {
+          button.textContent = "Select text";
+        }
+      });
+    }
+  </script>
+</body>
+</html>

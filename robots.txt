@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://forexample25.github.io/Linexa/sitemap.xml
