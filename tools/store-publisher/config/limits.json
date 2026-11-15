@@ -1,0 +1,134 @@
+{
+  "schema": 1,
+  "fastlane": {
+    "title": 30,
+    "short_description": 80,
+    "full_description": 4000,
+    "changelog": 500,
+    "screenshots_min": 2,
+    "screenshots_max": 8,
+    "icon": [512, 512],
+    "feature_graphic": [1024, 500],
+    "phone_screenshot": [1080, 1920]
+  },
+  "stores": {
+    "google-play": {
+      "title": 30,
+      "short_description": 80,
+      "full_description": 4000,
+      "screenshots_min": 2,
+      "screenshots_max": 8,
+      "icon": [512, 512],
+      "feature_graphic": [1024, 500],
+      "phone_screenshot": [1080, 1920]
+    },
+    "samsung": {
+      "title": 50,
+      "short_description": 80,
+      "full_description": 4000,
+      "screenshots_min": 2,
+      "screenshots_max": 8,
+      "icon": [512, 512],
+      "feature_graphic": [1024, 500],
+      "phone_screenshot": [1080, 1920]
+    },
+    "xiaomi": {
+      "title": 50,
+      "short_description": 80,
+      "full_description": 4000,
+      "screenshots_min": 2,
+      "screenshots_max": 8,
+      "icon": [512, 512],
+      "feature_graphic": [1024, 500],
+      "phone_screenshot": [1080, 1920]
+    },
+    "huawei": {
+      "title": 64,
+      "short_description": 80,
+      "full_description": 4000,
+      "screenshots_min": 2,
+      "screenshots_max": 8,
+      "icon": [216, 216],
+      "feature_graphic": [1024, 500],
+      "phone_screenshot": [1080, 1920]
+    },
+    "amazon": {
+      "title": 50,
+      "short_description": 1200,
+      "full_description": 4000,
+      "screenshots_min": 3,
+      "screenshots_max": 10,
+      "icon": [512, 512],
+      "small_icon": [114, 114],
+      "feature_graphic": [1024, 500],
+      "landscape_screenshot": [1920, 1080]
+    },
+    "aptoide": {
+      "title": 50,
+      "short_description": 80,
+      "full_description": 4000,
+      "screenshots_min": 2,
+      "screenshots_max": 8,
+      "icon": [512, 512],
+      "feature_graphic": [1024, 500],
+      "phone_screenshot": [1080, 1920]
+    },
+    "uptodown": {
+      "title": 50,
+      "short_description": 80,
+      "full_description": 4000,
+      "screenshots_min": 2,
+      "screenshots_max": 8,
+      "icon": [512, 512],
+      "feature_graphic": [1024, 500],
+      "phone_screenshot": [1080, 1920]
+    },
+    "apkpure": {
+      "title": 50,
+      "short_description": 80,
+      "full_description": 4000,
+      "screenshots_min": 2,
+      "screenshots_max": 8,
+      "icon": [512, 512],
+      "feature_graphic": [1024, 500],
+      "phone_screenshot": [1080, 1920]
+    },
+    "fdroid": {
+      "title": 50,
+      "short_description": 80,
+      "full_description": 4000,
+      "screenshots_min": 2,
+      "screenshots_max": 8,
+      "icon": [512, 512],
+      "feature_graphic": [1024, 500],
+      "phone_screenshot": [1080, 1920]
+    },
+    "izzyondroid": {
+      "title": 50,
+      "short_description": 80,
+      "full_description": 4000,
+      "screenshots_min": 2,
+      "screenshots_max": 8,
+      "icon": [512, 512],
+      "feature_graphic": [1024, 500],
+      "phone_screenshot": [1080, 1920]
+    },
+    "accrescent": {
+      "title": 50,
+      "short_description": 80,
+      "full_description": 4000,
+      "screenshots_min": 2,
+      "screenshots_max": 8,
+      "icon": [512, 512],
+      "feature_graphic": [1024, 500],
+      "phone_screenshot": [1080, 1920]
+    },
+    "github": {
+      "title": 100,
+      "short_description": 500,
+      "full_description": 10000,
+      "screenshots_min": 0,
+      "screenshots_max": 20
+    }
+  }
+}

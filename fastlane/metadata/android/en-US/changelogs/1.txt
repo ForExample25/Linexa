@@ -1,0 +1,8 @@
+First public beta.
+
+• Create isolated Linux workspaces without root.
+• Install Alpine, Ubuntu, Arch Linux ARM, Debian, or Fedora, or import a RootFS archive.
+• Use a persistent PTY terminal, package manager, file manager, and optional VNC desktop.
+• Local-first: no account, no analytics, no cloud dependency.
+
+Beta software: interfaces and device behaviour may change. Back up important workspace data.

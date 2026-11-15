@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "app": "Linexa",
+  "package": "com.fem.linexa",
+  "version": "0.1.0-beta",
+  "versionCode": 1,
+  "channel": "beta",
+  "license": "GPL-3.0-only",
+  "releaseDate": "2026-11-14T08:25:46Z",
+  "releaseUrl": "https://github.com/ForExample25/Linexa/releases/tag/v0.1.0-beta",
+  "downloadUrl": "https://github.com/ForExample25/Linexa/releases/download/v0.1.0-beta/app-release.apk",
+  "fileName": "app-release.apk",
+  "size": 57257408,
+  "sha256": "6ce2d01922ff9a73dea0b37787e5f5e4e83f1b7c52157d3670510ab510293680",
+  "signing": {
+    "scheme": "v2",
+    "certificateDn": "CN=Linexa, OU=Development, O=FemProject, C=US",
+    "certificateSha256": "AA:AB:44:EC:CF:4D:B1:5C:88:16:BD:34:F6:08:64:D7:70:54:32:BF:4F:60:5D:52:0C:00:D5:73:EE:63:C5:20"
+  },
+  "android": {
+    "minSdk": 28,
+    "targetSdk": 34,
+    "abis": ["arm64-v8a", "armeabi-v7a"]
+  },
+  "source": "https://github.com/ForExample25/Linexa",
+  "sourceCommit": "d7e678618b59a27283a07260ab1efd05d6eb8c95",
+  "privacyPolicy": "https://forexample25.github.io/Linexa/privacy.html",
+  "support": "https://github.com/ForExample25/Linexa/issues",
+  "stores": {
+    "github-releases": "PUBLISHED",
+    "github-pages": "PUBLISHED",
+    "google-play": "BLOCKED",
+    "samsung": "WAITING_FOR_USER",
+    "xiaomi": "WAITING_FOR_USER",
+    "huawei": "WAITING_FOR_USER",
+    "amazon": "WAITING_FOR_USER",
+    "aptoide": "WAITING_FOR_USER",
+    "uptodown": "WAITING_FOR_USER",
+    "apkpure": "WAITING_FOR_USER",
+    "fdroid": "BLOCKED",
+    "izzyondroid": "BLOCKED",
+    "accrescent": "NOT_ELIGIBLE"
+  },
+  "notes": "Beta software. No account, no analytics, no ads. Direct APK from GitHub Releases; store listings are not claimed until confirmed."
+}

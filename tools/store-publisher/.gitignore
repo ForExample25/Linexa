@@ -1,0 +1,8 @@
+artifacts/*
+!artifacts/README.md
+reports/*
+!reports/.gitkeep
+logs/*
+!logs/.gitkeep
+__pycache__/
+*.pyc

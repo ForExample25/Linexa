@@ -54,6 +54,19 @@ public source tree.
 
 - [`decisions/ADR_REGISTER.md`](./decisions/ADR_REGISTER.md) — architectural decision register.
 
+## Distribution
+
+- [`distribution/README.md`](./distribution/README.md) — package index, verified artifact, live channels, and status legend.
+- [`distribution/INITIAL_DISTRIBUTION_AUDIT.md`](./distribution/INITIAL_DISTRIBUTION_AUDIT.md) — repository, artifact, signature, and channel audit.
+- [`distribution/STORE_COMPATIBILITY_MATRIX.md`](./distribution/STORE_COMPATIBILITY_MATRIX.md) — per-store fees, artifact rules, and target-SDK requirements.
+- [`distribution/PUBLICATION_STATUS.md`](./distribution/PUBLICATION_STATUS.md) — what is live and what is not published.
+- [`distribution/BLOCKED_ACTIONS.md`](./distribution/BLOCKED_ACTIONS.md) — actions that require the account owner.
+- [`distribution/RELEASE_MANIFEST.md`](./distribution/RELEASE_MANIFEST.md) — verified APK facts and missing release artifacts.
+- [`distribution/PRIVACY_AND_COMPLIANCE_AUDIT.md`](./distribution/PRIVACY_AND_COMPLIANCE_AUDIT.md) — data inventory and store compliance notes.
+- [`distribution/AUTOMATION_GUIDE.md`](./distribution/AUTOMATION_GUIDE.md) — verification, lint, packet, and CI commands.
+- [`distribution/STORE_CREDENTIAL_SETUP.md`](./distribution/STORE_CREDENTIAL_SETUP.md) — signing-secret setup and rotation.
+- [`distribution/SHA256SUMS`](./distribution/SHA256SUMS) — checksum for the published `app-release.apk`.
+
 ## Provenance records
 
 These live next to the code they describe:
