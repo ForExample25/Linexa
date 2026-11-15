@@ -16,7 +16,7 @@ accepted, and no store submission was made by the automation session.
 | Channel | Status | Public URL | Evidence |
 |---|---|---|---|
 | GitHub Releases | `PUBLISHED` | https://github.com/ForExample25/Linexa/releases/tag/v0.1.0-beta | Public release API returns the tag, asset `app-release.apk` (57,257,408 bytes), digest `sha256:6ce2d019…293680`, and `SHA256SUMS`; both assets downloaded and checked locally |
-| GitHub Pages | `PUBLISHED` | https://forexample25.github.io/Linexa/ | Pages API reports `status: built`, branch `gh-pages`, commit `324e2182ca5e54fd94b7d96d82ff51f028d8e342`, build `1370692299`; `curl` returns HTTP 200 for index, privacy, release JSON, icon, and screenshots |
+| GitHub Pages | `PUBLISHED` | https://forexample25.github.io/Linexa/ | Pages API reports `status: built`, branch `gh-pages`, commit `ba9d89af2f6fd6bec23235f3eb3e5d9b236de9ac`, build `1370708562`; `curl` returns HTTP 200 for index, privacy, release JSON, icon, and screenshots |
 
 The Pages site is the public privacy-policy host:
 
@@ -79,6 +79,7 @@ status changes.
 | Release workflow | Added at `.github/workflows/release.yml`; inert until four signing secrets are added |
 | Store publisher tooling | Added under `tools/store-publisher/`; verifies, lints, checks the release, builds manual packets |
 | GitHub Pages | Deployed from orphan `gh-pages`; public privacy URL verified |
+| Zero-account update tracking | Obtainium instructions added to the Pages site and GitHub Release notes; no store account required |
 | GitHub Release | Existing release verified; `SHA256SUMS` uploaded; install, verification, distribution, and privacy notes added |
 | Review branch | `distribution/initial-publishing` pushed; [PR #1](https://github.com/ForExample25/Linexa/pull/1) opened against `main` |
 | Store accounts | **None created** |
@@ -94,13 +95,16 @@ status: built
 html_url: https://forexample25.github.io/Linexa/
 source.branch: gh-pages
 source.path: /
-commit: 324e2182ca5e54fd94b7d96d82ff51f028d8e342
+commit: ba9d89af2f6fd6bec23235f3eb3e5d9b236de9ac
 
 $ curl -fsS -o /dev/null -w '%{http_code}' https://forexample25.github.io/Linexa/
 200
 
 $ curl -fsS https://forexample25.github.io/Linexa/ | grep -F 0.1.0-beta
 0.1.0-beta
+
+$ curl -fsS https://forexample25.github.io/Linexa/ | grep -F Obtainium
+Obtainium
 
 $ curl -fsS https://forexample25.github.io/Linexa/privacy.html | grep -F 'Effective date'
 Effective date

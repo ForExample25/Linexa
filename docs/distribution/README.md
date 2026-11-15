@@ -148,6 +148,7 @@ handles a keystore or a store password.
 - Fastlane metadata.
 - GitHub Pages site and public privacy URL.
 - `SHA256SUMS` asset on the existing GitHub Release.
+- Obtainium instructions for zero-account update tracking.
 - Release workflow (inert until four signing secrets are added).
 - Verification/lint/packet/report tooling.
 - Distribution package proposed in [PR #1](https://github.com/ForExample25/Linexa/pull/1); open, not merged.
