@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "artifact": "app-release.apk",
+  "size": 57257408,
+  "sha256": "6ce2d01922ff9a73dea0b37787e5f5e4e83f1b7c52157d3670510ab510293680",
+  "package": "com.fem.linexa",
+  "versionName": "0.1.0-beta",
+  "versionCode": 1,
+  "minSdk": 28,
+  "targetSdk": 34,
+  "compileSdk": 34,
+  "abis": ["arm64-v8a", "armeabi-v7a"],
+  "signatureScheme": "v2",
+  "signerCertificateSha256": "AA:AB:44:EC:CF:4D:B1:5C:88:16:BD:34:F6:08:64:D7:70:54:32:BF:4F:60:5D:52:0C:00:D5:73:EE:63:C5:20",
+  "signerDn": "CN=Linexa, OU=Development, O=FemProject, C=US",
+  "zipaligned": true,
+  "debuggable": false,
+  "testOnly": false,
+  "license": "GPL-3.0-only",
+  "releaseTag": "v0.1.0-beta",
+  "releaseCommit": "d7e678618b59a27283a07260ab1efd05d6eb8c95"
+}

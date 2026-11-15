@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Privacy Policy — Linexa</title>
+  <meta name="description" content="Linexa privacy policy: no account, no analytics, no advertising, local-first workspace data.">
+  <meta name="theme-color" content="#0A0E0F">
+  <link rel="icon" href="assets/favicon.png" type="image/png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="/Linexa/" aria-label="Linexa home">
+        <img src="assets/icon.png" width="36" height="36" alt="">
+        <span>Linexa</span>
+      </a>
+      <nav aria-label="Primary">
+        <a href="/Linexa/">Home</a>
+        <a href="/Linexa/#install">Install</a>
+        <a href="/Linexa/#verify">Verify</a>
+        <a href="https://github.com/ForExample25/Linexa">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main" class="wrap policy">
+    <p class="kicker">Legal</p>
+    <h1>Privacy Policy</h1>
+    <p class="policy-meta"><strong>Effective date:</strong> 2026-11-15<br>
+    <strong>Applies to:</strong> the Linexa Android application (<code>com.fem.linexa</code>) and these public download pages.</p>
+
+    <p>Linexa is an open-source project maintained by the Linexa project (“Linexa”, “we”, “us”). This policy explains what the app does with data. It is written to match the behaviour of the published <code>0.1.0-beta</code> build.</p>
+
+    <h2>1. Summary</h2>
+    <ul>
+      <li>Linexa does <strong>not</strong> require an account.</li>
+      <li>Linexa does <strong>not</strong> include analytics, advertising, crash reporting, or tracking SDKs.</li>
+      <li>Workspace data stays on your device.</li>
+      <li>The app contacts third-party Linux distribution mirrors only when you choose to download a distribution, or when software inside your Linux workspace accesses the network.</li>
+      <li>We do not sell data. We do not receive your workspace data.</li>
+    </ul>
+
+    <h2>2. Data stored on your device</h2>
+    <p>Linexa stores the following locally in the app's private storage:</p>
+    <ul>
+      <li>Workspace names, distribution metadata, and settings.</li>
+      <li>The Linux root filesystem and files you create inside each workspace.</li>
+      <li>Terminal sessions, command history, task/process state, and app logs.</li>
+      <li>Preferences and, if you enable desktop mode, desktop connection settings.</li>
+      <li>A desktop VNC password, if you set one. It is encrypted with a key held by the Android Keystore before being written to the workspace database.</li>
+    </ul>
+    <p>This data is not uploaded to us. Android cloud backup and device transfer are explicitly configured to exclude the workspace database, workspace files, logs, bootstrap data, and settings preferences.</p>
+    <p>You can delete workspace data inside the app. Clearing the app's storage or uninstalling the app removes the rest, subject to Android's normal backup behaviour for non-excluded preferences.</p>
+
+    <h2>3. Network access</h2>
+    <p>Linexa requests the <code>INTERNET</code> permission. Network access happens in these cases:</p>
+    <ol>
+      <li><strong>Downloading a Linux distribution.</strong> When you tap download, the app requests a root filesystem archive and, where available, its checksum from the distribution's official mirror or a catalog source. Current destinations include:
+        <ul>
+          <li><code>dl-cdn.alpinelinux.org</code> (Alpine Linux)</li>
+          <li><code>cdimage.ubuntu.com</code> (Ubuntu)</li>
+          <li><code>fl.us.mirror.archlinuxarm.org</code> (Arch Linux ARM)</li>
+          <li><code>raw.githubusercontent.com</code> (Debian rootfs artifacts published by the debuerreotype project)</li>
+          <li><code>images.linuxcontainers.org</code> (Linux Containers image server, used for Fedora)</li>
+        </ul>
+      </li>
+      <li><strong>A mirror you configure.</strong> You can set a custom rootfs or package mirror. The app then contacts the host you chose.</li>
+      <li><strong>Software inside your workspace.</strong> A Linux workspace has its own network stack. Package managers and programs you run can contact repositories and services you or they choose. This traffic is controlled by that software, not by Linexa.</li>
+      <li><strong>Desktop Web mode.</strong> The in-app WebView loads <code>http://127.0.0.1:&lt;port&gt;</code>, a loopback address served by software inside your workspace. It does not load arbitrary remote websites.</li>
+      <li><strong>Help and licence links.</strong> Tapping a help or attribution link opens an external browser or app (for example, Telegram). The destination site's policy applies.</li>
+    </ol>
+    <p>When the app contacts a third-party server, that server necessarily receives standard request information such as your IP address, user agent, and the requested URL. Those third parties handle that information under their own privacy policies. Linexa does not receive, log, or combine it.</p>
+
+    <h2>4. Permissions</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Permission</th><th>Why it is used</th><th>When</th></tr></thead>
+        <tbody>
+          <tr><td>Internet / network state</td><td>Download distributions; discover the host DNS configuration</td><td>Normal operation</td></tr>
+          <tr><td>Foreground service</td><td>Keep a workspace running while you use other apps</td><td>When you start a workspace</td></tr>
+          <tr><td>Notifications</td><td>Show workspace and download status</td><td>Android 13+ asks at runtime</td></tr>
+          <tr><td>All files access (<code>MANAGE_EXTERNAL_STORAGE</code>)</td><td>Optional file-manager access to shared storage</td><td>Only if you enable it; the app works with the Storage Access Framework without it</td></tr>
+          <tr><td>Ignore battery optimizations</td><td>Optional, to keep long sessions alive</td><td>Only if you enable it</td></tr>
+          <tr><td>Wake lock</td><td>Optional, time-limited wake lock while a workspace runs</td><td>Only if you enable it</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>Linexa does not request location, contacts, camera, microphone, SMS, call logs, or installed-app inventory. It does not request root.</p>
+
+    <h2>5. Analytics, advertising, and third parties</h2>
+    <p>Linexa contains no advertising, analytics, attribution, or crash-reporting SDK. It does not use Google Play Services, Firebase, Crashlytics, Sentry, or similar services. It does not create an advertising identifier or share data with data brokers.</p>
+    <p>The app bundles third-party free-software components (for example PRoot, BusyBox, GNU tar, tmux, zstd, and the Termux terminal modules). Their licences and copyright notices are listed in the app under <strong>Settings → About → Open source licenses</strong> and in the repository's <code>THIRD_PARTY_NOTICES.md</code>. They do not collect data for us.</p>
+
+    <h2>6. Children</h2>
+    <p>Linexa is a general-purpose developer tool and is not directed to children. We do not knowingly collect personal information from children. Because the app does not collect personal information at all, no special children's data process is used.</p>
+
+    <h2>7. Security</h2>
+    <p>Workspace data is kept in the app's sandbox. Optional secrets such as a desktop VNC password are encrypted with Android Keystore-backed AES-GCM. Backups exclude sensitive workspace data. No method of storage is perfectly secure; protect your device with a screen lock and keep Android updated.</p>
+
+    <h2>8. Your choices</h2>
+    <ul>
+      <li>Use the app without granting optional permissions.</li>
+      <li>Delete individual workspaces inside the app.</li>
+      <li>Clear app storage in Android settings.</li>
+      <li>Uninstall the app.</li>
+      <li>Use a custom mirror or no network at all, subject to the features you choose.</li>
+      <li>Inspect and build the source yourself: <a href="https://github.com/ForExample25/Linexa">github.com/ForExample25/Linexa</a></li>
+    </ul>
+
+    <h2>9. Changes</h2>
+    <p>If the app's data behaviour changes, this policy will be updated in the source repository and on the public download page, with a new effective date. Material changes will be noted in the release notes.</p>
+
+    <h2>10. Contact</h2>
+    <ul>
+      <li>Issue tracker: <a href="https://github.com/ForExample25/Linexa/issues">github.com/ForExample25/Linexa/issues</a></li>
+      <li>Security reports: use GitHub's private security advisory feature on the same repository.</li>
+    </ul>
+    <p>This policy is provided for transparency and does not create rights beyond those required by applicable law. Linexa is free software licensed under GPL-3.0-only.</p>
+
+    <p class="policy-back"><a href="/Linexa/">← Back to Linexa</a></p>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap footer-inner">
+      <div><strong>Linexa</strong> · Linux workspaces on Android.<p class="micro">No cookies, no analytics, no external fonts.</p></div>
+      <div class="footer-links"><a href="/Linexa/">Home</a><a href="release.json">Release JSON</a><a href="https://github.com/ForExample25/Linexa">GitHub</a></div>
+    </div>
+  </footer>
+</body>
+</html>

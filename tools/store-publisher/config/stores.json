@@ -1,0 +1,211 @@
+{
+  "schema": 1,
+  "app": {
+    "name": "Linexa",
+    "package": "com.fem.linexa",
+    "versionName": "0.1.0-beta",
+    "versionCode": 1,
+    "license": "GPL-3.0-only",
+    "repo": "https://github.com/ForExample25/Linexa",
+    "releaseTag": "v0.1.0-beta",
+    "releaseUrl": "https://github.com/ForExample25/Linexa/releases/tag/v0.1.0-beta",
+    "apkUrl": "https://github.com/ForExample25/Linexa/releases/download/v0.1.0-beta/app-release.apk",
+    "siteUrl": "https://forexample25.github.io/Linexa/",
+    "privacyUrl": "https://forexample25.github.io/Linexa/privacy.html",
+    "supportUrl": "https://github.com/ForExample25/Linexa/issues"
+  },
+  "stores": [
+    {
+      "id": "google-play",
+      "name": "Google Play",
+      "status": "BLOCKED",
+      "portal": "https://play.google.com/console/",
+      "artifact": "aab",
+      "metadata": "docs/distribution/metadata/google-play.md",
+      "limits": "google-play",
+      "packet": false,
+      "blockers": [
+        "targetSdk 34; new apps must target API 36 since 2026-08-31",
+        "No AAB artifact",
+        "No Play Console account or US$25 registration",
+        "MANAGE_EXTERNAL_STORAGE declaration risk",
+        "12-tester / 14-day closed test not started"
+      ],
+      "notes": "Highest-reach channel; do not start the test clock before targetSdk 36, AAB, and the permission decision are resolved."
+    },
+    {
+      "id": "samsung",
+      "name": "Samsung Galaxy Store",
+      "status": "WAITING_FOR_USER",
+      "portal": "https://seller.samsungapps.com/",
+      "artifact": "apk",
+      "metadata": "docs/distribution/metadata/samsung.md",
+      "limits": "samsung",
+      "packet": true,
+      "blockers": [
+        "Samsung seller + commercial seller account",
+        "libtermux.so arm64 LOAD alignment is 0x1000; 16KB support required from 2026-07-01"
+      ],
+      "notes": "APK is accepted by the public flow; confirm the 16KB scope in Seller Portal."
+    },
+    {
+      "id": "xiaomi",
+      "name": "Xiaomi GetApps",
+      "status": "WAITING_FOR_USER",
+      "portal": "https://global.developer.mi.com/",
+      "artifact": "apk",
+      "metadata": "docs/distribution/metadata/xiaomi.md",
+      "limits": "xiaomi",
+      "packet": true,
+      "blockers": [
+        "Mi Developer account and OTP"
+      ],
+      "notes": "No target-SDK gate found in public docs; confirm at upload."
+    },
+    {
+      "id": "huawei",
+      "name": "Huawei AppGallery",
+      "status": "WAITING_FOR_USER",
+      "portal": "https://developer.huawei.com/consumer/en/appgallery/",
+      "artifact": "apk",
+      "metadata": "docs/distribution/metadata/huawei.md",
+      "limits": "huawei",
+      "packet": true,
+      "blockers": [
+        "HUAWEI ID + developer identity verification"
+      ],
+      "notes": "No GMS dependency; favourable for Huawei devices."
+    },
+    {
+      "id": "amazon",
+      "name": "Amazon Appstore",
+      "status": "WAITING_FOR_USER",
+      "portal": "https://developer.amazon.com/apps-and-games",
+      "artifact": "apk",
+      "metadata": "docs/distribution/metadata/amazon.md",
+      "limits": "amazon",
+      "packet": true,
+      "blockers": [
+        "Free Amazon developer account + identity/tax details",
+        "Amazon re-signs the app and adds a wrapper"
+      ],
+      "notes": "Needs landscape 1920x1080 screenshots; prepared under assets/screenshots/amazon-landscape/."
+    },
+    {
+      "id": "aptoide",
+      "name": "Aptoide",
+      "status": "WAITING_FOR_USER",
+      "portal": "https://connect.aptoide.com/",
+      "artifact": "apk",
+      "metadata": "docs/distribution/metadata/aptoide.md",
+      "limits": "aptoide",
+      "packet": true,
+      "blockers": [
+        "Aptoide Connect account",
+        "Publisher review"
+      ],
+      "notes": "One submission may reach partner stores; verify each public page."
+    },
+    {
+      "id": "uptodown",
+      "name": "Uptodown",
+      "status": "WAITING_FOR_USER",
+      "portal": "https://www.uptodown.com/consola-de-desarrolladores",
+      "artifact": "apk",
+      "metadata": "docs/distribution/metadata/uptodown.md",
+      "limits": "uptodown",
+      "packet": true,
+      "blockers": [
+        "Free Developers Console account",
+        "Acceptance of the developer terms"
+      ],
+      "notes": "Spanish-first console; English and Spanish listing copy are prepared."
+    },
+    {
+      "id": "apkpure",
+      "name": "APKPure",
+      "status": "WAITING_FOR_USER",
+      "portal": "https://apkpure.com/developer",
+      "artifact": "apk",
+      "metadata": "docs/distribution/metadata/apkpure.md",
+      "limits": "apkpure",
+      "packet": true,
+      "blockers": [
+        "Cloudflare challenge on the developer portal; manual browser only",
+        "Developer account"
+      ],
+      "notes": "Never automate or bypass the Cloudflare challenge."
+    },
+    {
+      "id": "fdroid",
+      "name": "F-Droid",
+      "status": "BLOCKED",
+      "portal": "https://f-droid.org/",
+      "artifact": "source",
+      "metadata": "docs/distribution/metadata/fdroid.md",
+      "limits": "fdroid",
+      "packet": false,
+      "blockers": [
+        "Release build gate throws without signing credentials",
+        "Prebuilt native binaries need trusted provenance or build recipes",
+        "No GitLab account / fdroiddata MR"
+      ],
+      "notes": "F-Droid signs with its own key; cross-upgrades from GitHub require an uninstall."
+    },
+    {
+      "id": "izzyondroid",
+      "name": "IzzyOnDroid",
+      "status": "BLOCKED",
+      "portal": "https://apt.izzysoft.de/fdroid/",
+      "artifact": "apk",
+      "metadata": "docs/distribution/metadata/izzyondroid.md",
+      "limits": "izzyondroid",
+      "packet": false,
+      "blockers": [
+        "57.3 MB APK exceeds the usual 30 MB guideline",
+        "No Codeberg account"
+      ],
+      "notes": "Request an exception honestly or wait for per-ABI splits."
+    },
+    {
+      "id": "accrescent",
+      "name": "Accrescent",
+      "status": "NOT_ELIGIBLE",
+      "portal": "https://accrescent.app/",
+      "artifact": "apk",
+      "metadata": "docs/distribution/metadata/accrescent.md",
+      "limits": "accrescent",
+      "packet": false,
+      "blockers": [
+        "targetSdk 34 vs Play-derived 36",
+        "Alpha store; console availability unverified",
+        "MANAGE_EXTERNAL_STORAGE manual review risk"
+      ],
+      "notes": "Do not submit the 34 build; Accrescent removes non-compliant apps."
+    },
+    {
+      "id": "github-releases",
+      "name": "GitHub Releases",
+      "status": "PUBLISHED",
+      "portal": "https://github.com/ForExample25/Linexa/releases/tag/v0.1.0-beta",
+      "artifact": "apk",
+      "metadata": "docs/distribution/metadata/github-releases.md",
+      "limits": "github",
+      "packet": false,
+      "blockers": [],
+      "notes": "Canonical direct-download and provenance channel."
+    },
+    {
+      "id": "github-pages",
+      "name": "GitHub Pages",
+      "status": "PUBLISHED",
+      "portal": "https://forexample25.github.io/Linexa/",
+      "artifact": "web",
+      "metadata": "docs/distribution/metadata/github-releases.md",
+      "limits": "github",
+      "packet": false,
+      "blockers": [],
+      "notes": "Static download/privacy site; deployed from the orphan gh-pages branch at commit 324e2182ca5e54fd94b7d96d82ff51f028d8e342."
+    }
+  ]
+}
