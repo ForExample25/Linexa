@@ -204,12 +204,14 @@ portal and blockers.
 
 ## 7. GitHub Release checksum and notes
 
-The release already exists. To add a checksum asset and install/verification
-notes:
+The existing release carries `SHA256SUMS` and install/verification notes. To
+re-verify or re-upload the checksum after an owner-approved rebuild of the same
+APK:
 
 ```bash
 cd /path/to/verified/artifact
 sha256sum app-release.apk > SHA256SUMS
+sha256sum -c SHA256SUMS
 gh release upload v0.1.0-beta SHA256SUMS \
   --repo ForExample25/Linexa --clobber
 
@@ -218,6 +220,9 @@ gh release edit v0.1.0-beta \
   --repo ForExample25/Linexa \
   --notes-file /path/to/release-notes.md
 ```
+
+The public checksum is
+https://github.com/ForExample25/Linexa/releases/download/v0.1.0-beta/SHA256SUMS.
 
 Do not replace the APK on an existing release with a different build. If a new
 build is needed, publish a new version code and tag.
