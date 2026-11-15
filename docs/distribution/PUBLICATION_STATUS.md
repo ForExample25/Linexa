@@ -80,6 +80,7 @@ status changes.
 | Store publisher tooling | Added under `tools/store-publisher/`; verifies, lints, checks the release, builds manual packets |
 | GitHub Pages | Deployed from orphan `gh-pages`; public privacy URL verified |
 | Zero-account update tracking | Obtainium instructions added to the Pages site and GitHub Release notes; no store account required |
+| Repository homepage | Set to https://forexample25.github.io/Linexa/ in the public repository settings |
 | GitHub Release | Existing release verified; `SHA256SUMS` uploaded; install, verification, distribution, and privacy notes added |
 | Review branch | `distribution/initial-publishing` pushed; [PR #1](https://github.com/ForExample25/Linexa/pull/1) opened against `main` |
 | Store accounts | **None created** |
