@@ -16,7 +16,7 @@ accepted, and no store submission was made by the automation session.
 | Channel | Status | Public URL | Evidence |
 |---|---|---|---|
 | GitHub Releases | `PUBLISHED` | https://github.com/ForExample25/Linexa/releases/tag/v0.1.0-beta | Public release API returns the tag, asset `app-release.apk` (57,257,408 bytes), digest `sha256:6ce2d019…293680`, and `SHA256SUMS`; both assets downloaded and checked locally |
-| GitHub Pages | `PUBLISHED` | https://forexample25.github.io/Linexa/ | Pages API reports `status: built`, branch `gh-pages`, commit `ba9d89af2f6fd6bec23235f3eb3e5d9b236de9ac`, build `1370708562`; `curl` returns HTTP 200 for index, privacy, release JSON, icon, and screenshots |
+| GitHub Pages | `PUBLISHED` | https://forexample25.github.io/Linexa/ | Pages API reports `status: built`, branch `gh-pages`, commit `f68927e028a7aac80d8043bc970c51cc9c05eff8`, build `1370714042`; `curl` returns HTTP 200 for index, privacy, release JSON, icon, and screenshots |
 
 The Pages site is the public privacy-policy host:
 
@@ -96,7 +96,7 @@ status: built
 html_url: https://forexample25.github.io/Linexa/
 source.branch: gh-pages
 source.path: /
-commit: ba9d89af2f6fd6bec23235f3eb3e5d9b236de9ac
+commit: f68927e028a7aac80d8043bc970c51cc9c05eff8
 
 $ curl -fsS -o /dev/null -w '%{http_code}' https://forexample25.github.io/Linexa/
 200
@@ -109,6 +109,10 @@ Obtainium
 
 $ curl -fsS https://forexample25.github.io/Linexa/privacy.html | grep -F 'Effective date'
 Effective date
+
+$ curl -fsS https://forexample25.github.io/Linexa/release.json \
+  | jq -r .checksumUrl
+https://github.com/ForExample25/Linexa/releases/download/v0.1.0-beta/SHA256SUMS
 
 $ curl -fsS https://forexample25.github.io/Linexa/release.json | jq -r .sha256
 6ce2d01922ff9a73dea0b37787e5f5e4e83f1b7c52157d3670510ab510293680
