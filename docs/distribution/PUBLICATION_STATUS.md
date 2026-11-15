@@ -30,6 +30,14 @@ The checksum asset is:
 
 - https://github.com/ForExample25/Linexa/releases/download/v0.1.0-beta/SHA256SUMS
 
+### Distribution package review
+
+The documentation, Fastlane metadata, release workflow, and publisher tooling
+are proposed in [pull request #1](https://github.com/ForExample25/Linexa/pull/1)
+from the branch `distribution/initial-publishing` into `main`. The pull request
+is **open, not merged**. Merging it would add files to the repository; it would
+not publish the app to any store.
+
 ---
 
 ## 2. Store status
@@ -72,6 +80,7 @@ status changes.
 | Store publisher tooling | Added under `tools/store-publisher/`; verifies, lints, checks the release, builds manual packets |
 | GitHub Pages | Deployed from orphan `gh-pages`; public privacy URL verified |
 | GitHub Release | Existing release verified; `SHA256SUMS` uploaded; install, verification, distribution, and privacy notes added |
+| Review branch | `distribution/initial-publishing` pushed; [PR #1](https://github.com/ForExample25/Linexa/pull/1) opened against `main` |
 | Store accounts | **None created** |
 | Store submissions | **None made** |
 
