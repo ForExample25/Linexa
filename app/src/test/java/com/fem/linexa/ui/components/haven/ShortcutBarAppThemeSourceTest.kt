@@ -25,6 +25,12 @@ import org.junit.Test
  *    kind (no pill, no tint, no terminal palette entry behind the key);
  *  - nothing in the Haven kit reads terminal emulator color state
  *    (`mCurrentColors` / `TerminalColors` / `com.termux.*`).
+ *
+ * 2026-11-13 (10D): the armed→accent/weight mapping itself moved into
+ * `HavenShortcutLabel` and is asserted behaviourally in
+ * HavenShortcutLabelStyleTest (both Haven palettes, both states); this file
+ * keeps the bar-side wiring — which token the bar paints, that only the label
+ * changes, and that the mapping is not re-inlined.
  */
 class ShortcutBarAppThemeSourceTest {
 
@@ -90,19 +96,23 @@ class ShortcutBarAppThemeSourceTest {
 
     @Test
     fun selectionChangesOnlyTheLabelColorToTheThemeAccent() {
+        // 10D: the armed→accent/weight mapping moved into `HavenShortcutLabel`
+        // and is asserted behaviourally in HavenShortcutLabelStyleTest (both
+        // Haven palettes, both states). This test keeps the wiring half: the
+        // bar must style every key label through that one policy and must not
+        // re-inline the mapping it once carried.
         assertTrue(
-            "unselected keys use the theme's shortcut foreground token",
-            shortcutBar.contains("else h.keyFg")
+            "the bar must take its label color from the extracted label policy",
+            shortcutBar.contains("HavenShortcutLabel.color(h, active)")
         )
         assertTrue(
-            "an armed modifier's label becomes the app accent color (h.primary), " +
-                "with the key background untouched",
-            shortcutBar.contains("if (active) h.primary else h.keyFg")
+            "and its label weight from the same policy",
+            shortcutBar.contains("HavenShortcutLabel.weight(active)")
         )
-        assertTrue(
-            "the armed state must stay visually obvious without a background " +
-                "(weight change is allowed)",
-            shortcutBar.contains("if (active) FontWeight.Bold")
+        assertFalse(
+            "the bar must not re-inline the armed→accent mapping",
+            shortcutBar.contains("if (active) h.primary") ||
+                shortcutBar.contains("if (active) FontWeight.Bold")
         )
     }
 

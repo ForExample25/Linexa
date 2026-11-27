@@ -150,6 +150,13 @@ class PackageProviderStreamTest {
         override suspend fun exec(workspaceId: String, rootfsPath: String, command: String): CommandResult =
             behavior(command) { }
 
+        override suspend fun execWithInput(
+            workspaceId: String,
+            rootfsPath: String,
+            command: String,
+            stdin: String
+        ): CommandResult = exec(workspaceId, rootfsPath, command)
+
         override suspend fun openTerminal(
         workspaceId: String,
         rootfsPath: String,

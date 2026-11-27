@@ -20,6 +20,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -332,6 +333,13 @@ fun WorkspaceNavGraph(
             var activeTerminalId by rememberSaveable(workspaceId) {
                 mutableStateOf(requestedTerminalId ?: DEFAULT_TERMINAL_ID)
             }
+            // Incremented ONLY by external terminal intents (deep link / bus).
+            // WorkspaceScreen applies each value once through the ViewModel;
+            // the panel's one-way desktop mirror writes activeTerminalId but
+            // never this counter, so it cannot create a focus feedback loop.
+            var terminalRequestVersion by rememberSaveable(workspaceId) {
+                mutableLongStateOf(if (requestedTerminalId != null) 1L else 0L)
+            }
             // 2026-08-31 (Phase 5/7): whether the terminal session list
             // (overview) is open, hoisted here next to terminalOpen/
             // activeTerminalId so the notification retarget path below can
@@ -350,8 +358,18 @@ fun WorkspaceNavGraph(
             // idempotent because both writes are to the value the link asked for.
             LaunchedEffect(workspaceId, requestedTerminalId) {
                 val target = requestedTerminalId ?: return@LaunchedEffect
-                activeTerminalId = target
-                terminalOpen = true
+                var retarget = false
+                if (target != activeTerminalId) {
+                    activeTerminalId = target
+                    retarget = true
+                }
+                if (!terminalOpen) {
+                    terminalOpen = true
+                    // Reopening on an id that may be minimized still needs the
+                    // ViewModel to restore it.
+                    retarget = true
+                }
+                if (retarget) terminalRequestVersion++
             }
 
             // Phase 6b bug-fix — in-app re-delivery via the bus. The previous
@@ -381,12 +399,16 @@ fun WorkspaceNavGraph(
                 TerminalDeepLinkBus.request.collect { req ->
                     if (req == null || req.workspaceId != workspaceId) return@collect
                     val target = req.terminalId ?: DEFAULT_TERMINAL_ID
+                    var retarget = false
                     if (target != activeTerminalId) {
                         activeTerminalId = target
+                        retarget = true
                     }
                     if (!terminalOpen) {
                         terminalOpen = true
+                        retarget = true
                     }
+                    if (retarget) terminalRequestVersion++
                     // Phase 5/7: the retargeted terminal must actually be the
                     // thing on screen — close the session list if it was up.
                     if (showOverview) {
@@ -447,6 +469,7 @@ fun WorkspaceNavGraph(
                         onTerminalOpenChange = { terminalOpen = it },
                         activeTerminalId = activeTerminalId,
                         onActiveTerminalIdChange = { activeTerminalId = it },
+                        terminalRequestVersion = terminalRequestVersion,
                         showOverview = showOverview,
                         onShowOverviewChange = { showOverview = it },
                         onSetDebugEnabled = viewModel::setDebugEnabled,
@@ -485,6 +508,7 @@ fun WorkspaceNavGraph(
                         // screen can never disagree with the tab the user just
                         // changed.
                         settings = state.featureSettings,
+                        onEnsureVncPassword = viewModel::ensureDesktopVncPassword,
                         onBack = { navController.popBackStack() },
                         // §1.133: Desktop's Terminal action returns to the
                         // workspace screen and opens the overlay there — the

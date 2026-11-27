@@ -1,132 +1,143 @@
 # Workspaces and Sessions
 
-**Status:** Current — describes the implemented workspace/session model, verified against source.
+**Source locations:** `app/src/main/java/com/fem/linexa/service/runtime/SessionManager.kt`,
+`WorkspaceTerminalManager.kt`, `RuntimeService.kt`,
+`app/src/main/java/com/fem/linexa/domain/runtime/RuntimeState.kt`, `TerminalState.kt`,
+`app/src/main/java/com/fem/linexa/ui/screens/activity/`,
+`app/src/main/java/com/fem/linexa/ui/screens/workspace/SessionsSegment.kt`,
+`SessionsViewModel.kt`
 
-**Project:** Linexa Linux Workspace (`com.fem.linexa`)
+This document describes the workspace and session model: lifecycle states, terminal
+sessions, optional tmux persistence, wake-lock policy, process-death recovery, and the
+resource-measurement scopes used by the Activity and Sessions screens. PRoot internals are
+covered in [`../architecture/RUNTIME_ARCHITECTURE.md`](../architecture/RUNTIME_ARCHITECTURE.md).
 
-**Source locations:** `app/src/main/java/com/fem/linexa/service/runtime/SessionManager.kt`, `WorkspaceTerminalManager.kt`, `RuntimeService.kt`, `app/src/main/java/com/fem/linexa/domain/runtime/RuntimeState.kt`, `TerminalState.kt`, `app/src/main/java/com/fem/linexa/ui/screens/activity/`, `app/src/main/java/com/fem/linexa/ui/screens/workspace/SessionsSegment.kt`, `SessionsViewModel.kt`
+## 1. Workspace lifecycle
 
----
+A workspace is persisted as `WorkspaceMetadata` in Room with one of the following statuses:
 
-## 1. Purpose
+`Created` → `Importing(progress)` → `Installed` → `Ready`, with `Broken(reason)`,
+`Repairing`, and `Deleting` as side states. Multiple workspaces can coexist; each has its
+own rootfs, configuration, feature toggles, and terminal sessions.
 
-This document is the authoritative reference for Linexa's workspace and session model: workspace lifecycle, terminal sessions, tmux persistence, wake-lock policy, post-process-death recovery, and the Activity/Sessions measurement scopes.
+## 2. Session and terminal state
 
----
+`SessionManager` is a singleton that tracks one `RuntimeSession` per workspace. Its
+`RuntimeState` is `Stopped`, `Starting`, `Running`, `Stopping`, or `Error`.
+`RuntimeState.Running` carries the process id, start time, and health (`Healthy` or
+`Degraded`). Session state is ephemeral and resets to `Stopped` on a fresh app process.
 
-## 2. Scope
+`WorkspaceTerminalManager` owns a separate `TerminalState` per terminal: `Starting`,
+`Running`, `Stopping`, `Stopped`, or `Error`. `TerminalState.Error` carries a reason and an
+exit code; a negated signal number such as `-9` means `SIGKILL`. A terminal can be in
+`Error` while its workspace remains `Running`. A terminal exit does not stop the
+workspace.
 
-In scope:
+## 3. Terminal allocation and numbering
 
-- Workspace lifecycle states and persistence
-- Session and terminal state machines
-- Terminal allocation and numbering
-- tmux session persistence (opt-in, default off)
-- Wake lock (opt-in, 60-minute ceiling)
-- `onTaskRemoved` policy
-- Startup recovery sweep (orphan reaping)
-- Activity and Sessions measurement scopes
+Terminal ids are allocated from a monotonic per-workspace counter. The first terminal uses
+`DEFAULT_TERMINAL_ID`, and ids are not reused after a terminal closes within the same
+workspace session.
 
-Out of scope:
+`TerminalNumbering` produces gap-free visible labels `T1..TN` for the terminal bar and the
+Sessions screen. Navigation and runtime bookkeeping continue to use the internal ids.
 
-- PRoot runtime internals: [`architecture/RUNTIME_ARCHITECTURE.md`](../architecture/RUNTIME_ARCHITECTURE.md)
-- Desktop/VNC: [`features/DESKTOP_AND_VNC.md`](./DESKTOP_AND_VNC.md)
-- File manager: [`features/FILE_MANAGER.md`](./FILE_MANAGER.md)
-- Task manager: [`features/TASK_MANAGER.md`](./TASK_MANAGER.md)
+## 4. Optional tmux persistence
 
----
+`feature.terminal.persistence` is opt-in and disabled by default. When enabled, a closed
+terminal can reattach to a tmux server running inside the workspace while the runtime is
+alive. App-process death still ends the guest; tmux persists only in memory within the
+running container.
 
-## 3. Current implementation status
+The tmux binary is vendored in `jniLibs/`. tmux runs outside PRoot on the host, using
+`tmux -S <socket> new-session -A -s <name> <inner command>`. It is not on the critical
+startup path: the PTY executes PRoot directly, and `PRootContainerRuntime` refuses to run
+tmux as the core PTY child. `TmuxPersist` and `wrapWithTmux` provide the optional
+persistence backend.
 
-| Area | Status | Evidence |
-|---|---|---|
-| Workspace lifecycle (Created→Importing→Installed→Ready→Broken→Repairing→Deleting) | Implemented | `domain/workspace/WorkspaceStatus.kt` |
-| SessionManager (one RuntimeSession per workspace) | Implemented | `service/runtime/SessionManager.kt` |
-| WorkspaceTerminalManager (per-terminal TerminalState) | Implemented | `service/runtime/WorkspaceTerminalManager.kt` |
-| RuntimeState / TerminalState sealed models | Implemented | `domain/runtime/RuntimeState.kt`, `TerminalState.kt` |
-| tmux persistence opt-in (default off) | Implemented | `TmuxPersist.kt`, `feature.terminal.persistence` |
-| Wake lock PARTIAL_WAKE_LOCK 60-min ceiling | Implemented | `service/runtime/wakelock/` |
-| onTaskRemoved policy | Implemented | `service/runtime/RuntimeService.kt` |
-| Startup recovery sweep (orphan reaping) | Implemented | `PRootContainerRuntime.kt` startup sweep |
-| Activity/Sessions measurement scopes | Implemented | `ActivityViewModel`, `SessionsViewModel`, `WorkspaceAggregator`, `TerminalNumbering` |
+## 5. Wake lock
 
----
+The runtime notification exposes an optional **Keep awake** action. It acquires a
+`PARTIAL_WAKE_LOCK` with a hard 60-minute ceiling (`WakeLockPolicy.MAX_HOLD_MS`). The limit
+is enforced by the platform timeout and by a generation-guarded internal timer. The action
+label shows the remaining time; tapping it again releases the lock. Stopping, leaving, or
+deleting the workspace releases it as well.
 
-## 4. Technical overview
+The lock is never acquired automatically. A running workspace with no user action holds no
+wake lock.
 
-### 4.1 Workspace lifecycle
+## 6. Task removal behavior
 
-A workspace persists as `WorkspaceMetadata` in Room with status `Created`, `Importing(progress)`, `Installed`, `Ready`, `Broken(reason)`, `Repairing`, or `Deleting`. Multi-workspace persistence is Linexa's core differentiator.
+- If a workspace is active, the foreground service keeps running and the runtime survives
+  the user swiping the task away.
+- If no workspace is active, the service stops itself.
 
-### 4.2 Session and terminal state
+## 7. Process-death recovery
 
-`SessionManager` (`@Singleton`) tracks one `RuntimeSession` per workspace with `RuntimeState` (Stopped/Starting/Running/Stopping/Error) and health. `RuntimeState.Running` carries `pid`, `since`, and `health` (Healthy/Degraded). State is ephemeral — lives only inside SessionManager while the app process is alive, resets to `Stopped` on fresh process start.
+Daemon liveness is tracked in memory. After the app process is killed, the next app start
+runs a startup recovery sweep that:
 
-`WorkspaceTerminalManager` owns per-terminal `TerminalState` (Starting/Running/Stopping/Stopped/Error), independent from workspace-level `RuntimeState`. `TerminalState.Error` carries `reason` and `exitCode` (negated signal number; `-9` = SIGKILL). A workspace can be `Running` while one terminal is `Error`; a terminal `Error` never drives the workspace to `RuntimeState.Error`.
+- kills own-uid processes whose command line references a workspace rootfs;
+- releases stale PRoot scratch directories;
+- removes dead tmux sockets;
+- stops stale GPU host servers.
 
-### 4.3 Terminal allocation and numbering
+This prevents a fresh start from colliding with "address already in use" or a stale lock.
+There is no reattach path after process death: runtime state resets and orphaned workspace
+processes are reaped. A terminal dying inside a live app process does not stop the
+workspace.
 
-Terminal IDs are allocated via a monotonic counter per workspace (`nextTerminalCounters`), first = `DEFAULT_TERMINAL_ID`, never reused after close within a workspace session. `TerminalNumbering` provides gap-free `T1..TN` visible labels used by the terminal bar and Sessions tab; navigation still uses internal ids.
-
-### 4.4 tmux session persistence (opt-in, default off)
-
-`feature.terminal.persistence` reattaches closed terminals to a tmux server inside the workspace while the runtime lives: a closed terminal reopens with its state. App-process death still ends the guest — tmux persists only in-memory within the running container. The tmux binary is vendored in `jniLibs/` (`lib__bin__tmux__.so`). tmux runs **outside** proot, on the host: `tmux -S <sock> new-session -A -s <name> <inner>...`. tmux is NOT on the critical startup path; the pty executes proot directly. `wrapWithTmux`/`TmuxPersist` retained for the persistence backend. `PRootContainerRuntime` refuses to run tmux as the core PTY child.
-
-### 4.5 Wake lock (opt-in, hard ceiling)
-
-The runtime notification carries an opt-in **"Keep awake"** action: a `PARTIAL_WAKE_LOCK` with a hard **60-minute** ceiling (`WakeLockPolicy.MAX_HOLD_MS`), enforced twice — by the platform timeout and by a generation-guarded internal timer. The action's label shows the time left; tapping it again releases it. Stopping, leaving, or deleting the Workspace releases it too. It is never taken automatically — a running Workspace on its own holds no lock. `WorkspaceWakeLockManager` + `WakeLockPolicy` manage acquire/replace/release decisions.
-
-### 4.6 onTaskRemoved (swipe away)
-
-- Workspace **active**: the foreground service keeps running; the runtime survives the swipe.
-- Workspace **idle**: the service stops itself.
-
-### 4.7 After process death
-
-Daemon liveness is in-memory, so after the app process is killed, the next app start's **startup recovery sweep** kills every own-uid process still referencing a workspace rootfs (the same /proc-scan contract), releases stale PRoot scratch scopes, cleans dead tmux sockets, and kills stale GPU host servers. So a fresh start never collides with "address already in use" from an orphaned server. There is **no reattach path** after app-process death — runtime state resets and orphaned workspace processes are reaped. A terminal dying inside a live app process does **not** stop the workspace.
-
-### 4.8 Activity and Sessions measurement scopes
+## 8. Activity and Sessions measurement scopes
 
 | Scope | CPU | RAM | Owner |
 |---|---|---|---|
-| Device | `/proc/stat` delta | `ActivityManager.MemoryInfo` (total − available) | `HostResourceSampler` |
-| Linexa app | `/proc/<own pid>/stat` delta | `Debug.getMemoryInfo` PSS of the app pid | `HostResourceSampler` |
-| Workspace | sum over the whole workspace (roots + descendants + rootfs-path matches) | `Pss` (else `VmRSS`, marked approximate) summed over those members | `ResourceMonitor.snapshot` + `WorkspaceAggregator` |
+| Device | `/proc/stat` delta | `ActivityManager.MemoryInfo` (total minus available) | `HostResourceSampler` |
+| Linexa app | `/proc/<own pid>/stat` delta | `Debug.getMemoryInfo` PSS of the app process | `HostResourceSampler` |
+| Workspace | sum over the whole workspace (roots, descendants, and rootfs-path matches) | PSS, else `VmRSS` marked approximate, summed over members | `ResourceMonitor.snapshot` + `WorkspaceAggregator` |
 | Android host (Activity) | per-pid delta over every readable `/proc` entry | PSS/RSS per readable pid | `HostProcessScanner` |
 
-The app process and the PRoot processes are different pids, so neither figure contains the other. Device figures enter a workspace number only as the RAM-bar denominator. The Activity host list is bounded by Android's `/proc` visibility; the card reports readable and inaccessible counts rather than claiming all device processes.
+The app process and PRoot processes are different pids, so neither figure contains the
+other. Device figures enter a workspace number only as the RAM-bar denominator. The
+Activity host list is bounded by Android's `/proc` visibility; the UI reports readable and
+inaccessible counts rather than claiming a complete device view.
 
-**Decisions:**
-- Device CPU is usually unavailable (SELinux-denied on Android 8+); `DeviceCpu.readable` distinguishes *unavailable* from *measuring*. The UI says "Not exposed by this Android version" instead of a bare dash. No substitute metric is invented.
-- One roll-up (`WorkspaceAggregator`, pure, unit-tested) is used by every screen. Pids reachable from two roots are counted once; unknown CPU stays null; one `VmRSS` fallback marks the whole RAM sum approximate.
-- All CPU percentages are shares of total device capacity, normalised by online core capacity. Rows use `utime + stime` only. Per-core values are keyed by kernel core number.
-- Whole-workspace membership adds rootfs-path matching to the ppid walk, so independent terminals, detached daemons, and orphans belong to the selected workspace only. Every PRoot supervisor for that rootfs is marked protected.
-- Rows and aggregate come from one `snapshot`; CPU state is keyed by `(pid, starttime)` so PID reuse starts pending instead of inheriting a dead process's counters.
-- Consistent session numbers: `TerminalNumbering` gives gap-free `T1..TN` labels.
-- Ended sessions keep a duration frozen at the moment the UI first saw them end, are never sampled, and offer Details / Restart / Remove — no "Open".
-- Polling: one loop per screen, only while the screen is STARTED (`rememberIsForeground`), single monitored workspace on Activity, ticks serialised and coalesced (<750 ms apart).
-- Storage removed from both screens (File Manager owns it). `SessionsViewModel` no longer depends on `WorkspaceFileManager`.
+Conventions shared by the screens:
 
-New files introduced: `domain/resource/WorkspaceAggregator.kt`, `domain/runtime/TerminalNumbering.kt`, `ui/components/Foreground.kt`, `ui/components/haven/HavenResource.kt`. Rewritten: `ActivityViewModel`, `ActivityScreen` (body), `SessionsViewModel`, `SessionsSegment`. Edited: `HostResourceSampler`, `strings.xml`.
+- Device CPU may be unavailable because Android denies `/proc/stat`. `DeviceCpu.readable`
+  distinguishes unavailable from measuring, and the UI says so instead of showing a bare
+  dash. No substitute metric is invented.
+- `WorkspaceAggregator` is the single pure roll-up used by every screen. A pid reachable
+  from two roots is counted once; unknown CPU stays `null`; a `VmRSS` fallback marks the
+  whole RAM sum approximate.
+- CPU percentages are shares of total device capacity, normalized by online core capacity.
+  Rows use `utime + stime` only. Per-core values are keyed by kernel core number.
+- Workspace membership combines the ppid walk with rootfs-path matching, so independent
+  terminals, detached daemons, and orphans are attributed to the selected workspace.
+- Rows and the aggregate come from one snapshot. CPU state is keyed by `(pid, starttime)`
+  so pid reuse starts pending rather than inheriting a dead process's counters.
+- Ended sessions keep their duration frozen at the moment the UI first observes the end,
+  are never sampled, and offer Details / Restart / Remove instead of Open.
+- Polling runs once per screen, only while the screen is started (`rememberIsForeground`).
+  Activity monitors one selected workspace; ticks are serialized and coalesced at the
+  shared 2 s cadence.
 
----
+## 9. Behavior notes and limits
 
-## 5. Limitations and known issues
+- Session and terminal state are runtime-only. No Room entity persists them across process
+  death.
+- Device CPU is frequently unavailable on modern Android and is reported as unavailable.
+- Workspace attribution uses the ppid tree and `/proc/<pid>/cmdline` rootfs-path matching.
+  Reparented daemons and orphans are included when their command line exposes the rootfs
+  path; the startup sweep remains the fallback.
+- Android `/proc` visibility limits the Activity host list. Linexa does not use root,
+  Shizuku, or ADB to widen it.
+- Storage figures are owned by the File Manager. The Activity and Sessions screens do not
+  display a second storage total.
 
-- Session/terminal state is runtime-only; no persistence across process death. No new Room entities for sessions.
-- Device CPU reads are SELinux-denied on many devices; reported as unavailable, never guessed.
-- `/proc/environ`-based environment-marker attribution is **not implemented** (INVESTIGATE only). Current attribution is the union of the ppid tree and `/proc/<pid>/cmdline` rootfs-path matches; it is expected to include reparented daemons and orphans, but real PRoot argv shapes are device-unverified.
-- Android `/proc` visibility limits the Activity host list. The UI discloses readable/inaccessible counts; it never claims a full device view or uses root/Shizuku/ADB.
-- Real-device validation is pending for `/proc/stat` readability, `smaps_rollup`/`last_core`, and SIGTERM under the app's SELinux domain.
-- Core flows still need on-device verification; see [`engineering/TESTING_STRATEGY.md`](../engineering/TESTING_STRATEGY.md).
+## 10. Related documentation
 
----
-
-## 6. Related documentation
-
-- [`architecture/RUNTIME_ARCHITECTURE.md`](../architecture/RUNTIME_ARCHITECTURE.md) — PRoot runtime, session launch, PTY
-- [`architecture/DATA_AND_PERSISTENCE.md`](../architecture/DATA_AND_PERSISTENCE.md) — Room, WorkspaceMetadata, status lifecycle
-- [`features/TERMINAL_AND_LINUX_RUNTIME.md`](./TERMINAL_AND_LINUX_RUNTIME.md) — PRoot, exec/daemon paths
-- [`features/TASK_MANAGER.md`](./TASK_MANAGER.md) — process attribution, termination
-- [`engineering/TESTING_STRATEGY.md`](../engineering/TESTING_STRATEGY.md) — verification status
-- [`decisions/ADR_REGISTER.md`](../decisions/ADR_REGISTER.md) — sessions Keep/Fix/Refactor decision
+- [`../architecture/RUNTIME_ARCHITECTURE.md`](../architecture/RUNTIME_ARCHITECTURE.md) — PRoot runtime, session launch, PTY
+- [`../architecture/DATA_AND_PERSISTENCE.md`](../architecture/DATA_AND_PERSISTENCE.md) — Room, workspace status lifecycle
+- [`TERMINAL_AND_LINUX_RUNTIME.md`](./TERMINAL_AND_LINUX_RUNTIME.md) — terminal UI and launch paths
+- [`TASK_MANAGER.md`](./TASK_MANAGER.md) — process attribution and termination
+- [`../engineering/TESTING_STRATEGY.md`](../engineering/TESTING_STRATEGY.md) — test layers and device checks

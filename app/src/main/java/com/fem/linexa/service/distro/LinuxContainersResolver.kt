@@ -36,9 +36,7 @@ class LinuxContainersResolver @Inject constructor(
         val listingUrl = "$BASE_URL/${source.distro}/${source.release}/${source.arch}/default/"
         val html = textFetcher.getText(listingUrl)
 
-        val latestTimestamp = TIMESTAMP_DIR_REGEX.findAll(html)
-            .map { it.groupValues[1] }
-            .maxOrNull()
+        val latestTimestamp = latestBuildTimestamp(html)
             ?: throw IllegalStateException(
                 "No build directories found at $listingUrl — linuxcontainers.org's layout " +
                     "may have changed, or ${source.distro}/${source.release}/${source.arch} doesn't exist"
@@ -52,13 +50,25 @@ class LinuxContainersResolver @Inject constructor(
         )
     }
 
+    /**
+     * Newest build timestamp in an Apache autoindex body, or null.
+     *
+     * Acceptance finding (2026-11-26): the live server now percent-encodes the
+     * colon in the href (`href="20261116_22%3A14/"`), so a `HH:MM`-only
+     * pattern matched nothing and every linuxcontainers.org resolve failed
+     * with "No build directories found" even though the directory exists.
+     * Both spellings are accepted; the captured value is used verbatim in the
+     * build URL (the server serves either form). Timestamps in this
+     * fixed-width `YYYYMMDD_HH:MM` shape sort correctly as strings, so max()
+     * picks the newest build without date parsing.
+     */
+    internal fun latestBuildTimestamp(html: String): String? =
+        TIMESTAMP_DIR_REGEX.findAll(html).map { it.groupValues[1] }.maxOrNull()
+
     companion object {
         private const val BASE_URL = "https://images.linuxcontainers.org/images"
 
-        // Apache-style autoindex: `<a href="20240724_20:33/">20240724_20:33/</a>`.
-        // Timestamps in this YYYYMMDD_HH:MM form sort correctly as plain
-        // strings, so plain max() over the matches picks the newest build
-        // without needing to actually parse them as dates.
-        private val TIMESTAMP_DIR_REGEX = Regex("""href="(\d{8}_\d{2}:\d{2})/"""")
+        private val TIMESTAMP_DIR_REGEX =
+            Regex("""href="(\d{8}_\d{2}(?::|%3A)\d{2})/"""")
     }
 }

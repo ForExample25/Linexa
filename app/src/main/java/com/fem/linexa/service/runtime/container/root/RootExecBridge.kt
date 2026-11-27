@@ -1,5 +1,8 @@
 package com.fem.linexa.service.runtime.container.root
 
+import com.fem.linexa.core.logging.DebugCapture
+import com.fem.linexa.core.perf.PerfCounters
+import com.fem.linexa.core.perf.PerfTrace
 import com.fem.linexa.domain.runtime.CommandResult
 import java.io.File
 import java.io.IOException
@@ -7,6 +10,7 @@ import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.PosixFilePermission
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -63,7 +67,16 @@ class RootExecBridge(
     /** Diagnostic sink; production wires the app logger and the runtime trace. */
     private val log: (String) -> Unit = {},
     private val dispatcher: CoroutineDispatcher = Dispatchers.IO,
-    private val pollIntervalMs: Long = 100L,
+    /**
+     * Cadence used for a short burst after a request was accepted (and at the
+     * start of a session). LINEXA-PERF-016: the previous fixed 100 ms poll ran
+     * ten wake-ups per second for the whole session, including while the app
+     * was backgrounded and the root shell could not be interacted with.
+     * [idlePollIntervalMs] is now the steady state; a detected request
+     * temporarily tightens it.
+     */
+    private val pollIntervalMs: Long = ACTIVE_POLL_INTERVAL_MS,
+    private val idlePollIntervalMs: Long = IDLE_POLL_INTERVAL_MS,
     private val nowMs: () -> Long = { System.currentTimeMillis() }
 ) {
 
@@ -71,6 +84,13 @@ class RootExecBridge(
     private var pollJob: Job? = null
     private var scope: CoroutineScope? = null
     private var lastHeartbeatAt = 0L
+
+    /**
+     * F-035: regenerated on every [start]. Requests must echo it from the
+     * marker; a request left over from an earlier bridge session is rejected.
+     */
+    @Volatile
+    private var sessionToken: String? = null
 
     private val tmpDir: File get() = File(rootfsPath, "tmp")
     private val controlDir: File get() = File(rootfsPath, RootExecProtocol.CONTROL_DIR)
@@ -96,10 +116,13 @@ class RootExecBridge(
                     log("root-exec bridge start failed: cannot create ${control.absolutePath}")
                     return
                 }
+                val token = UUID.randomUUID().toString()
                 atomicWrite(
                     markerFile,
-                    RootExecProtocol.markerContents(workspaceId, UUID.randomUUID().toString())
+                    RootExecProtocol.markerContents(workspaceId, token)
                 )
+                sessionToken = token
+                restrictControlDir(control)
                 lastHeartbeatAt = 0L
                 writeHeartbeat(force = true)
                 sweepStaleRequests()
@@ -124,23 +147,32 @@ class RootExecBridge(
             // cannot have its fresh marker removed by this stop.
             runCatching { Files.deleteIfExists(markerFile.toPath()) }
             runCatching { Files.deleteIfExists(heartbeatFile.toPath()) }
+            sessionToken = null
         }
         job?.cancel()
         log("root-exec bridge stopped for $workspaceId")
     }
 
     private suspend fun pollLoop() {
+        var lastAcceptedAt = 0L
         try {
             while (currentCoroutineContext().isActive) {
-                try {
+                val accepted = try {
                     writeHeartbeat()
                     scanOnce()
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     log("root-exec bridge scan failed for $workspaceId: ${e.message}")
+                    false
                 }
-                delay(pollIntervalMs)
+                val now = nowMs()
+                if (accepted) lastAcceptedAt = now
+                // LINEXA-PERF-016: fast polling only while a request was just
+                // served (a `sudo` run typically issues a few in a row); the
+                // steady state is the cheap idle cadence.
+                val burst = accepted || (lastAcceptedAt != 0L && now - lastAcceptedAt < BURST_WINDOW_MS)
+                delay(if (burst) pollIntervalMs else idlePollIntervalMs)
             }
         } catch (_: CancellationException) {
             // Normal stop.
@@ -169,54 +201,81 @@ class RootExecBridge(
         }
     }
 
-    private fun scanOnce() {
-        val bridgeScope = synchronized(lock) { scope } ?: return
-        val tmp = runCatching { tmpDir.canonicalFile }.getOrNull() ?: return
-        if (!tmp.isDirectory) return
-        tmp.listFiles().orEmpty().forEach { candidate ->
-            if (!RootExecProtocol.isRequestName(candidate.name)) return@forEach
-            val dir = runCatching { candidate.canonicalFile }.getOrNull() ?: return@forEach
-            // A symlinked request directory resolves outside /tmp; reject it.
-            if (dir.parentFile != tmp || !dir.isDirectory) return@forEach
-            if (File(dir, RootExecProtocol.CLAIMED_FILE).exists()) return@forEach
-            if (File(dir, RootExecProtocol.STATUS_FILE).exists()) return@forEach
+    /** @return true when at least one new request was claimed this pass. */
+    private fun scanOnce(): Boolean {
+        // Phase M0-A: same-thread synchronous section around one poll pass.
+        // Never suspends; the launched handler runs on the bridge scope.
+        val scanTrace = PerfTrace.beginSync("Linexa:rootExecScan")
+        val scanStartNanos = if (DebugCapture.isEnabled()) PerfTrace.nowNanos() else -1L
+        var accepted = false
+        try {
+            val bridgeScope = synchronized(lock) { scope } ?: return false
+            val tmp = runCatching { tmpDir.canonicalFile }.getOrNull() ?: return false
+            if (!tmp.isDirectory) return false
+            tmp.listFiles().orEmpty().forEach { candidate ->
+                if (!RootExecProtocol.isRequestName(candidate.name)) return@forEach
+                val dir = runCatching { candidate.canonicalFile }.getOrNull() ?: return@forEach
+                // A symlinked request directory resolves outside /tmp; reject it.
+                if (dir.parentFile != tmp || !dir.isDirectory) return@forEach
+                if (File(dir, RootExecProtocol.CLAIMED_FILE).exists()) return@forEach
+                if (File(dir, RootExecProtocol.STATUS_FILE).exists()) return@forEach
 
-            val commandFile = File(dir, RootExecProtocol.COMMAND_FILE)
-            if (!commandFile.isFile || Files.isSymbolicLink(commandFile.toPath())) return@forEach
-            val size = commandFile.length()
-            if (size > RootExecProtocol.MAX_COMMAND_BYTES) {
-                // Claim so the guest gets an immediate, explicit failure
-                // instead of the 15-second accept timeout.
-                if (File(dir, RootExecProtocol.CLAIMED_FILE).createNewFile()) {
-                    log("root-exec bridge rejected ${dir.name}: command size $size bytes")
-                    writeFailure(
-                        dir,
-                        "linexa: the root request is too large (${size} bytes; limit ${RootExecProtocol.MAX_COMMAND_BYTES})"
-                    )
+                val commandFile = File(dir, RootExecProtocol.COMMAND_FILE)
+                if (!commandFile.isFile || Files.isSymbolicLink(commandFile.toPath())) return@forEach
+                val size = commandFile.length()
+                if (size > RootExecProtocol.MAX_COMMAND_BYTES) {
+                    // Claim so the guest gets an immediate, explicit failure
+                    // instead of the 15-second accept timeout.
+                    if (File(dir, RootExecProtocol.CLAIMED_FILE).createNewFile()) {
+                        log("root-exec bridge rejected ${dir.name}: command size $size bytes")
+                        writeFailure(
+                            dir,
+                            "linexa: the root request is too large (${size} bytes; limit ${RootExecProtocol.MAX_COMMAND_BYTES})"
+                        )
+                    }
+                    return@forEach
                 }
-                return@forEach
-            }
-            if (size <= 0L) return@forEach
-            // Claim BEFORE execution; this is the replay/concurrency guard.
-            if (!File(dir, RootExecProtocol.CLAIMED_FILE).createNewFile()) return@forEach
-            // stop() may have cancelled the poller between listing and the
-            // claim. Never leave a claimed request waiting on a status that
-            // this bridge will not write. The check and launch share the
-            // lock stop() takes, so a handler cannot be born cancelled.
-            val launched = synchronized(lock) {
-                if (pollJob?.isActive != true) {
-                    false
-                } else {
-                    bridgeScope.launch { handle(dir) }
-                    true
+                if (size <= 0L) return@forEach
+                // F-035: a request must echo the current session's token.
+                val suppliedToken = readToken(File(dir, RootExecProtocol.TOKEN_FILE))
+                if (suppliedToken == null || suppliedToken != sessionToken) {
+                    if (File(dir, RootExecProtocol.CLAIMED_FILE).createNewFile()) {
+                        log("root-exec bridge rejected ${dir.name}: request token mismatch")
+                        writeFailure(
+                            dir,
+                            "linexa: the root request is not from this bridge session"
+                        )
+                    }
+                    return@forEach
                 }
+                // Claim BEFORE execution; this is the replay/concurrency guard.
+                if (!File(dir, RootExecProtocol.CLAIMED_FILE).createNewFile()) return@forEach
+                // stop() may have cancelled the poller between listing and the
+                // claim. Never leave a claimed request waiting on a status that
+                // this bridge will not write. The check and launch share the
+                // lock stop() takes, so a handler cannot be born cancelled.
+                val launched = synchronized(lock) {
+                    if (pollJob?.isActive != true) {
+                        false
+                    } else {
+                        bridgeScope.launch { handle(dir) }
+                        true
+                    }
+                }
+                if (!launched) {
+                    writeFailure(dir, "linexa: the root bridge stopped before it could run the command")
+                    return@forEach
+                }
+                log("root-exec bridge accepted ${dir.name} for $workspaceId")
+                accepted = true
             }
-            if (!launched) {
-                writeFailure(dir, "linexa: the root bridge stopped before it could run the command")
-                return@forEach
+        } finally {
+            PerfTrace.endSync(scanTrace)
+            if (scanStartNanos >= 0L) {
+                PerfCounters.bridgeScan(PerfTrace.nowNanos() - scanStartNanos)
             }
-            log("root-exec bridge accepted ${dir.name} for $workspaceId")
         }
+        return accepted
     }
 
     private suspend fun handle(dir: File) {
@@ -278,8 +337,47 @@ class RootExecBridge(
         }
     }
 
-    private fun readCommand(file: File): String {
-        val bytes = Files.readAllBytes(file.toPath())
+    /** F-035: reads a bounded, non-symlink token file; null when invalid. */
+    private fun readToken(file: File): String? = try {
+        if (!file.isFile || Files.isSymbolicLink(file.toPath())) {
+            null
+        } else if (file.length() > RootExecProtocol.MAX_TOKEN_BYTES) {
+            null
+        } else {
+            file.readText(Charsets.UTF_8).trim().takeIf { it.isNotEmpty() }
+        }
+    } catch (_: Exception) {
+        null
+    }
+
+    /**
+     * F-035: the control directory holds the liveness marker and heartbeat.
+     * Tightening it to 0700 (and the files to 0600) is defence in depth: the
+     * guest runs as the same uid, so this is not a hard boundary, but it
+     * keeps the mailbox out of group/other reach and documents intent.
+     */
+    private fun restrictControlDir(dir: File) {
+        runCatching {
+            Files.setPosixFilePermissions(
+                dir.toPath(),
+                setOf(
+                    PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE,
+                    PosixFilePermission.OWNER_EXECUTE
+                )
+            )
+            listOf(markerFile, heartbeatFile).forEach { file ->
+                if (file.isFile) {
+                    Files.setPosixFilePermissions(
+                        file.toPath(),
+                        setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE)
+                    )
+                }
+            }
+        }
+    }
+
+    private fun readCommand(file: File): String {        val bytes = Files.readAllBytes(file.toPath())
         if (bytes.size > RootExecProtocol.MAX_COMMAND_BYTES) {
             throw IOException("command exceeds ${RootExecProtocol.MAX_COMMAND_BYTES} bytes")
         }
@@ -386,6 +484,20 @@ class RootExecBridge(
     }
 
     companion object {
+        /** LINEXA-PERF-016: fast cadence right after a request was served. */
+        private const val ACTIVE_POLL_INTERVAL_MS = 100L
+
+        /**
+         * F-025: steady-state cadence. 500 ms is the audit's recommended upper
+         * bound: a `sudo` request is still picked up promptly, while an idle
+         * workspace session costs two wake-ups per second instead of the
+         * audited ten.
+         */
+        private const val IDLE_POLL_INTERVAL_MS = 500L
+
+        /** How long one accepted request keeps the fast cadence alive. */
+        private const val BURST_WINDOW_MS = 3_000L
+
         /** Abandoned, never-claimed requests are swept after one hour. */
         private const val STALE_REQUEST_MS = 60L * 60L * 1000L
 

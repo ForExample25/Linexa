@@ -35,6 +35,51 @@ class DesktopWebModeTest {
         assertEquals("http://127.0.0.1:65535/", DesktopWebMode.buildUrl(65535))
     }
 
+    // ── origin pinning (finding 037) ─────────────────────────────────────
+
+    @Test
+    fun navigationWithinTheSameOriginIsAllowed() {
+        val pinned = "http://127.0.0.1:8080/"
+        assertTrue(DesktopWebMode.isPinnedNavigation(pinned, "http://127.0.0.1:8080/app"))
+        assertTrue(DesktopWebMode.isPinnedNavigation(pinned, "http://127.0.0.1:8080/app?q=1"))
+        // Userinfo does not change the origin the browser connects to.
+        assertTrue(DesktopWebMode.isPinnedNavigation(pinned, "http://user@127.0.0.1:8080/app"))
+    }
+
+    @Test
+    fun defaultPortsCompareAsTheSameOrigin() {
+        assertTrue(
+            DesktopWebMode.isPinnedNavigation(
+                "http://127.0.0.1/",
+                "http://127.0.0.1:80/app"
+            )
+        )
+        assertTrue(
+            DesktopWebMode.isPinnedNavigation(
+                "https://127.0.0.1:443/",
+                "https://127.0.0.1/app"
+            )
+        )
+    }
+
+    @Test
+    fun anotherHostPortOrSchemeIsRefused() {
+        val pinned = "http://127.0.0.1:8080/"
+        assertEquals(false, DesktopWebMode.isPinnedNavigation(pinned, "http://127.0.0.1:8081/"))
+        assertEquals(false, DesktopWebMode.isPinnedNavigation(pinned, "http://192.168.1.7:8080/"))
+        assertEquals(false, DesktopWebMode.isPinnedNavigation(pinned, "https://127.0.0.1:8080/"))
+        assertEquals(false, DesktopWebMode.isPinnedNavigation(pinned, "http://localhost:8080/"))
+    }
+
+    @Test
+    fun nonHttpSchemesAndMalformedTargetsAreRefused() {
+        val pinned = "http://127.0.0.1:8080/"
+        assertEquals(false, DesktopWebMode.isPinnedNavigation(pinned, "file:///etc/passwd"))
+        assertEquals(false, DesktopWebMode.isPinnedNavigation(pinned, "content://com.example/x"))
+        assertEquals(false, DesktopWebMode.isPinnedNavigation(pinned, "javascript:alert(1)"))
+        assertEquals(false, DesktopWebMode.isPinnedNavigation(pinned, "not a url"))
+    }
+
     // ── LAN share ────────────────────────────────────────────────────────
 
     @Test

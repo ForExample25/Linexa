@@ -6,7 +6,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
@@ -277,7 +276,9 @@ private fun MiniSessionCard(
 ) {
     val h = HavenTheme.colors
     val shape = RoundedCornerShape(7.dp)
-    BoxWithConstraints(modifier = modifier) {
+    // This card never reads the box constraints; BoxWithConstraints only made
+    // the scope available and paid for the subcomposition it enables.
+    Box(modifier = modifier) {
         // The tiny card paints its own terminal surface, matching the real
         // overview cards rather than the Settings page behind them.
         Column(

@@ -3,6 +3,7 @@ package com.fem.linexa.ui.screens.desktop
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.fem.linexa.core.i18n.linexaString
 import com.fem.linexa.R
 import com.fem.linexa.core.logging.Logger
 import com.fem.linexa.domain.runtime.RuntimeState
@@ -17,6 +18,7 @@ import com.fem.linexa.service.runtime.desktop.X11Environment
 import com.fem.linexa.service.runtime.desktop.X11Provider
 import com.fem.linexa.service.runtime.desktop.X11SessionManager
 import com.fem.linexa.service.runtime.desktop.X11SocketReadiness
+import com.fem.linexa.service.runtime.features.DesktopInstallationService
 import com.fem.linexa.service.runtime.features.DesktopPreset
 import com.fem.linexa.service.runtime.features.DesktopRunMode
 import com.fem.linexa.service.runtime.features.DesktopTouchMode
@@ -103,12 +105,21 @@ class DesktopViewModel @Inject constructor(
     private val x11SessionManager: X11SessionManager,
     /** Workspace path layout (§7): resolves the rootfs path for host-side
      *  X-socket readiness checks. */
-    private val fileManager: WorkspaceFileManager
+    private val fileManager: WorkspaceFileManager,
+    /** The one desktop installation engine, shared with the Features guided installer. */
+    private val desktopInstaller: DesktopInstallationService
 ) : AndroidViewModel(application) {
 
     private var binder: RuntimeBinder? = null
     private var currentWorkspaceId: String? = null
     private var observeJob: Job? = null
+
+    /**
+     * LINEXA-PERF-011: per-workspace `-localhost` capability verdict for the
+     * installed Xvnc binary. Invalidated when an install replaces the binary
+     * ([autoInstallXvnc]); the desktop's own daemons are unaffected.
+     */
+    private val xvncCapsCache = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
 
     /**
      * Desktop Modes: the run-mode configuration the screen was given
@@ -347,7 +358,7 @@ class DesktopViewModel @Inject constructor(
         currentWorkspaceId = workspaceId
         val runtimeBinder = binder
         if (runtimeBinder == null) {
-            _desktopState.value = DesktopUiState.Error(getApplication<Application>().getString(R.string.desktop_not_connected))
+            _desktopState.value = DesktopUiState.Error(getApplication<Application>().linexaString(R.string.desktop_not_connected))
             Logger.e("DesktopViewModel", "startDesktop called without a RuntimeBinder for $workspaceId")
             return
         }
@@ -356,7 +367,7 @@ class DesktopViewModel @Inject constructor(
 
         viewModelScope.launch {
             if (!runtimeBinder.hasActiveSession(workspaceId)) {
-                _desktopState.value = DesktopUiState.Error(getApplication<Application>().getString(R.string.desktop_session_not_running))
+                _desktopState.value = DesktopUiState.Error(getApplication<Application>().linexaString(R.string.desktop_session_not_running))
                 Logger.e("DesktopViewModel", "Session not running for $workspaceId — start it from the workspace screen")
                 return@launch
             }
@@ -373,12 +384,31 @@ class DesktopViewModel @Inject constructor(
             // environment) or the compatibility VNC path. The override is
             // the §28 fallback: an X11 failure offers the VNC path explicitly
             // instead of silently switching backends under the user.
+            //
+            // [attempt] records which daemons this start actually launched,
+            // so a refusal that never reached a daemon (e.g. NoSession, a
+            // missing web command, a fail-closed auth gate) cannot tear down
+            // an X server the user started by other means.
+            val attempt = StartAttempt()
             when (desktopConfig.desktopMode) {
-                DesktopRunMode.WEBVIEW -> startWebDesktop(workspaceId, runtimeBinder)
+                DesktopRunMode.WEBVIEW -> startWebDesktop(workspaceId, runtimeBinder, attempt)
                 DesktopRunMode.VNC -> when (backendOverride ?: desktopConfig.desktopBackend) {
-                    GuiBackend.X11 -> startX11Desktop(workspaceId, runtimeBinder)
-                    GuiBackend.VNC -> startVncDesktop(workspaceId, runtimeBinder)
+                    GuiBackend.X11 -> startX11Desktop(workspaceId, runtimeBinder, attempt)
+                    GuiBackend.VNC -> startVncDesktop(workspaceId, runtimeBinder, attempt)
                 }
+            }
+
+            // A start that ended anywhere but Running must not leave its
+            // half-built resources behind: the recorded display and port made
+            // the NEXT attempt reuse them (and skip the stale socket/lock
+            // sweep), which is the "works once, then fails" second-launch bug.
+            // Only the daemons THIS attempt launched are touched.
+            val outcome = _desktopState.value
+            if (outcome is DesktopUiState.Error ||
+                outcome is DesktopUiState.X11Failed ||
+                outcome is DesktopUiState.NoSession
+            ) {
+                releaseFailedStart(workspaceId, runtimeBinder, attempt)
             }
         }
     }
@@ -395,7 +425,11 @@ class DesktopViewModel @Inject constructor(
      * - **resolution preset** ([FeatureSettings.desktopResolution]) instead of
      *   the display-derived geometry alone.
      */
-    private suspend fun startVncDesktop(workspaceId: String, runtimeBinder: RuntimeBinder) {
+    private suspend fun startVncDesktop(
+        workspaceId: String,
+        runtimeBinder: RuntimeBinder,
+        attempt: StartAttempt
+    ) {
         try {
                 // Read once, before the probe, because the declared session
                 // binary is part of the probe command (§1.118). This is a
@@ -420,38 +454,70 @@ class DesktopViewModel @Inject constructor(
                     workspaceId,
                     DesktopStartupProbe.command(declared?.session)
                 )
-                val discovery = DesktopStartupProbe.parse(probe.output)
-                if (!discovery.wellFormed) {
-                    // Not a failure by itself — `xvncFound` is already false, so
-                    // the auto-install path below runs exactly as it would for a
-                    // genuinely missing Xvnc. Logged because "the guest returned
-                    // something unexpected" and "Xvnc is absent" lead to the same
-                    // place and should not be indistinguishable afterwards.
+                // §16.3.1 / finding 001: `var` because the auto-install path
+                // below replaces the whole result with a post-install reading.
+                var discovery = DesktopStartupProbe.parse(probe.output)
+                // Finding 009: an incomplete probe answered nothing. The old
+                // code read xvncFound=false as "Xvnc is absent" and started a
+                // package-manager install on a transient PRoot failure. Fail
+                // with a retryable error instead; nothing is installed.
+                if (discovery.probeFailed) {
+                    _desktopState.value = DesktopUiState.Error(
+                        getApplication<Application>().linexaString(R.string.desktop_probe_failed)
+                    )
                     Logger.w(
                         TAG,
-                        "§16.3.1 combined probe output was malformed for $workspaceId " +
-                            "(exit=${probe.exitCode}) — treating Xvnc as missing"
+                        "§16.3.1 combined probe was INCOMPLETE for $workspaceId " +
+                            "(exit=${probe.exitCode}, quality=${discovery.quality}) — " +
+                            "not treating it as Xvnc missing"
+                    )
+                    return
+                }
+                if (!discovery.wellFormed) {
+                    // Framing survived but the optional capability section did
+                    // not. Not a failure of the start yet: the bounded retry
+                    // below re-asks just that question (findings 006/026).
+                    Logger.w(
+                        TAG,
+                        "§16.3.1 combined probe quality=${discovery.quality} for $workspaceId " +
+                            "(exit=${probe.exitCode}) — capability will be retried once"
                     )
                 }
-
-                // The session probe's stdout, as captured by the combined exec.
-                // Replaced below if the auto-install path runs, so that a
-                // session manager pulled in as an install dependency is still
-                // seen — preserving the pre-§16.3.1 ordering, where the session
-                // was always probed after the install completed.
-                var sessionProbeOutput = discovery.sessionProbeOutput
 
                 if (!discovery.xvncFound) {
                     val installed = autoInstallXvnc(runtimeBinder, workspaceId)
                     if (!installed) return
-                    // Re-probe the session after the install, exactly as the
-                    // pre-§16.3.1 order did: the install may have brought in an
-                    // X client of its own, and the earlier reading predates it.
-                    sessionProbeOutput = runtimeBinder.execCommand(
-                        workspaceId,
-                        DesktopSessionProvisioner.detectSessionCommand(declared?.session)
-                    ).output
+                    // Finding 001: re-run the FULL combined probe, not just the
+                    // session half. The install replaced the guest's Xvnc, so
+                    // `localhostSupported` must describe the server that will
+                    // actually start; the old session-only refresh left the
+                    // pre-install answer (false) in place and failed a
+                    // no-password start with desktop_vnc_loopback_unsupported.
+                    // The same exec also refreshes the session section, because
+                    // the install may have pulled in an X client.
+                    discovery = reProbeAfterXvncInstall(runtimeBinder, workspaceId, declared)
+                    // Finding 009, post-install case: the refresh is an exec
+                    // too. If it did not answer, the session section is empty
+                    // and the capability is unearned; treating that as "no
+                    // session" would reach a preset install on an unknown
+                    // guest. Refuse with the same retryable error instead.
+                    if (discovery.probeFailed) {
+                        _desktopState.value = DesktopUiState.Error(
+                            getApplication<Application>().linexaString(R.string.desktop_probe_failed)
+                        )
+                        Logger.w(
+                            TAG,
+                            "§16.3.1 post-install probe was INCOMPLETE for $workspaceId " +
+                                "(quality=${discovery.quality}) — nothing further was installed"
+                        )
+                        return
+                    }
                 }
+
+                // Findings 006/015: re-ask the capability question at most once
+                // if the combined probe lost that section. Bounded inside the
+                // guest, so it cannot turn into a second 120 s wait.
+                discovery = retryCapabilityIfNeeded(runtimeBinder, workspaceId, discovery)
 
                 // §1.114: resolve the desktop session BEFORE starting the X
                 // server. Xvnc with no client is the grey-screen state this
@@ -459,7 +525,7 @@ class DesktopViewModel @Inject constructor(
                 // client at all must be told so instead of being handed a
                 // running-but-empty desktop. Probing first also means nothing
                 // is started that would then have to be torn down.
-                var sessionPath = sessionPathFrom(declared, sessionProbeOutput)
+                var sessionPath = sessionPathFrom(declared, discovery.sessionProbeOutput)
                 if (sessionPath == null) {
                     // Desktop Provisioning (§16): a chosen preset is installed
                     // through the guest's own package manager before giving
@@ -493,7 +559,7 @@ class DesktopViewModel @Inject constructor(
                 val port = portRegistry.allocateVnc(workspaceId)
                 // §7: the display is workspace-scoped too — one workspace can
                 // no longer address another's X server.
-                val display = x11SessionManager.allocateDisplay(
+                val display = x11SessionManager.allocateFreshDisplay(
                     workspaceId,
                     fileManager.getRootfsPath(workspaceId).absolutePath
                 )
@@ -505,63 +571,56 @@ class DesktopViewModel @Inject constructor(
                     ) == VncAuthRequirement.BlockedUnreadable
                 ) {
                     _desktopState.value = DesktopUiState.Error(
-                        getApplication<Application>().getString(R.string.desktop_vnc_password_unreadable)
+                        getApplication<Application>().linexaString(R.string.desktop_vnc_password_unreadable)
                     )
                     Logger.e(TAG, "Xvnc not started for $workspaceId: saved VNC password unreadable (fail-closed)")
                     return
                 }
                 val requestedPassword = desktopConfig.desktopVncPassword.takeIf { it.isNotEmpty() }
-                val provisioned = requestedPassword != null && run {
-                    val result = runtimeBinder.execCommand(
-                        workspaceId,
-                        DesktopVncAuthProvisioner.provisionCommand(requestedPassword, guestHome)
-                    )
-                    if (result.exitCode != 0) {
-                        // Pre-release audit fix (2026-09-02): the old behaviour
-                        // degraded to an unauthenticated start here. That is a
-                        // security regression the user never asked for: with
-                        // Android's lack of per-app localhost isolation, any
-                        // local app could attach to the desktop with no
-                        // credential. Fail CLOSED instead — surface the error
-                        // and start nothing. The user can install vncpasswd in
-                        // the guest or clear the configured password.
-                        Logger.w(
-                            TAG,
-                            "VNC password provisioning failed for $workspaceId " +
-                                "(exit=${result.exitCode}) — refusing to start unauthenticated"
-                        )
-                    }
-                    result.exitCode == 0
-                }
+                // Finding 031: the secret goes on stdin, never argv. Provisioning
+                // failure is fail-closed below — the old behaviour degraded to an
+                // unauthenticated start, which any local app could attach to
+                // (Android grants no per-app localhost isolation).
+                val provisioned = requestedPassword != null &&
+                    provisionVncPassword(runtimeBinder, workspaceId, requestedPassword, guestHome)
                 if (requestedPassword != null && !provisioned) {
                     _desktopState.value = DesktopUiState.Error(
-                        getApplication<Application>().getString(R.string.desktop_vnc_auth_provision_failed)
+                        getApplication<Application>().linexaString(R.string.desktop_vnc_auth_provision_failed)
                     )
                     Logger.e(TAG, "Xvnc not started for $workspaceId: VNC auth provisioning failed (fail-closed)")
                     return
                 }
                 val securityArgs = DesktopVncAuthProvisioner.securityArgs(provisioned, guestHome)
-                // Phase 07 (OPT-SEC-004, Step B2): fail closed BEFORE any
-                // process exists when the server could be neither restricted
-                // to loopback (-localhost unsupported on this guest's Xvnc)
-                // nor authenticated (no password provisioned). With Android's
-                // lack of per-app localhost isolation that combination is
-                // reachable by every local app with no credential.
+                // Phase 07 (OPT-SEC-004, Step B2) + finding 007: fail closed
+                // BEFORE any process exists when the server would have no
+                // authentication. Loopback is NOT an authentication boundary on
+                // Android, so even a `-localhost`-capable Xvnc needs explicit
+                // user consent for a password-less start.
                 if (DesktopVncAuthProvisioner.unauthenticatedStartBlocked(
-                        discovery.localhostSupported,
-                        securityArgs
+                        securityArgs,
+                        desktopConfig.desktopVncAllowUnauthenticated
                     )
                 ) {
                     _desktopState.value = DesktopUiState.Error(
-                        getApplication<Application>().getString(R.string.desktop_vnc_loopback_unsupported)
+                        getApplication<Application>().linexaString(
+                            if (!discovery.localhostSupported) {
+                                R.string.desktop_vnc_loopback_unsupported
+                            } else {
+                                R.string.desktop_vnc_no_auth_requires_consent
+                            }
+                        )
                     )
                     Logger.e(
                         TAG,
-                        "Xvnc not started for $workspaceId: cannot restrict to loopback and no VNC password (fail-closed)"
+                        "Xvnc not started for $workspaceId: no VNC password and no explicit consent (fail-closed)"
                     )
                     return
                 }
 
+                // The attempt owns this daemon from the moment startDaemon is
+                // called (it may restart an incumbent before launching), so a
+                // later failure must stop it (releaseFailedStart).
+                attempt.markTouched(DAEMON_XVNC)
                 val started = runtimeBinder.startDaemon(
                     workspaceId,
                     DAEMON_XVNC,
@@ -569,7 +628,7 @@ class DesktopViewModel @Inject constructor(
                 )
                 if (!started) {
                     _desktopState.value = DesktopUiState.Error(
-                        getApplication<Application>().getString(R.string.desktop_xvnc_start_failed)
+                        getApplication<Application>().linexaString(R.string.desktop_xvnc_start_failed)
                     )
                     Logger.e("DesktopViewModel", "Xvnc daemon failed to start for $workspaceId")
                     return
@@ -596,15 +655,43 @@ class DesktopViewModel @Inject constructor(
                     return
                 }
 
-                // Phase 07 (OPT-SEC-004, Step B3): the port answering is not
-                // the same fact as "loopback-only" — verify the server's
-                // actual bind address now that the listener exists. A
-                // non-loopback listener stops the server here, before any
-                // session attaches.
-                vncBindViolationMessage(workspaceId, port, runtimeBinder)?.let { violationMessage ->
-                    runCatching { runtimeBinder.stopDaemon(workspaceId, DAEMON_XVNC) }
-                    _desktopState.value = DesktopUiState.Error(violationMessage)
-                    return
+                // Phase 07 (OPT-SEC-004, Step B3) + finding 016: the port
+                // answering is not the same fact as "loopback-only". The
+                // tri-state proof distinguishes a verified loopback bind from
+                // "no evidence" — and the latter must never pass as proof.
+                when (val proof = vncLoopbackProof(workspaceId, port, runtimeBinder)) {
+                    is DesktopVncAuthProvisioner.LoopbackProof.Violation -> {
+                        runCatching { runtimeBinder.stopDaemon(workspaceId, DAEMON_XVNC) }
+                        _desktopState.value = DesktopUiState.Error(
+                            getApplication<Application>().getString(
+                                R.string.desktop_vnc_loopback_bind_violation,
+                                proof.offenders
+                            )
+                        )
+                        return
+                    }
+                    DesktopVncAuthProvisioner.LoopbackProof.Unverified -> {
+                        if (!provisioned && !desktopConfig.desktopVncAllowUnauthenticated) {
+                            runCatching { runtimeBinder.stopDaemon(workspaceId, DAEMON_XVNC) }
+                            _desktopState.value = DesktopUiState.Error(
+                                getApplication<Application>().linexaString(
+                                    R.string.desktop_vnc_bind_unverified
+                                )
+                            )
+                            Logger.e(
+                                TAG,
+                                "Xvnc bind could not be verified for $workspaceId and no password is set (fail-closed)"
+                            )
+                            return
+                        }
+                        Logger.w(
+                            TAG,
+                            "VNC bind probe produced no listing for $workspaceId — " +
+                                "loopback-only is unverified; continuing because " +
+                                (if (provisioned) "a password is required" else "the user consented to no authentication")
+                        )
+                    }
+                    DesktopVncAuthProvisioner.LoopbackProof.Verified -> Unit
                 }
 
                 // §1.114: the session is started only once the X server is
@@ -612,6 +699,7 @@ class DesktopViewModel @Inject constructor(
                 // display, exits, and takes its own daemon host down with it.
                 // §14: the daemon command carries the full X11 environment
                 // (DISPLAY + TMPDIR + XKB_CONFIG_ROOT) explicitly.
+                attempt.markTouched(DesktopSessionProvisioner.DAEMON_NAME)
                 val sessionStarted = runtimeBinder.startDaemon(
                     workspaceId,
                     DesktopSessionProvisioner.DAEMON_NAME,
@@ -629,7 +717,7 @@ class DesktopViewModel @Inject constructor(
                     // rather than leave a grey screen behind a "Running" state.
                     runCatching { runtimeBinder.stopDaemon(workspaceId, DAEMON_XVNC) }
                     _desktopState.value = DesktopUiState.Error(
-                        getApplication<Application>().getString(
+                        getApplication<Application>().linexaString(
                             R.string.desktop_session_start_failed,
                             DesktopSessionProvisioner.sessionDisplayName(sessionPath)
                         )
@@ -645,7 +733,7 @@ class DesktopViewModel @Inject constructor(
                         "port=$port, auth=${if (provisioned) "VncAuth" else "None"})"
                 )
             } catch (e: Exception) {
-                _desktopState.value = DesktopUiState.Error(e.message ?: getApplication<Application>().getString(R.string.desktop_unknown_error))
+                _desktopState.value = DesktopUiState.Error(e.message ?: getApplication<Application>().linexaString(R.string.desktop_unknown_error))
                 Logger.e("DesktopViewModel", "X server start exception", e)
             }
     }
@@ -684,7 +772,11 @@ class DesktopViewModel @Inject constructor(
      *    workspace's server (PRoot does not isolate pids); daemons are
      *    stopped by their own (workspace, name) key only.
      */
-    private suspend fun startX11Desktop(workspaceId: String, runtimeBinder: RuntimeBinder) {
+    private suspend fun startX11Desktop(
+        workspaceId: String,
+        runtimeBinder: RuntimeBinder,
+        attempt: StartAttempt
+    ) {
         fun fail(reason: String) {
             _desktopState.value = DesktopUiState.X11Failed(reason)
             _x11State.value = X11SessionState.X11_FAILED
@@ -705,7 +797,7 @@ class DesktopViewModel @Inject constructor(
             // so removeStaleSocket could delete the socket of a still-live
             // Xvnc from a previous VNC-mode session.
             runCatching { runtimeBinder.stopDaemon(workspaceId, DAEMON_XVNC) }
-            val display = x11SessionManager.allocateDisplay(workspaceId, rootfsPath)
+            val display = x11SessionManager.allocateFreshDisplay(workspaceId, rootfsPath)
 
             // Provider selection: deterministic and traced (§28 — the user
             // must be able to see which transport the desktop is using).
@@ -735,22 +827,64 @@ class DesktopViewModel @Inject constructor(
                 "${X11Environment.profileScriptCommand(display)}; " +
                     DesktopStartupProbe.command(declared?.session)
             )
-            val discovery = DesktopStartupProbe.parse(probe.output)
-            var sessionProbeOutput = discovery.sessionProbeOutput
+            // §16.3.1 / finding 001: `var` because a successful auto-install
+            // immediately replaces the whole result before the Xvnc provider
+            // branch reads `localhostSupported`.
+            var discovery = DesktopStartupProbe.parse(probe.output)
+            // Finding 009: same rule as the VNC run mode — an incomplete probe
+            // is unknown, not "Xvnc absent". Nothing is installed on it.
+            if (discovery.probeFailed) {
+                fail(getApplication<Application>().linexaString(R.string.desktop_probe_failed))
+                Logger.w(
+                    TAG,
+                    "§16.3.1 combined probe was INCOMPLETE for $workspaceId " +
+                        "(exit=${probe.exitCode}, quality=${discovery.quality}) — " +
+                        "not treating it as Xvnc missing"
+                )
+                return
+            }
+            if (!discovery.wellFormed) {
+                // The Xvnc provider retries this below; Termux:X11 does not
+                // read localhostSupported at all, so no retry is spent there.
+                Logger.w(
+                    TAG,
+                    "§16.3.1 combined probe quality=${discovery.quality} for $workspaceId " +
+                        "(exit=${probe.exitCode}) — capability section is not complete"
+                )
+            }
 
             if (provider == X11Provider.XVNC && !discovery.xvncFound) {
                 val installed = autoInstallXvnc(runtimeBinder, workspaceId)
                 if (!installed) {
-                    fail(getApplication<Application>().getString(R.string.desktop_xvnc_missing))
+                    fail(getApplication<Application>().linexaString(R.string.desktop_xvnc_missing))
                     return
                 }
-                sessionProbeOutput = runtimeBinder.execCommand(
-                    workspaceId,
-                    DesktopSessionProvisioner.detectSessionCommand(declared?.session)
-                ).output
+                // Finding 001: same full re-probe as the VNC run mode. The
+                // freshly installed Xvnc's `-localhost` capability and any X
+                // client the install pulled in are both discovered by the one
+                // command, before the auth gate below reads localhostSupported.
+                discovery = reProbeAfterXvncInstall(runtimeBinder, workspaceId, declared)
+                // Finding 009, post-install case: same rule as the VNC path.
+                // An unanswered refresh must not fall through to a preset
+                // install or an X start.
+                if (discovery.probeFailed) {
+                    fail(getApplication<Application>().linexaString(R.string.desktop_probe_failed))
+                    Logger.w(
+                        TAG,
+                        "§16.3.1 post-install probe was INCOMPLETE for $workspaceId " +
+                            "(quality=${discovery.quality}) — nothing further was installed"
+                    )
+                    return
+                }
             }
 
-            var sessionPath = sessionPathFrom(declared, sessionProbeOutput)
+            // Findings 006/015: only the Xvnc provider reads localhostSupported
+            // (the auth gate below), so the bounded retry is spent only there.
+            if (provider == X11Provider.XVNC) {
+                discovery = retryCapabilityIfNeeded(runtimeBinder, workspaceId, discovery)
+            }
+
+            var sessionPath = sessionPathFrom(declared, discovery.sessionProbeOutput)
             if (sessionPath == null) {
                 val presetSession = installDesktopPreset(declared?.session, runtimeBinder, workspaceId)
                 if (presetSession == null) {
@@ -766,20 +900,21 @@ class DesktopViewModel @Inject constructor(
                 X11Provider.TERMUX_X11 -> {
                     // The helper IS the X server (bridging to the app). Own
                     // daemon key — no pkill, no cross-workspace effects.
+                    attempt.markTouched(TermuxX11.DAEMON_NAME)
                     val helperStarted = runtimeBinder.startDaemon(
                         workspaceId,
                         TermuxX11.DAEMON_NAME,
                         TermuxX11.helperDaemonCommand(display)
                     )
                     if (!helperStarted) {
-                        fail(getApplication<Application>().getString(R.string.desktop_xvnc_start_failed))
+                        fail(getApplication<Application>().linexaString(R.string.desktop_xvnc_start_failed))
                         return
                     }
                     val socketReady = x11SessionManager.awaitSocketReady(rootfsPath, display)
                     if (!socketReady) {
                         runCatching { runtimeBinder.stopDaemon(workspaceId, TermuxX11.DAEMON_NAME) }
                         fail(
-                            getApplication<Application>().getString(
+                            getApplication<Application>().linexaString(
                                 R.string.desktop_x11_socket_timeout,
                                 X11SocketReadiness.guestSocketPath(display)
                             )
@@ -802,57 +937,55 @@ class DesktopViewModel @Inject constructor(
                             desktopConfig.desktopVncPasswordUnreadable
                         ) == VncAuthRequirement.BlockedUnreadable
                     ) {
-                        fail(getApplication<Application>().getString(R.string.desktop_vnc_password_unreadable))
+                        fail(getApplication<Application>().linexaString(R.string.desktop_vnc_password_unreadable))
                         return
                     }
                     val requestedPassword = desktopConfig.desktopVncPassword.takeIf { it.isNotEmpty() }
-                    val provisioned = requestedPassword != null && run {
-                        val result = runtimeBinder.execCommand(
-                            workspaceId,
-                            DesktopVncAuthProvisioner.provisionCommand(requestedPassword, guestHome)
-                        )
-                        if (result.exitCode != 0) {
-                            // Pre-release audit fix (2026-09-02): log the
-                            // degradation in the X11-provider path too (it was
-                            // silent here), and fail CLOSED below like the VNC
-                            // path — a configured password must never yield an
-                            // unauthenticated server.
-                            Logger.w(
-                                TAG,
-                                "VNC password provisioning failed for $workspaceId " +
-                                    "(exit=${result.exitCode}) — refusing to start unauthenticated"
-                            )
-                        }
-                        result.exitCode == 0
-                    }
+                    // Finding 031: the secret goes on stdin, never argv. The
+                    // helper logs the failure (the X11-provider path used to be
+                    // silent here) and the branch below fails CLOSED like the
+                    // VNC path — a configured password must never yield an
+                    // unauthenticated server.
+                    val provisioned = requestedPassword != null &&
+                        provisionVncPassword(runtimeBinder, workspaceId, requestedPassword, guestHome)
                     if (requestedPassword != null && !provisioned) {
-                        fail(getApplication<Application>().getString(R.string.desktop_vnc_auth_provision_failed))
+                        fail(getApplication<Application>().linexaString(R.string.desktop_vnc_auth_provision_failed))
                         return
                     }
                     val securityArgs = DesktopVncAuthProvisioner.securityArgs(provisioned, guestHome)
-                    // Phase 07 (OPT-SEC-004, Step B2): same fail-closed gate
-                    // as the VNC run mode — an Xvnc that can be neither
-                    // restricted to loopback nor authenticated starts nothing.
+                    // Phase 07 (OPT-SEC-004, Step B2) + finding 007: same
+                    // fail-closed gate as the VNC run mode — a password-less
+                    // start needs explicit consent even when `-localhost` is
+                    // supported, because loopback is not authentication.
                     if (DesktopVncAuthProvisioner.unauthenticatedStartBlocked(
-                            discovery.localhostSupported,
-                            securityArgs
+                            securityArgs,
+                            desktopConfig.desktopVncAllowUnauthenticated
                         )
                     ) {
-                        fail(getApplication<Application>().getString(R.string.desktop_vnc_loopback_unsupported))
+                        fail(
+                            getApplication<Application>().linexaString(
+                                if (!discovery.localhostSupported) {
+                                    R.string.desktop_vnc_loopback_unsupported
+                                } else {
+                                    R.string.desktop_vnc_no_auth_requires_consent
+                                }
+                            )
+                        )
                         Logger.e(
                             TAG,
-                            "Xvnc not started for $workspaceId: cannot restrict to loopback and no VNC password (fail-closed)"
+                            "Xvnc not started for $workspaceId: no VNC password and no explicit consent (fail-closed)"
                         )
                         return
                     }
 
+                    attempt.markTouched(DAEMON_XVNC)
                     val started = runtimeBinder.startDaemon(
                         workspaceId,
                         DAEMON_XVNC,
                         xServerCommand(workspaceId, port, securityArgs, display, discovery.localhostSupported)
                     )
                     if (!started) {
-                        fail(getApplication<Application>().getString(R.string.desktop_xvnc_start_failed))
+                        fail(getApplication<Application>().linexaString(R.string.desktop_xvnc_start_failed))
                         return
                     }
 
@@ -882,13 +1015,43 @@ class DesktopViewModel @Inject constructor(
                         return
                     }
 
-                    // Phase 07 (OPT-SEC-004, Step B3): verify the actual bind
-                    // address (listener now exists); a non-loopback listener
-                    // stops the server before any session attaches.
-                    vncBindViolationMessage(workspaceId, port, runtimeBinder)?.let { violationMessage ->
-                        runCatching { runtimeBinder.stopDaemon(workspaceId, DAEMON_XVNC) }
-                        fail(violationMessage)
-                        return
+                    // Phase 07 (OPT-SEC-004, Step B3) + finding 016: same
+                    // tri-state bind guard as the VNC run mode. A violation
+                    // stops the server; "unverified" only continues behind a
+                    // password or explicit no-auth consent.
+                    when (val proof = vncLoopbackProof(workspaceId, port, runtimeBinder)) {
+                        is DesktopVncAuthProvisioner.LoopbackProof.Violation -> {
+                            runCatching { runtimeBinder.stopDaemon(workspaceId, DAEMON_XVNC) }
+                            fail(
+                                getApplication<Application>().getString(
+                                    R.string.desktop_vnc_loopback_bind_violation,
+                                    proof.offenders
+                                )
+                            )
+                            return
+                        }
+                        DesktopVncAuthProvisioner.LoopbackProof.Unverified -> {
+                            if (!provisioned && !desktopConfig.desktopVncAllowUnauthenticated) {
+                                runCatching { runtimeBinder.stopDaemon(workspaceId, DAEMON_XVNC) }
+                                fail(
+                                    getApplication<Application>().linexaString(
+                                        R.string.desktop_vnc_bind_unverified
+                                    )
+                                )
+                                Logger.e(
+                                    TAG,
+                                    "Xvnc bind could not be verified for $workspaceId and no password is set (fail-closed)"
+                                )
+                                return
+                            }
+                            Logger.w(
+                                TAG,
+                                "VNC bind probe produced no listing for $workspaceId — " +
+                                    "loopback-only is unverified; continuing because " +
+                                    (if (provisioned) "a password is required" else "the user consented to no authentication")
+                            )
+                        }
+                        DesktopVncAuthProvisioner.LoopbackProof.Verified -> Unit
                     }
 
                     // §13: X-socket readiness — the fact that distinguishes
@@ -898,7 +1061,7 @@ class DesktopViewModel @Inject constructor(
                     if (!socketReady) {
                         runCatching { runtimeBinder.stopDaemon(workspaceId, DAEMON_XVNC) }
                         fail(
-                            getApplication<Application>().getString(
+                            getApplication<Application>().linexaString(
                                 R.string.desktop_x11_socket_timeout,
                                 X11SocketReadiness.guestSocketPath(display)
                             )
@@ -912,6 +1075,7 @@ class DesktopViewModel @Inject constructor(
             // §1.114: the session starts only once the X server is actually
             // serving its display. §14: the daemon command carries the full
             // X11 environment explicitly (DISPLAY + TMPDIR + XKB_CONFIG_ROOT).
+            attempt.markTouched(DesktopSessionProvisioner.DAEMON_NAME)
             val sessionStarted = runtimeBinder.startDaemon(
                 workspaceId,
                 DesktopSessionProvisioner.DAEMON_NAME,
@@ -931,7 +1095,7 @@ class DesktopViewModel @Inject constructor(
                     runCatching { runtimeBinder.stopDaemon(workspaceId, DAEMON_XVNC) }
                 }
                 fail(
-                    getApplication<Application>().getString(
+                    getApplication<Application>().linexaString(
                         R.string.desktop_session_start_failed,
                         DesktopSessionProvisioner.sessionDisplayName(sessionPath)
                     )
@@ -958,7 +1122,7 @@ class DesktopViewModel @Inject constructor(
             _x11State.value = X11SessionState.X11_FAILED
             x11SessionManager.setState(workspaceId, X11SessionState.X11_FAILED)
             _desktopState.value = DesktopUiState.X11Failed(
-                e.message ?: getApplication<Application>().getString(R.string.desktop_unknown_error)
+                e.message ?: getApplication<Application>().linexaString(R.string.desktop_unknown_error)
             )
             Logger.e(TAG, "X11 start exception", e)
         }
@@ -1010,48 +1174,64 @@ class DesktopViewModel @Inject constructor(
         if (preset == DesktopPreset.NONE) return null
         Logger.i(TAG, "No session in $workspaceId — installing desktop preset '${preset.id}' (§16)")
 
-        val present = runtimeBinder.execCommand(
-            workspaceId,
-            DesktopPreset.presentCheckCommand(preset) ?: return null
+        // One installation engine for every path (this implicit install and the
+        // Features guided installer): same package definitions, package-manager
+        // resolution, per-workspace exclusion and on-disk verification. The
+        // pre-service code here ran its own `command -v` + install pipeline,
+        // which is exactly the divergence the unified service removes.
+        _desktopState.value = DesktopUiState.InstallingDependencies
+        runtimeTrace.record(workspaceId, "Desktop preset install requested: ${preset.id}")
+        val outcome = desktopInstaller.install(
+            workspaceId = workspaceId,
+            preset = preset,
+            rootfs = fileManager.getRootfsPath(workspaceId),
+            exec = { cmd -> runtimeBinder.execCommand(workspaceId, cmd) },
+            // Streaming exec: the 1800 s operation budget, not the 120 s
+            // one-shot timeout (a full desktop transaction exceeds it).
+            execStreaming = { cmd, forward -> runtimeBinder.execCommandStreaming(workspaceId, cmd) { l -> forward(l) } }
         )
-        if (present.exitCode != 0) {
-            _desktopState.value = DesktopUiState.InstallingDependencies
-            val detection = runtimeBinder.execCommand(workspaceId, XvncProvisioner.DETECT_PACKAGE_MANAGER_COMMAND)
-            val pmKey = XvncProvisioner.packageManagerKey(detection.output)
-            if (pmKey == null) {
+        when (outcome) {
+            is DesktopInstallationService.Result.Installed -> Unit
+            is DesktopInstallationService.Result.AlreadyInstalled -> {
+                Logger.i(TAG, "Preset '${preset.id}' already present in $workspaceId — skipping install")
+                _desktopState.value = DesktopUiState.Starting
+            }
+            is DesktopInstallationService.Result.Unsupported -> {
                 _desktopState.value = DesktopUiState.Error(
-                    getApplication<Application>().getString(R.string.desktop_preset_no_package_manager)
+                    getApplication<Application>().linexaString(R.string.desktop_preset_no_package_manager)
                 )
                 return null
             }
-            val installCommand = DesktopPreset.installCommand(preset, pmKey)
-            if (installCommand == null) {
+            DesktopInstallationService.Result.Busy -> {
                 _desktopState.value = DesktopUiState.Error(
-                    getApplication<Application>().getString(R.string.desktop_preset_no_package_manager)
-                )
-                return null
-            }
-            runtimeTrace.record(workspaceId, "Desktop preset install: ${preset.id} via $pmKey")
-            // Pre-release audit fix (2026-09-02, finding U4/M-1): the preset
-            // install (a full XFCE/LXQt transaction) used to run through the
-            // non-streaming exec with its hard 120 s COMMAND_TIMEOUT — large
-            // apt/pacman transactions deterministically failed with exit −1
-            // and a half-installed dpkg state behind them. The streaming exec
-            // carries the 1800 s operation timeout (the same budget the
-            // guided installer and Package Manager use).
-            val result = runtimeBinder.execCommandStreaming(workspaceId, installCommand) { }
-            if (result.exitCode != 0) {
-                _desktopState.value = DesktopUiState.Error(
-                    getApplication<Application>().getString(
+                    getApplication<Application>().linexaString(
                         R.string.desktop_preset_install_failed,
                         preset.displayName,
-                        result.error.ifEmpty { result.output }.take(300)
+                        "another desktop installation is already running for this workspace"
                     )
                 )
                 return null
             }
-        } else {
-            Logger.i(TAG, "Preset '${preset.id}' already present in $workspaceId — skipping install")
+            is DesktopInstallationService.Result.Failed -> {
+                _desktopState.value = DesktopUiState.Error(
+                    getApplication<Application>().linexaString(
+                        R.string.desktop_preset_install_failed,
+                        preset.displayName,
+                        outcome.reason.take(300)
+                    )
+                )
+                return null
+            }
+            DesktopInstallationService.Result.VerifyFailed -> {
+                _desktopState.value = DesktopUiState.Error(
+                    getApplication<Application>().linexaString(
+                        R.string.desktop_preset_install_failed,
+                        preset.displayName,
+                        "the install finished but no desktop session was found"
+                    )
+                )
+                return null
+            }
         }
 
         val reprobe = runtimeBinder.execCommand(
@@ -1075,21 +1255,26 @@ class DesktopViewModel @Inject constructor(
      * (Features → Desktop) rather than guessing a default the user's rootfs
      * may not be able to run.
      */
-    private suspend fun startWebDesktop(workspaceId: String, runtimeBinder: RuntimeBinder) {
+    private suspend fun startWebDesktop(
+        workspaceId: String,
+        runtimeBinder: RuntimeBinder,
+        attempt: StartAttempt
+    ) {
         val command = desktopConfig.desktopWebCommand.trim()
         if (command.isEmpty()) {
             _desktopState.value = DesktopUiState.Error(
-                getApplication<Application>().getString(R.string.desktop_web_command_missing)
+                getApplication<Application>().linexaString(R.string.desktop_web_command_missing)
             )
             Logger.w(TAG, "WebView run mode for $workspaceId has no guest command configured")
             return
         }
 
         val port = desktopConfig.desktopWebPort
+        attempt.markTouched(DAEMON_WEB)
         val started = runtimeBinder.startDaemon(workspaceId, DAEMON_WEB, command)
         if (!started) {
             _desktopState.value = DesktopUiState.Error(
-                getApplication<Application>().getString(R.string.desktop_web_start_failed)
+                getApplication<Application>().linexaString(R.string.desktop_web_start_failed)
             )
             Logger.e(TAG, "Web server daemon failed to start for $workspaceId")
             return
@@ -1103,7 +1288,7 @@ class DesktopViewModel @Inject constructor(
         if (!portReady) {
             runCatching { runtimeBinder.stopDaemon(workspaceId, DAEMON_WEB) }
             _desktopState.value = DesktopUiState.Error(
-                getApplication<Application>().getString(R.string.desktop_web_port_timeout, port)
+                getApplication<Application>().linexaString(R.string.desktop_web_port_timeout, port)
             )
             Logger.e(TAG, "Timed out waiting for guest web port $port in $workspaceId")
             return
@@ -1145,9 +1330,127 @@ class DesktopViewModel @Inject constructor(
         )
 
     /**
+     * Finding 001 — after a successful Xvnc auto-install, re-run the **full**
+     * combined discovery probe.
+     *
+     * `autoInstallXvnc` replaces the guest's Xvnc binary, so the capability
+     * answer that decides `-localhost` must describe the newly installed
+     * server, not the one that was absent. The same exec also refreshes the
+     * session section, because the install may have pulled in an X client.
+     *
+     * A refresh whose framing is incomplete is logged and returned as-is: the
+     * start path's `probeFailed` gate refuses to install on it, and a
+     * capability-only loss is handled by [retryCapabilityIfNeeded]. Either way
+     * `localhostSupported` stays false unless re-earned, which is the
+     * fail-closed direction (an unearned `-localhost` kills TigerVNC ≤ 1.10,
+     * and the auth gate must not start an unauthenticated server without it).
+     */
+    private suspend fun reProbeAfterXvncInstall(
+        runtimeBinder: RuntimeBinder,
+        workspaceId: String,
+        declared: DeclaredDesktop?
+    ): DesktopStartupProbe.Result {
+        val probe = runtimeBinder.execCommand(
+            workspaceId,
+            DesktopStartupProbe.command(declared?.session)
+        )
+        val discovery = DesktopStartupProbe.parse(probe.output)
+        if (!discovery.wellFormed) {
+            Logger.w(
+                TAG,
+                "§16.3.1 post-install discovery probe quality=${discovery.quality} for " +
+                    "$workspaceId (exit=${probe.exitCode}) — capability stays unearned " +
+                    "unless the bounded retry proves it"
+            )
+        }
+        return discovery
+    }
+
+    /**
+     * Finding 006: one bounded retry of the capability half when the combined
+     * probe's framing survived but its optional section did not.
+     *
+     * The combined probe is one 120 s exec. A guest that truncated the
+     * `Xvnc -help` tail used to leave `localhostSupported=false` for the whole
+     * start, which a no-password start reports as
+     * `desktop_vnc_loopback_unsupported` — indistinguishable from a genuine
+     * TigerVNC ≤ 1.10 and not recoverable by pressing Start again. This spends
+     * at most one extra exec, and only in the degraded case.
+     *
+     * [DesktopStartupProbe.capsCommand] wraps Xvnc in `timeout`, so this retry
+     * cannot consume the one-shot exec budget (finding 015). A failed whole
+     * probe ([DesktopStartupProbe.Result.probeFailed]) is deliberately NOT
+     * patched here: it is unknown, not "caps missing", and the caller returns a
+     * retryable error instead of installing anything (finding 009).
+     */
+    private suspend fun retryCapabilityIfNeeded(
+        runtimeBinder: RuntimeBinder,
+        workspaceId: String,
+        discovery: DesktopStartupProbe.Result
+    ): DesktopStartupProbe.Result {
+        if (!discovery.needsCapsRetry) return discovery
+        // LINEXA-PERF-011: the answer describes the INSTALLED Xvnc binary's
+        // option set, which cannot change between desktop starts in one
+        // process. The audited cold start paid a second guest exec (~0.93 s)
+        // before the port was ready; re-opening the desktop paid it again.
+        // Cache the verdict per workspace and invalidate it when an install
+        // replaces the binary (autoInstallXvnc).
+        val cached = xvncCapsCache[workspaceId]
+        if (cached != null) {
+            Logger.i(TAG, "§16.3.1 caps retry skipped for $workspaceId: cached localhostSupported=$cached")
+            return discovery.copy(localhostSupported = cached)
+        }
+        Logger.w(
+            TAG,
+            "§16.3.1 capability section ${discovery.quality} for $workspaceId — " +
+                "retrying once with the bounded caps probe"
+        )
+        val retry = runtimeBinder.execCommand(workspaceId, DesktopStartupProbe.capsCommand())
+        val supported = DesktopStartupProbe.parseCaps(retry.output)
+        xvncCapsCache[workspaceId] = supported
+        Logger.i(
+            TAG,
+            "§16.3.1 caps retry for $workspaceId: localhostSupported=$supported " +
+                "(exit=${retry.exitCode})"
+        )
+        return discovery.copy(localhostSupported = supported)
+    }
+
+    /**
+     * Finding 031: materialise the VNC passwd file without putting the password
+     * in any process argument.
+     *
+     * The command [DesktopVncAuthProvisioner.provisionRequest] returns is the
+     * only part that becomes PRoot's argv; the secret is written to the guest
+     * process's stdin and the stream is closed so `vncpasswd -f` sees EOF.
+     *
+     * A non-zero exit (missing `vncpasswd`, unwritable home, failed stdin
+     * delivery) returns false, and every caller refuses to start Xvnc. That
+     * fail-closed policy is the whole point: a configured password must never
+     * silently become an unauthenticated desktop.
+     */
+    private suspend fun provisionVncPassword(
+        runtimeBinder: RuntimeBinder,
+        workspaceId: String,
+        password: String,
+        guestHome: String
+    ): Boolean {
+        val request = DesktopVncAuthProvisioner.provisionRequest(password, guestHome)
+        val result = runtimeBinder.execCommandWithInput(workspaceId, request.command, request.stdin)
+        if (result.exitCode != 0) {
+            Logger.w(
+                TAG,
+                "VNC password provisioning failed for $workspaceId " +
+                    "(exit=${result.exitCode}) — refusing to start unauthenticated"
+            )
+        }
+        return result.exitCode == 0
+    }
+
+    /**
      * §1.85: attempt to install Xvnc into the guest via its package
      * manager (audit §4.5). Shows [DesktopUiState.InstallingDependencies]
-     * while the one-shot install runs, then re-checks `which Xvnc`.
+     * while the one-shot install runs, then re-checks `command -v Xvnc`.
      *
      * @return true when Xvnc is present afterward; false when install
      *   failed, the guest has no supported package manager, or the guest
@@ -1162,9 +1465,9 @@ class DesktopViewModel @Inject constructor(
         val pmKey = XvncProvisioner.packageManagerKey(detection.output)
         if (pmKey == null) {
             val reason = if (detection.exitCode == -1) {
-                getApplication<Application>().getString(R.string.desktop_xvnc_probe_timeout)
+                getApplication<Application>().linexaString(R.string.desktop_xvnc_probe_timeout)
             } else {
-                getApplication<Application>().getString(R.string.desktop_xvnc_missing)
+                getApplication<Application>().linexaString(R.string.desktop_xvnc_missing)
             }
             _desktopState.value = DesktopUiState.Error(reason)
             Logger.e("DesktopViewModel", "No supported package manager found for $workspaceId (probe='${detection.output.take(120)}')")
@@ -1173,7 +1476,7 @@ class DesktopViewModel @Inject constructor(
 
         val installCommand = XvncProvisioner.installCommand(pmKey)
         if (installCommand == null) {
-            _desktopState.value = DesktopUiState.Error(getApplication<Application>().getString(R.string.desktop_xvnc_missing))
+            _desktopState.value = DesktopUiState.Error(getApplication<Application>().linexaString(R.string.desktop_xvnc_missing))
             Logger.e("DesktopViewModel", "No install command for package manager '$pmKey'")
             return false
         }
@@ -1184,21 +1487,25 @@ class DesktopViewModel @Inject constructor(
         val installResult = runtimeBinder.execCommandStreaming(workspaceId, installCommand) { }
         if (installResult.exitCode != 0) {
             val reason = if (installResult.exitCode == -1) {
-                getApplication<Application>().getString(R.string.desktop_xvnc_install_timeout)
+                getApplication<Application>().linexaString(R.string.desktop_xvnc_install_timeout)
             } else {
-                getApplication<Application>().getString(R.string.desktop_xvnc_install_failed, installResult.error.ifEmpty { installResult.output })
+                getApplication<Application>().linexaString(R.string.desktop_xvnc_install_failed, installResult.error.ifEmpty { installResult.output })
             }
             _desktopState.value = DesktopUiState.Error(reason)
             Logger.e("DesktopViewModel", "Xvnc install via '$pmKey' failed for $workspaceId: ${installResult.error.ifEmpty { installResult.output }.take(300)}")
             return false
         }
 
-        val recheck = runtimeBinder.execCommand(workspaceId, "which Xvnc")
+        val recheck = runtimeBinder.execCommand(workspaceId, "command -v Xvnc >/dev/null 2>&1")
         if (recheck.exitCode != 0) {
-            _desktopState.value = DesktopUiState.Error(getApplication<Application>().getString(R.string.desktop_xvnc_missing))
-            Logger.e("DesktopViewModel", "Xvnc still missing after install for $workspaceId (install exited 0 but which fails)")
+            _desktopState.value = DesktopUiState.Error(getApplication<Application>().linexaString(R.string.desktop_xvnc_missing))
+            Logger.e("DesktopViewModel", "Xvnc still missing after install for $workspaceId (install exited 0 but command -v fails)")
             return false
         }
+
+        // LINEXA-PERF-011: a new binary, so the cached capability is no longer
+        // evidence about it.
+        xvncCapsCache.remove(workspaceId)
 
         Logger.i("DesktopViewModel", "Xvnc auto-installed via '$pmKey' in $workspaceId")
         return true
@@ -1338,7 +1645,7 @@ class DesktopViewModel @Inject constructor(
             if (bounds != null) bounds.width() to bounds.height() else 0 to 0
         } else {
             @Suppress("DEPRECATION")
-            val displayManager = app.getSystemService(android.content.Context.WINDOW_SERVICE)
+            val displayManager = app.getSystemService(android.content.Context.DISPLAY_SERVICE)
                 as? android.hardware.display.DisplayManager
             @Suppress("DEPRECATION")
             val display = displayManager?.getDisplay(android.view.Display.DEFAULT_DISPLAY)
@@ -1348,6 +1655,61 @@ class DesktopViewModel @Inject constructor(
             dm.widthPixels to dm.heightPixels
         }
     }.getOrDefault(0 to 0)
+
+    /**
+     * The daemons one start attempt actually launched (or restarted).
+     *
+     * [releaseFailedStart] must only stop these: a start that refused before
+     * reaching `startDaemon` — no desktop session, a missing web command, a
+     * fail-closed auth gate — has no resource of its own to release, and
+     * stopping by daemon key anyway would tear down an X server the user
+     * started by other means. That is the pinned §13.5 invariant this type
+     * exists to keep (see `DesktopStartupProbeWiringSourceTest`).
+     */
+    private class StartAttempt {
+        private val touched = linkedSetOf<String>()
+
+        fun markTouched(daemonName: String) {
+            touched += daemonName
+        }
+
+        fun touchedDaemons(): Set<String> = touched
+    }
+
+    /**
+     * Releases what a start that did not reach Running may have left: the
+     * daemons this attempt actually launched (each by its own
+     * `(workspace, name)` key — never by process name), the recorded VNC port
+     * and the recorded display. Idempotent and failure-tolerant, so it is safe
+     * after a partial start. The X11 state machine value is left to the
+     * failure path that set it (the screen reads it to offer the VNC
+     * fallback).
+     */
+    private suspend fun releaseFailedStart(
+        workspaceId: String,
+        runtimeBinder: RuntimeBinder,
+        attempt: StartAttempt
+    ) {
+        val touched = attempt.touchedDaemons()
+        if (touched.isEmpty()) {
+            Logger.i(
+                TAG,
+                "Desktop start for $workspaceId refused before touching any daemon — " +
+                    "keeping existing servers, clearing only port/display"
+            )
+        } else {
+            Logger.w(
+                TAG,
+                "Desktop start for $workspaceId did not reach Running — releasing " +
+                    "its own daemons ${touched.joinToString()}, port and display"
+            )
+            for (daemonName in touched) {
+                runCatching { runtimeBinder.stopDaemon(workspaceId, daemonName) }
+            }
+        }
+        portRegistry.clear(workspaceId)
+        x11SessionManager.releaseDisplay(workspaceId)
+    }
 
     fun stopDesktop(workspaceId: String) {
         viewModelScope.launch {
@@ -1397,26 +1759,34 @@ class DesktopViewModel @Inject constructor(
      * VNC port. A VNC password is the control for that threat model; this
      * check only catches the server binding on a routable interface.
      */
-    private suspend fun vncBindViolationMessage(
+    /**
+     * Finding 016: read the guest's listener table and classify the VNC
+     * server's actual bind. A failed/blank probe is [LoopbackProof.Unverified],
+     * never a pass — the caller decides whether the start may continue (it
+     * needs either a password or the user's explicit no-auth consent).
+     */
+    private suspend fun vncLoopbackProof(
         workspaceId: String,
         port: Int,
         runtimeBinder: RuntimeBinder
-    ): String? {
+    ): DesktopVncAuthProvisioner.LoopbackProof {
         val listing = runCatching {
             runtimeBinder.execCommand(workspaceId, DesktopVncAuthProvisioner.BIND_PROBE_COMMAND)
-        }.getOrNull()?.output.orEmpty()
-        if (listing.isBlank()) {
-            Logger.w(
-                TAG,
-                "VNC bind probe produced no listing for $workspaceId (probe tools unavailable?) — " +
-                    "loopback-only cannot be claimed; keeping the password requirement"
-            )
-            return null
+        }.getOrNull()?.output
+        val proof = DesktopVncAuthProvisioner.loopbackProof(listing, port)
+        when (proof) {
+            is DesktopVncAuthProvisioner.LoopbackProof.Violation ->
+                Logger.e(TAG, "Xvnc bind violation for $workspaceId on port $port: ${proof.offenders} — stopping the daemon")
+            DesktopVncAuthProvisioner.LoopbackProof.Unverified ->
+                Logger.w(
+                    TAG,
+                    "VNC bind probe produced no usable listing for $workspaceId on port $port " +
+                        "(probe tools unavailable?) — loopback-only cannot be claimed"
+                )
+            DesktopVncAuthProvisioner.LoopbackProof.Verified ->
+                Logger.i(TAG, "VNC bind verified loopback-only for $workspaceId on port $port")
         }
-        val violation = DesktopVncAuthProvisioner.loopbackBindViolation(listing, port) ?: return null
-        Logger.e(TAG, "Xvnc bind violation for $workspaceId on port $port: $violation — stopping the daemon")
-        return getApplication<Application>()
-            .getString(R.string.desktop_vnc_loopback_bind_violation, violation)
+        return proof
     }
 
     /**
@@ -1437,14 +1807,14 @@ class DesktopViewModel @Inject constructor(
         val daemonAlive = runCatching { runtimeBinder.isDaemonAlive(workspaceId, DAEMON_XVNC) }
             .getOrDefault(false)
         if (daemonAlive) {
-            return getApplication<Application>().getString(R.string.desktop_xvnc_port_timeout, port, 5000)
+            return getApplication<Application>().linexaString(R.string.desktop_xvnc_port_timeout, port, 5000)
         }
         val tail = daemonLogTail(workspaceId, DAEMON_XVNC)
         runtimeTrace.record(
             workspaceId,
             "Xvnc exited during startup; daemon log tail: ${tail.take(400).replace("\n", " | ")}"
         )
-        return getApplication<Application>().getString(R.string.desktop_xvnc_died_during_start, tail.take(600))
+        return getApplication<Application>().linexaString(R.string.desktop_xvnc_died_during_start, tail.take(600))
     }
 
     /**

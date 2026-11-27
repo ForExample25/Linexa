@@ -7,14 +7,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * §16.3.1 — [DesktopStartupProbe]: the combined `which Xvnc` + session-probe
+ * §16.3.1 — [DesktopStartupProbe]: the combined `command -v Xvnc` + session-probe
  * exec, and its framing.
  *
  * The whole point of the merge is that two lookups now share one stdout, so the
  * class of bug this suite exists to catch is **cross-contamination**: an Xvnc
  * path leaking into the session selection, a session hit making a missing Xvnc
  * look present, or the aggregate exit status of the combined shell being mistaken
- * for `which Xvnc`'s own. Every one of those would compile, and every one would
+ * for `command -v Xvnc`'s own. Every one of those would compile, and every one would
  * be silent on a device — a user with no desktop installed would get a grey
  * screen instead of the NoSession message, or a user with no Xvnc would skip
  * the auto-install and fail later with an unrelated error.
@@ -29,7 +29,8 @@ class DesktopStartupProbeTest {
     @Test
     fun theCommandRunsBothLookupsInOneExec() {
         val command = DesktopStartupProbe.command()
-        assertTrue("must look up Xvnc", command.contains("which Xvnc"))
+        assertTrue("must look up Xvnc", command.contains("command -v Xvnc"))
+        assertFalse("which may be absent on minimal images", command.contains("which "))
         assertTrue(
             "must contain the session probe verbatim",
             command.contains(DesktopSessionProvisioner.DETECT_SESSION_COMMAND)
@@ -43,20 +44,20 @@ class DesktopStartupProbeTest {
         // added there appears here with no second edit.
         val command = DesktopStartupProbe.command()
         DesktopSessionProvisioner.SESSION_CANDIDATES.forEach { candidate ->
-            assertTrue("combined probe is missing $candidate", command.contains(" $candidate"))
+            assertTrue("combined probe is missing $candidate", command.contains("'$candidate'"))
         }
     }
 
     @Test
     fun theXvncStatusIsCapturedBeforeAnythingElseCanClobberIt() {
         // `$?` is overwritten by every subsequent command, so the echo of the
-        // status marker has to sit immediately after `which Xvnc` — not after the
-        // session probe, where it would report the session's status instead.
+        // status marker has to sit immediately after `command -v Xvnc` — not
+        // after the session probe, where it would report the session's status.
         val command = DesktopStartupProbe.command()
-        val whichIndex = command.indexOf("which Xvnc")
+        val whichIndex = command.indexOf("command -v Xvnc")
         val statusIndex = command.indexOf(DesktopStartupProbe.XVNC_STATUS_MARKER)
         val sessionIndex = command.indexOf(DesktopSessionProvisioner.DETECT_SESSION_COMMAND)
-        assertTrue("status marker must follow which Xvnc", whichIndex in 0 until statusIndex)
+        assertTrue("status marker must follow the Xvnc probe", whichIndex in 0 until statusIndex)
         assertTrue("status marker must precede the session probe", statusIndex < sessionIndex)
     }
 
@@ -96,7 +97,7 @@ class DesktopStartupProbeTest {
         // §1.118's declared binary must still be probed, and must arrive via
         // detectSessionCommand — the function that validates it (§1.14).
         val command = DesktopStartupProbe.command("my-session")
-        assertTrue(command.contains(" my-session"))
+        assertTrue(command.contains("'my-session'"))
         assertTrue(command.contains(DesktopSessionProvisioner.detectSessionCommand("my-session")))
     }
 
@@ -115,13 +116,25 @@ class DesktopStartupProbeTest {
     private fun output(
         xvncLines: List<String>,
         status: Int,
-        sessionLines: List<String>
-    ): String = (
-        xvncLines +
+        sessionLines: List<String>,
+        capsLines: List<String>? = listOf("$LOCALHOST_OPTION_TEXT")
+    ): String {
+        val base = xvncLines +
             listOf("${DesktopStartupProbe.XVNC_STATUS_MARKER}$status") +
             listOf(DesktopStartupProbe.SESSION_MARKER) +
             sessionLines
-        ).joinToString("\n")
+        val framed = if (capsLines == null) {
+            base
+        } else {
+            base + listOf(DesktopStartupProbe.XVNC_CAPS_MARKER) + capsLines
+        }
+        return framed.joinToString("\n")
+    }
+
+    private companion object {
+        /** Representative `Xvnc -help` line advertising the option. */
+        const val LOCALHOST_OPTION_TEXT = "-localhost [yes|no] -rfbauth file"
+    }
 
     @Test
     fun xvncPresentAndSessionPresent() {
@@ -197,7 +210,7 @@ class DesktopStartupProbeTest {
 
     @Test
     fun theXvncSectionIsNeverSearchedForASession() {
-        // A guest whose PATH puts a session binary somewhere `which Xvnc` also
+        // A guest whose PATH puts a session binary somewhere the Xvnc probe also
         // prints (pathological, but the boundary must be structural, not lucky).
         val result = DesktopStartupProbe.parse(
             output(listOf("/usr/bin/Xvnc", "/usr/bin/startxfce4"), 0, emptyList())
@@ -241,20 +254,37 @@ class DesktopStartupProbeTest {
     }
 
     @Test
-    fun truncatedOutputFailsSafeToXvncMissing() {
-        // The timeout case: the exec is killed mid-stream, so no marker arrives.
-        // Pre-§16.3.1 a timeout also produced exitCode -1 → "Xvnc missing" → the
-        // auto-install path, which surfaces the timeout as its own error.
+    fun truncatedOutputIsAProbeFailureNotXvncMissing() {
+        // Finding 009: the timeout case — the exec is killed mid-stream, so no
+        // marker arrives. `xvncFound` is false, but the answer is UNKNOWN; the
+        // start path must show a retryable error and must not auto-install.
         val result = DesktopStartupProbe.parse("/usr/bin/Xvnc\n")
         assertFalse(result.xvncFound)
+        assertTrue("an unanswered probe is not 'absent'", result.probeFailed)
+        assertEquals(DesktopStartupProbe.ProbeQuality.INCOMPLETE, result.quality)
         assertFalse(result.wellFormed)
         assertEquals("", result.sessionProbeOutput)
+        assertFalse(result.needsCapsRetry)
     }
 
     @Test
-    fun completelyEmptyOutputFailsSafe() {
+    fun aSessionMarkerWithoutAStatusMarkerIsAProbeFailure() {
+        // Finding 009's named test case. The session section alone proves the
+        // exec ran partway, not that Xvnc is missing.
+        val partial = listOf(
+            DesktopStartupProbe.SESSION_MARKER,
+            "/usr/bin/openbox"
+        ).joinToString("\n")
+        val result = DesktopStartupProbe.parse(partial)
+        assertTrue(result.probeFailed)
+        assertEquals(DesktopStartupProbe.ProbeQuality.INCOMPLETE, result.quality)
+    }
+
+    @Test
+    fun completelyEmptyOutputIsAProbeFailure() {
         val result = DesktopStartupProbe.parse("")
-        assertFalse(result.xvncFound)
+        assertTrue(result.probeFailed)
+        assertEquals(DesktopStartupProbe.ProbeQuality.INCOMPLETE, result.quality)
         assertFalse(result.wellFormed)
         assertNull(DesktopSessionProvisioner.parseSessionPath(result.sessionProbeOutput))
     }
@@ -268,7 +298,8 @@ class DesktopStartupProbeTest {
         ).joinToString("\n")
         val result = DesktopStartupProbe.parse(reversed)
         assertFalse(result.xvncFound)
-        assertFalse(result.wellFormed)
+        assertTrue(result.probeFailed)
+        assertEquals(DesktopStartupProbe.ProbeQuality.INCOMPLETE, result.quality)
     }
 
     @Test
@@ -281,7 +312,8 @@ class DesktopStartupProbeTest {
         ).joinToString("\n")
         val result = DesktopStartupProbe.parse(garbled)
         assertFalse("only a literal 0 means found", result.xvncFound)
-        assertFalse(result.wellFormed)
+        assertTrue("a garbled status answered nothing", result.probeFailed)
+        assertEquals(DesktopStartupProbe.ProbeQuality.INCOMPLETE, result.quality)
     }
 
     @Test
@@ -349,7 +381,7 @@ class DesktopStartupProbeTest {
         val command = DesktopStartupProbe.command()
         assertTrue(
             "the Xvnc option list must be read from the guest's own binary",
-            command.contains("Xvnc -help")
+            command.contains(DesktopStartupProbe.capsCommand())
         )
         assertTrue(
             "and grepped for the -localhost option",
@@ -360,32 +392,86 @@ class DesktopStartupProbeTest {
     }
 
     @Test
+    fun theCapabilityProbeIsBoundedAndInstallsNothing() {
+        // Finding 015: a wedged `Xvnc -help` must not consume the 120 s exec.
+        val caps = DesktopStartupProbe.capsCommand()
+        assertTrue(
+            "Xvnc must be wrapped in the bounded helper",
+            caps.contains("timeout ${DesktopStartupProbe.CAPS_PROBE_TIMEOUT_SECONDS} Xvnc -help")
+        )
+        assertTrue("the bound must be a small number of seconds", DesktopStartupProbe.CAPS_PROBE_TIMEOUT_SECONDS in 1..10)
+        listOf("apt-get install", "apk add", "pacman -S", "dnf install", "zypper").forEach {
+            assertFalse("the caps retry must not install: $it", caps.contains(it))
+        }
+    }
+
+    @Test
     fun aCapableXvncAdvertisesLocalhostSupport() {
         val result = DesktopStartupProbe.parse(
-            output(listOf("/usr/bin/Xvnc"), 0, listOf("/usr/bin/startxfce4")) +
-                "\n${DesktopStartupProbe.XVNC_CAPS_MARKER}\n" +
-                "-localhost [yes|no] -rfbauth file -SecurityTypes types\n"
+            output(
+                listOf("/usr/bin/Xvnc"),
+                0,
+                listOf("/usr/bin/startxfce4"),
+                capsLines = listOf("$LOCALHOST_OPTION_TEXT -SecurityTypes types")
+            )
         )
         assertTrue(result.localhostSupported)
+        assertEquals(DesktopStartupProbe.ProbeQuality.COMPLETE, result.quality)
+        assertTrue(result.capsSectionPresent)
+        assertTrue(result.wellFormed)
         // The capability text must NOT leak into the session selection.
         assertEquals("/usr/bin/startxfce4", result.sessionProbeOutput)
     }
 
     @Test
-    fun anXvncWithoutTheOptionReportsUnsupported() {
+    fun anXvncWithoutTheOptionReportsUnsupportedButComplete() {
+        // Finding 026: "Xvnc says no" is a complete answer, not a truncated
+        // probe. It must not trigger the caps retry.
         val result = DesktopStartupProbe.parse(
-            output(listOf("/usr/bin/Xvnc"), 0, listOf("/usr/bin/xterm")) +
-                "\n${DesktopStartupProbe.XVNC_CAPS_MARKER}\n" +
-                "-geometry WxH -depth N -rfbport port\n"
+            output(
+                listOf("/usr/bin/Xvnc"),
+                0,
+                listOf("/usr/bin/xterm"),
+                capsLines = listOf("-geometry WxH -depth N -rfbport port")
+            )
         )
+        assertFalse(result.localhostSupported)
+        assertEquals(DesktopStartupProbe.ProbeQuality.COMPLETE, result.quality)
+        assertTrue(result.capsSectionPresent)
+        assertFalse(result.needsCapsRetry)
+    }
+
+    @Test
+    fun aMissingCapabilitySectionDegradesToUnsupportedAndAsksForARetry() {
+        // Older capture, truncated exec: omitting -localhost is accepted by
+        // every TigerVNC build; assuming it kills TigerVNC ≤ 1.10 starts.
+        val result = DesktopStartupProbe.parse(
+            output(listOf("/usr/bin/Xvnc"), 0, listOf("/usr/bin/xterm"), capsLines = null)
+        )
+        assertFalse(result.localhostSupported)
+        assertEquals(DesktopStartupProbe.ProbeQuality.CAPS_MISSING, result.quality)
+        assertFalse("the marker itself did not arrive", result.capsSectionPresent)
+        assertFalse("missing caps is not a complete probe (finding 026)", result.wellFormed)
+        assertTrue("finding 006: one bounded retry is allowed", result.needsCapsRetry)
+        assertFalse("but the whole probe did not fail", result.probeFailed)
+    }
+
+    @Test
+    fun anEmptyCapabilitySectionIsNamedSeparatelyFromAMissingOne() {
+        val result = DesktopStartupProbe.parse(
+            output(listOf("/usr/bin/Xvnc"), 0, listOf("/usr/bin/xterm"), capsLines = emptyList())
+        )
+        assertEquals(DesktopStartupProbe.ProbeQuality.CAPS_EMPTY, result.quality)
+        assertTrue("the marker arrived even though its section is empty", result.capsSectionPresent)
+        assertTrue(result.needsCapsRetry)
         assertFalse(result.localhostSupported)
     }
 
     @Test
-    fun aMissingCapabilitySectionDegradesToUnsupported() {
-        // Older capture, truncated exec: omitting -localhost is accepted by
-        // every TigerVNC build; assuming it kills TigerVNC ≤ 1.10 starts.
-        val result = DesktopStartupProbe.parse(output(listOf("/usr/bin/Xvnc"), 0, listOf("/usr/bin/xterm")))
-        assertFalse(result.localhostSupported)
+    fun parseCapsDecodesTheRetryOutput() {
+        assertTrue(DesktopStartupProbe.parseCaps("$LOCALHOST_OPTION_TEXT\n"))
+        assertFalse(DesktopStartupProbe.parseCaps(""))
+        assertFalse(DesktopStartupProbe.parseCaps("timeout: not found\n"))
     }
+
 }

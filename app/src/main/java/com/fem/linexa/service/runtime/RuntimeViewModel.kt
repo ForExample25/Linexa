@@ -13,10 +13,13 @@ import com.fem.linexa.domain.runtime.CommandResult
 import com.fem.linexa.domain.runtime.RuntimeState
 import com.fem.linexa.domain.workspace.WorkspaceRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 
 /**
@@ -44,6 +47,14 @@ class RuntimeViewModel @Inject constructor(
 
     /** Workspace this graph started, if any — stopped again in [onCleared]. */
     private var activeWorkspaceId: String? = null
+
+    /**
+     * DEEP-AUDIT (2026-11-26): one in-flight start request per graph. Two
+     * coroutines racing here (a recomposition while the first is still waiting
+     * for the bind) would both observe `Stopped` and send two ACTION_START
+     * intents.
+     */
+    private var startJob: Job? = null
 
     private val _serviceState = MutableStateFlow<RuntimeServiceState>(RuntimeServiceState.Unbound)
     val serviceState: StateFlow<RuntimeServiceState> = _serviceState.asStateFlow()
@@ -133,14 +144,48 @@ class RuntimeViewModel @Inject constructor(
      */
     fun startWorkspace(workspaceId: String) {
         if (activeWorkspaceId == workspaceId) return
-        val state = getState(workspaceId)
-        if (state is RuntimeState.Running || state is RuntimeState.Starting) return
+        if (startJob?.isActive == true) return
 
-        // §1.29: the row must exist (getById is suspend — Room DAO, resolve
-        // inside the coroutine). Phase 9B: the persisted rootfs path is no
-        // longer read here — the field is diagnostic; the service derives
-        // the path from the id via WorkspaceFileManager.
-        viewModelScope.launch {
+        startJob = viewModelScope.launch {
+            // DEEP-AUDIT (2026-11-26, re-entry latency): [bindService] is
+            // asynchronous. The old code called startWorkspace immediately
+            // after it, so [getState] always ran against a null binder and
+            // returned Stopped — even when this workspace's runtime was
+            // already Running in the foreground service. Every re-entry then
+            // sent ACTION_START for a live session, and RuntimeService's
+            // ACTION_START path paid: a foreground notification rebuild, a
+            // runtime-trace reset, a Room read, a full rootfs readiness walk
+            // (checkRootfs + hasAnyRegularFile) and a duplicate launch
+            // coroutine that only then discovered AlreadyStarted.
+            //
+            // Wait (bounded) for the bind result before deciding. A first
+            // entry still starts normally, because the bind resolves to a
+            // freshly created service whose state is Stopped.
+            withTimeoutOrNull(BIND_STATE_TIMEOUT_MS) {
+                serviceState.first { it !is RuntimeServiceState.Unbound }
+            }
+            if (activeWorkspaceId == workspaceId) return@launch
+
+            val state = getState(workspaceId)
+            if (state is RuntimeState.Running || state is RuntimeState.Starting) {
+                // Attach to the live session: no intent, no readiness walk,
+                // no duplicate launch. activeWorkspaceId tracks it so
+                // stop/cleared bookkeeping stays correct.
+                activeWorkspaceId = workspaceId
+                // R8 obfuscates data-class simpleName in release ("already m"),
+                // so use a stable label for the production diagnostic.
+                val stateLabel = if (state is RuntimeState.Running) "Running" else "Starting"
+                Logger.d(
+                    TAG,
+                    "startWorkspace: $workspaceId already $stateLabel — attaching without ACTION_START"
+                )
+                return@launch
+            }
+
+            // §1.29: the row must exist (getById is suspend — Room DAO, resolve
+            // inside the coroutine). Phase 9B: the persisted rootfs path is no
+            // longer read here — the field is diagnostic; the service derives
+            // the path from the id via WorkspaceFileManager.
             workspaceRepository.getById(workspaceId) ?: return@launch
             val context = getApplication<Application>()
             activeWorkspaceId = workspaceId
@@ -184,6 +229,14 @@ class RuntimeViewModel @Inject constructor(
 
     private companion object {
         const val TAG = "RuntimeViewModel"
+
+        /**
+         * DEEP-AUDIT: how long [startWorkspace] waits for the asynchronous
+         * service bind before it decides from a null binder. Long enough for a
+         * local bind on a loaded main thread, short enough that a bind that
+         * never arrives cannot hold the caller's first action.
+         */
+        const val BIND_STATE_TIMEOUT_MS = 1_500L
     }
 }
 

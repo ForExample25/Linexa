@@ -93,9 +93,10 @@ class DnfProvider @Inject constructor() : PackageProvider {
                 "--queryformat '${DnfOutputParser.AVAILABLE_QUERYFORMAT}' '*$query*'"
         )
         if (repoquery.exitCode == 0) {
-            val all = DnfOutputParser.parseAvailable(repoquery.output)
-            if (all.isNotEmpty()) {
-                return PackageSearchPage(total = all.size, packages = all.drop(offset).take(limit))
+            // F-038 / R-27: page while parsing.
+            val parsed = DnfOutputParser.parseAvailablePage(repoquery.output, offset, limit)
+            if (parsed.total > 0) {
+                return PackageSearchPage(total = parsed.total, packages = parsed.packages)
             }
         }
         // Fallback: `dnf search` (name + summary only, no sizes).
@@ -103,10 +104,10 @@ class DnfProvider @Inject constructor() : PackageProvider {
         if (result.exitCode != 0) {
             return PackageSearchPage(total = 0, packages = emptyList())
         }
-        val all = DnfOutputParser.parseSearch(result.output)
+        val parsed = DnfOutputParser.parseSearchPage(result.output, offset, limit)
         return PackageSearchPage(
-            total = all.size,
-            packages = all.drop(offset).take(limit).map { (name, summary) ->
+            total = parsed.total,
+            packages = parsed.packages.map { (name, summary) ->
                 AvailablePkg(
                     name = name,
                     latestVersion = "",

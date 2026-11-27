@@ -67,13 +67,17 @@ class ContainerRuntimeShellOwnershipTest {
         harness.create()
     }
 
-    /** A rootfs that really contains [shells], so the probe's stats succeed. */
+    /**
+     * A rootfs that really contains [shells] as executable scripts, so the
+     * probe and the finding-018 validator both see a usable shell.
+     */
     private fun rootfsWith(vararg shells: String): String {
         val rootfs = harness.fakeRootfs()
         shells.forEach { shell ->
             val file = File(rootfs, shell.removePrefix("/"))
             file.parentFile?.mkdirs()
             file.writeText("#!/bin/sh\n")
+            check(file.setExecutable(true)) { "could not chmod +x $file" }
         }
         return rootfs.absolutePath
     }
@@ -135,7 +139,7 @@ class ContainerRuntimeShellOwnershipTest {
 
         assertEquals(
             "the probe's answer for this image must reach argv",
-            listOf("/bin/sh", "--login"),
+            listOf("/bin/sh", "-l"),
             harness.createCalls.single().args.takeLast(2)
         )
     }
@@ -163,7 +167,7 @@ class ContainerRuntimeShellOwnershipTest {
         openSession("ws-b", rootfsWith("/bin/sh", "/bin/bash"))
 
         assertEquals(2, harness.createCalls.size)
-        assertEquals(listOf("/bin/sh", "--login"), harness.createCalls[0].args.takeLast(2))
+        assertEquals(listOf("/bin/sh", "-l"), harness.createCalls[0].args.takeLast(2))
         assertEquals(listOf("/bin/bash", "--login"), harness.createCalls[1].args.takeLast(2))
     }
 

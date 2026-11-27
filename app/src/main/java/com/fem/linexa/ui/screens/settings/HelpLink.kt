@@ -61,7 +61,7 @@ enum class HelpLink(
 
     /** The project's Telegram channel (announcements). */
     TELEGRAM_CHANNEL(
-        url = "https://t.me/aniartx",
+        url = "https://t.me/LinexaAi",
         kind = Kind.COMMUNITY
     ),
 

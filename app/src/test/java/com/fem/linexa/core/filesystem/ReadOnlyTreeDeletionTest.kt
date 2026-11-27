@@ -69,4 +69,75 @@ class ReadOnlyTreeDeletionTest {
         val absent = File(tmp.root, "no-such-tree")
         assertTrue(absent.deleteRecursivelyAllowingReadOnly())
     }
+
+    /**
+     * A directory symlink must be unlinked, never traversed. Kotlin's
+     * `deleteRecursively()` walks with `File.isDirectory`/`listFiles`, both of
+     * which follow links, so this is the out-of-sandbox data-loss case from
+     * RF-020.
+     */
+    @Test
+    fun aDirectorySymlinkIsUnlinkedWithoutDeletingItsTarget() {
+        val victim = tmp.newFolder("victim")
+        val victimFile = File(victim, "keep.txt").apply { writeText("keep") }
+        val victimNested = File(victim, "nested").apply { mkdirs() }
+        File(victimNested, "deep.txt").writeText("deep")
+
+        val tree = tmp.newFolder("tree")
+        File(tree, "ordinary").apply { mkdirs() }
+        Files.createSymbolicLink(File(tree, "escape").toPath(), victim.toPath())
+
+        assertTrue(tree.deleteRecursivelyAllowingReadOnly())
+        assertFalse("the tree itself must be gone", tree.exists())
+        assertTrue("directory symlink target must survive", victimFile.isFile)
+        assertTrue(victimFile.readText() == "keep")
+        assertTrue("nested target content must survive", File(victimNested, "deep.txt").isFile)
+    }
+
+    @Test
+    fun nestedDirectorySymlinksAreUnlinkedWithoutTouchingTargets() {
+        val victim = tmp.newFolder("nested-victim")
+        val keep = File(victim, "keep.bin").apply { writeText("keep") }
+
+        val tree = tmp.newFolder("nested-tree")
+        val deep = File(tree, "usr/lib/deep").apply { mkdirs() }
+        Files.createSymbolicLink(File(deep, "up").toPath(), victim.toPath())
+        // A relative link that also points at the victim.
+        Files.createSymbolicLink(
+            File(tree, "relative").toPath(),
+            tree.toPath().relativize(victim.toPath())
+        )
+
+        assertTrue(tree.deleteRecursivelyAllowingReadOnly())
+        assertFalse(tree.exists())
+        assertTrue(keep.isFile)
+    }
+
+    @Test
+    fun aLinkToTheParentOfTheTreeIsUnlinkedWithoutDeletingSiblings() {
+        val parent = tmp.newFolder("parent")
+        val sibling = File(parent, "sibling").apply { mkdirs() }
+        val siblingFile = File(sibling, "keep.txt").apply { writeText("keep") }
+        val tree = File(parent, "tree").apply { mkdirs() }
+        File(tree, "payload").writeText("bytes")
+        Files.createSymbolicLink(File(tree, "parent-link").toPath(), parent.toPath())
+
+        assertTrue(tree.deleteRecursivelyAllowingReadOnly())
+        assertFalse(tree.exists())
+        assertTrue("a link to the parent must not delete the parent", parent.isDirectory)
+        assertTrue(siblingFile.isFile)
+    }
+
+    @Test
+    fun danglingAndSymlinkLoopEntriesAreRemovedAsLinks() {
+        val tree = tmp.newFolder("dangling-tree")
+        val dir = File(tree, "dir").apply { mkdirs() }
+        Files.createSymbolicLink(File(dir, "dangling").toPath(), File(tmp.root, "missing").toPath())
+        Files.createSymbolicLink(File(dir, "loop-a").toPath(), File(dir, "loop-b").toPath())
+        Files.createSymbolicLink(File(dir, "loop-b").toPath(), File(dir, "loop-a").toPath())
+
+        assertTrue(tree.deleteRecursivelyAllowingReadOnly())
+        assertFalse(tree.exists())
+        assertFalse("the dangling target must not be created", File(tmp.root, "missing").exists())
+    }
 }

@@ -1,6 +1,6 @@
 # Build and Development
 
-**Status:** Current — describes the implemented build configuration and development workflow, verified against source.
+**Status:** Current — describes the implemented build configuration and development workflow, verified against source for `0.2.0`.
 
 **Project:** Linexa Linux Workspace (`com.fem.linexa`)
 
@@ -48,10 +48,13 @@ Out of scope:
 | compileSdk/targetSdk 34, minSdk 28 | Implemented | `app/build.gradle.kts` |
 | JVM target 17 | Implemented | `app/build.gradle.kts` |
 | ABI filters arm64-v8a + armeabi-v7a | Implemented | `app/build.gradle.kts` ndk block |
-| `isMinifyEnabled = false` (release) | Implemented | `app/build.gradle.kts` |
+| R8 code shrinking, optimization, resource shrinking (release) | Implemented | `app/build.gradle.kts` `isMinifyEnabled`/`isShrinkResources` |
+| Pinned per-release `versionCode`, `BuildConfig.IS_BETA` | Implemented | `app/build.gradle.kts` |
 | Signing from `local.properties`, fail-loud | Implemented | `app/build.gradle.kts` `signingConfigs` |
-| CI workflow file | Absent | no `.github/workflows/` in the repository |
-| Lint configuration / gate | Absent | no `lint` block, `lint.xml`, or baseline |
+| APK signing-certificate continuity check | Implemented | `ReleaseSigningIdentity`, `ApkValidator` |
+| CI workflow (`assembleDebug`, unit tests, lint) | Implemented | `.github/workflows/ci.yml` |
+| Release workflow (tag build, manual publish) | Implemented | `.github/workflows/release.yml` |
+| Lint gate | Implemented | `app/build.gradle.kts` `lint` block |
 
 ---
 
@@ -90,11 +93,19 @@ Native binaries (PRoot, BusyBox, GNU tar, Zstandard, tmux, loader, dependency li
 
 No x86_64 `libproot.so` exists; x86_64 emulators cannot launch workspaces (install-time refusal via `abiFilters`).
 
-### 4.4 Signing
+### 4.4 Versioning and signing
+
+`versionName` and `versionCode` are pinned per release in `app/build.gradle.kts`.
+`0.2.0` ships `versionCode = 1002`, strictly greater than the published
+`0.1.0-beta` value `1`. The value can be overridden for a CI hotfix with
+`LINEXA_VERSION_CODE` or `-Plinexa.versionCode=…`, but the artifact and the
+`ReleaseNotesCatalog` entry must agree. `BuildConfig.IS_BETA` records whether
+the release is a beta; `0.2.0` sets it to `true` because the version name has
+no `-beta` suffix.
 
 Release signing reads four properties from `local.properties` (gitignored): `signing.storeFile`, `signing.storePassword`, `signing.keyAlias`, and `signing.keyPassword`. The release build fails loudly when the credentials or the keystore file are missing; it does not silently produce an unsigned release APK.
 
-`local.properties` and the keystore are machine-local secrets. Do not commit either, and back up the release keystore separately: losing it makes future in-place updates signed with that key impossible.
+`local.properties` and the keystore are machine-local secrets. Do not commit either, and back up the release keystore separately: losing it makes future in-place updates signed with that key impossible. The update checker verifies that a downloaded APK is signed by the existing release certificate before handing it to Android's installer; changing the key would break both in-place updates and that check.
 
 ### 4.5 Build commands
 
@@ -104,16 +115,31 @@ Release signing reads four properties from `local.properties` (gitignored): `sig
 #        sdk.dir=/path/to/android-sdk
 # 3. Build:
 ./gradlew :app:assembleDebug          # debug APK
-./gradlew :app:assembleRelease        # release APK (needs signing config)
+./gradlew :app:assembleRelease        # signed release APK
 ./gradlew :app:testDebugUnitTest      # JVM unit-test suite
-./gradlew :app:lintDebug              # report-only; no lint gate is configured
+./gradlew :app:verifyUnitTestReport   # zero-test / failing-suite gate
+./gradlew :app:lintDebug              # lint gate (errors fail the build)
 ```
+
+Release builds run R8 code shrinking, optimization, and resource shrinking.
+The keep rules are static-verified by `TerminalJniShrinkerRuleTest`; a
+physical-device release smoke is part of the publication checklist.
 
 Record the exact command and full result on every verification run. Do not report a partial or filtered run as a full-suite pass.
 
-### 4.6 CI status
+### 4.6 CI and release automation
 
-The repository contains no `.github/` directory and no CI workflow. CI is therefore not part of this release; run the commands above locally or on your own runner. No lint gate is configured either, so `lintDebug` is report-only.
+`.github/workflows/ci.yml` runs on pushes to `main` and on pull requests. It
+sets up Temurin JDK 17 and Android SDK 34, runs
+`./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug`, and
+uploads the lint report, unit-test report, and debug APK.
+
+`.github/workflows/release.yml` builds and verifies a tagged release but does
+not publish automatically. A manual `workflow_dispatch` with `publish: true`
+publishes the curated GitHub release, so the signed APK and checksum can be
+attached deliberately. Signing material is supplied only through repository
+secrets and decoded into the runner's temporary directory; it is never
+committed.
 
 ### 4.7 Termux/Bionic hosts
 
@@ -128,12 +154,17 @@ paths.
 
 ## 5. Limitations and known issues
 
-- No CI workflow file; CI state is not verifiable from this repository.
-- No lint configuration or gate; `lintDebug` is report-only and currently noisy.
-- No instrumentation (`androidTest`) source set; device behavior is verified manually — see [`TESTING_STRATEGY.md`](./TESTING_STRATEGY.md).
-- `isMinifyEnabled = false` for release. Whether shrinking is safe for the PRoot/JNI stack has not been established.
-- Target SDK 34. Store-policy target requirements are external, and the toolchain is frozen for this release.
-- No version catalog; dependency guard tests key on coordinates in `build.gradle.kts`. Adopting a version catalog is a mechanical refactor that needs explicit sign-off.
+- CI does not run instrumentation tests or a release build; those are verified
+  locally or on the publication runner.
+- Instrumentation smoke tests live in `app/src/androidTest/`; they require a
+  connected device or emulator.
+- Target SDK 34. Store-policy target requirements are external, and the
+  toolchain is frozen for this release.
+- No version catalog; dependency guard tests key on coordinates in
+  `build.gradle.kts`. Adopting a version catalog is a mechanical refactor that
+  needs explicit sign-off.
+- Robolectric/Compose tests cannot run on an aarch64 Termux JVM because of
+  missing Conscrypt natives; CI covers them.
 
 ---
 
@@ -144,4 +175,4 @@ paths.
 - [`architecture/DATA_AND_PERSISTENCE.md`](../architecture/DATA_AND_PERSISTENCE.md) — Room schema, migrations
 - [`engineering/TESTING_STRATEGY.md`](./TESTING_STRATEGY.md) — test layers and commands
 - [`app/src/main/jniLibs/BINARY-MANIFEST.md`](../../app/src/main/jniLibs/BINARY-MANIFEST.md) — native binary provenance
-- [`app/src/main/jniLibs/proot-build/BUILD-NOTES.md`](../../app/src/main/jniLibs/proot-build/BUILD-NOTES.md) — PRoot rebuild notes
+- [`third_party/proot/BUILD-NOTES.md`](../../third_party/proot/BUILD-NOTES.md) — PRoot rebuild notes

@@ -255,6 +255,23 @@ class AndroidHostSystemInfoProviderTest {
     }
 
     @Test
+    fun `cachedSnapshotOf honors the TTL even for named categories`() = runBlocking {
+        val harness = Harness()
+        harness.provider.snapshot()
+        val before = HashMap(harness.sources.calls)
+
+        // 100 ms is well inside CPU's 600 ms floor: a polling caller must not
+        // be able to defeat the cache (LINEXA-PERF-001).
+        harness.nowMs += 100
+        harness.provider.cachedSnapshotOf(setOf(HostInfoCategory.CPU))
+        assertEquals(before, harness.sources.calls)
+
+        harness.nowMs += HostInfoRefreshPolicy.CPU.ttlMillis + 50
+        harness.provider.cachedSnapshotOf(setOf(HostInfoCategory.CPU))
+        assertTrue("cpu must re-collect past its ttl", harness.callsOf("CPU") > (before["CPU"] ?: 0))
+    }
+
+    @Test
     fun `invalidateAll forces the next standard pass to re-collect everything`() = runBlocking {
         val harness = Harness()
         harness.provider.snapshot()

@@ -1,5 +1,6 @@
 package com.fem.linexa.ui.screens.desktop
 
+import android.content.pm.ActivityInfo
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,8 +14,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.DesktopWindows
+import com.fem.linexa.ui.icons.LinexaIcons
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilledTonalButton
@@ -29,6 +29,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,6 +43,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.fem.linexa.R
 import com.fem.linexa.core.logging.Logger
 import com.fem.linexa.service.runtime.RuntimeBinder
+import com.fem.linexa.service.runtime.features.DesktopRunMode
 import com.fem.linexa.service.runtime.features.FeatureSettings
 import com.fem.linexa.service.runtime.features.GuiBackend
 import kotlinx.coroutines.delay
@@ -68,6 +70,13 @@ fun DesktopScreen(
      * parameter and not a second repository read.
      */
     settings: FeatureSettings = FeatureSettings(),
+    /**
+     * Direct launch: asks the workspace layer to persist a generated VNC
+     * password when the (auto-detected) desktop has none, so the secure
+     * fail-closed start policy does not refuse a desktop that never went
+     * through the enable toggle. Default no-op keeps existing call sites valid.
+     */
+    onEnsureVncPassword: () -> Unit = {},
     viewModel: DesktopViewModel = hiltViewModel()
 ) {
     val desktopState by viewModel.desktopState.collectAsState()
@@ -107,6 +116,37 @@ fun DesktopScreen(
     // ViewModel reads the settings to decide which mode to reattach to.
     LaunchedEffect(settings) {
         viewModel.configure(settings)
+    }
+
+    // Direct launch: choosing Desktop starts the session — there is no
+    // intermediate "Start Desktop" placeholder to tap through. The effect is
+    // one-shot per visit (rememberSaveable survives rotation/recreation, and is
+    // dropped when the destination leaves the back stack), so a user's explicit
+    // Stop or a failure does not loop back into another start; those states keep
+    // their manual Start/Retry affordances. It only fires from the idle
+    // Connected state — an already-running desktop is reattached by the
+    // ViewModel's resume path, never restarted — and only while the workspace
+    // session is genuinely up, so a not-yet-running runtime cannot turn into a
+    // spurious "session not running" error.
+    var autoStartConsumed by rememberSaveable(workspaceId) { mutableStateOf(false) }
+    LaunchedEffect(desktopState, desktopEnabled, binder, settings) {
+        if (autoStartConsumed || !desktopEnabled || binder == null) return@LaunchedEffect
+        if (desktopState !is DesktopUiState.Connected) return@LaunchedEffect
+        if (!binder.hasActiveSession(workspaceId)) return@LaunchedEffect
+        if (settings.desktopMode != DesktopRunMode.WEBVIEW &&
+            DesktopVncAuthProvisioner.needsGeneratedPassword(
+                password = settings.desktopVncPassword,
+                unreadable = settings.desktopVncPasswordUnreadable,
+                allowUnauthenticated = settings.desktopVncAllowUnauthenticated
+            )
+        ) {
+            // Persist the secure default first; the effect re-runs when the
+            // resolved settings arrive with the password.
+            onEnsureVncPassword()
+            return@LaunchedEffect
+        }
+        autoStartConsumed = true
+        viewModel.startDesktop(workspaceId)
     }
 
     LaunchedEffect(desktopState) {
@@ -256,7 +296,10 @@ fun DesktopScreen(
             controller?.show(WindowInsetsCompat.Type.systemBars())
         }
         if (windowMode.landscape) {
-            activity?.requestedOrientation = DesktopWindowMode.ORIENTATION_USER_LANDSCAPE
+            // The framework constant itself (rather than the pure-JVM mirror)
+            // lets lint verify the value; DesktopWindowModeTest keeps the
+            // mirror honest for the unit-testable model.
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE
         }
 
         onDispose {
@@ -499,7 +542,7 @@ private fun DesktopPlaceholder(
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = Icons.Filled.DesktopWindows,
+                    imageVector = LinexaIcons.DesktopWindows,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(42.dp)

@@ -91,6 +91,25 @@ interface ContainerRuntime {
     suspend fun exec(workspaceId: String, rootfsPath: String, command: String): CommandResult
 
     /**
+     * Run a one-shot, non-interactive command with [stdin] written to the
+     * guest process's standard input, then closed. Used by VNC password
+     * provisioning (finding 031): `vncpasswd -f` reads the secret from stdin,
+     * so it is never part of the command string that becomes PRoot's argv and
+     * cannot be read back from `/proc/<pid>/cmdline`.
+     *
+     * [stdin] must not be logged. An implementation that cannot deliver it
+     * must fail the exec (non-zero/[-1] exit), never silently run the command
+     * with an empty stdin: for the provisioning caller that would mean an
+     * unknown or empty password rather than the configured one.
+     */
+    suspend fun execWithInput(
+        workspaceId: String,
+        rootfsPath: String,
+        command: String,
+        stdin: String
+    ): CommandResult
+
+    /**
      * §1.92: like [exec], but streams each output line to [onLine] as it is
      * produced. Used by the Package Manager for long-running operations
      * (install/remove/update/upgrade/refresh) so the UI can show live

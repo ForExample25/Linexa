@@ -71,6 +71,29 @@ interface SettingsRepository {
 
     suspend fun setColorTheme(theme: ColorTheme)
 
+    // ── Language ───────────────────────────────────────────────────────────
+
+    /**
+     * The app-language preference: system-following by default, or an explicit
+     * English/Persian override.
+     *
+     * Observed so the root composable can re-render the whole UI — strings,
+     * layout direction and the language selector itself — the moment the user
+     * picks a language, without restarting the activity or the Linux runtime.
+     */
+    fun observeAppLanguage(): Flow<AppLanguage>
+
+    /**
+     * The preference, read synchronously.
+     *
+     * Same reason as [currentThemeMode]: the root composition and any
+     * non-composition string lookup must know the language before the first
+     * frame, and a suspend read would flash the wrong language.
+     */
+    fun currentAppLanguage(): AppLanguage
+
+    suspend fun setAppLanguage(language: AppLanguage)
+
     // ── Terminal UI ────────────────────────────────────────────────────────
 
     /**

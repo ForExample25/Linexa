@@ -1,5 +1,9 @@
 package com.fem.linexa.ui.misc
 
+import android.content.Context
+import androidx.annotation.StringRes
+import com.fem.linexa.R
+import com.fem.linexa.core.i18n.linexaString
 import com.fem.linexa.ui.misc.LinexaDocumentsMapping.Decoded
 
 /**
@@ -28,6 +32,14 @@ import com.fem.linexa.ui.misc.LinexaDocumentsMapping.Decoded
  *
  * "Active" includes `Starting`, `Running` and `Stopping`; a teardown is still
  * touching the tree, so it is not safe to mutate it.
+ *
+ * ## Localization
+ *
+ * [Decision.Refused.reason] remains the canonical English text (the JVM tests
+ * assert its wording). It also carries an optional [Decision.Refused.reasonRes]
+ * and arguments so the provider can render the same refusal in the user's
+ * selected language via [Decision.Refused.localizedReason]. Keeping both means
+ * the policy stays framework-free while SAF clients still see localized text.
  */
 object WorkspaceMutationPolicy {
 
@@ -36,7 +48,16 @@ object WorkspaceMutationPolicy {
 
     sealed interface Decision {
         data object Allowed : Decision
-        data class Refused(val reason: String) : Decision
+
+        data class Refused(
+            val reason: String,
+            @StringRes val reasonRes: Int? = null,
+            val args: List<Any> = emptyList()
+        ) : Decision {
+            /** Resource-backed text when available, English contract otherwise. */
+            fun localizedReason(context: Context): String =
+                reasonRes?.let { context.linexaString(it, *args.toTypedArray()) } ?: reason
+        }
     }
 
     /** Liveness query, abstracted so the policy can be tested without a service. */
@@ -50,10 +71,15 @@ object WorkspaceMutationPolicy {
         liveness: WorkspaceLiveness
     ): Decision {
         val decoded = LinexaDocumentsMapping.decode(documentId)
-            ?: return Decision.Refused("Unknown document ID: $documentId")
+            ?: return Decision.Refused(
+                reason = "Unknown document ID: $documentId",
+                reasonRes = R.string.saf_refused_unknown_document,
+                args = listOf(documentId)
+            )
         return when (decoded) {
             Decoded.ContainersRoot -> Decision.Refused(
-                "The Linexa workspace list is read-only; open a workspace to change its files."
+                reason = "The Linexa workspace list is read-only; open a workspace to change its files.",
+                reasonRes = R.string.saf_refused_workspace_list_read_only
             )
 
             is Decoded.Workspace -> {
@@ -61,15 +87,17 @@ object WorkspaceMutationPolicy {
                 // would orphan the database row, and a rename would detach the
                 // runtime's rootfs path.
                 Decision.Refused(
-                    "A workspace's root filesystem cannot be changed through Files. " +
-                        "Use the Linexa app to delete or repair the workspace."
+                    reason = "A workspace's root filesystem cannot be changed through Files. " +
+                        "Use the Linexa app to delete or repair the workspace.",
+                    reasonRes = R.string.saf_refused_rootfs_immutable
                 )
             }
 
             is Decoded.ContainersFile -> {
                 if (liveness.isActive(decoded.workspaceId)) {
                     Decision.Refused(
-                        "This workspace is running. Stop it before ${mutation.verb()} files in its rootfs."
+                        reason = "This workspace is running. Stop it before ${mutation.verb()} files in its rootfs.",
+                        reasonRes = R.string.saf_refused_workspace_running
                     )
                 } else {
                     Decision.Allowed
@@ -81,7 +109,8 @@ object WorkspaceMutationPolicy {
                     Decision.Allowed
                 } else {
                     Decision.Refused(
-                        "The Public root cannot be renamed or deleted; change its contents instead."
+                        reason = "The Public root cannot be renamed or deleted; change its contents instead.",
+                        reasonRes = R.string.saf_refused_public_root_fixed
                     )
                 }
             }

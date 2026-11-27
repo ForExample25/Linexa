@@ -92,6 +92,13 @@ data class ExportRequest(
      * makes packing progress indeterminate. Never used as a correctness check.
      */
     val expectedBytes: Long? = null,
+    /**
+     * Whether guest credential material is packed (finding 022). Defaults to
+     * [ExportCredentialPolicy.REMOVE_CREDENTIALS]: an export never leaks the
+     * VNC password or SSH private keys unless the caller explicitly passes
+     * [ExportCredentialPolicy.INCLUDE_CREDENTIALS] after warning the user.
+     */
+    val credentialPolicy: ExportCredentialPolicy = ExportCredentialPolicy.REMOVE_CREDENTIALS,
 ) {
     override fun equals(other: Any?): Boolean = this === other
     override fun hashCode(): Int = System.identityHashCode(this)
@@ -151,6 +158,14 @@ sealed interface ExportResult {
          * should say so rather than stay silent.
          */
         val skippedEntries: List<String> = emptyList(),
+        /**
+         * Archive-relative paths omitted because they hold guest credentials
+         * and the request chose [ExportCredentialPolicy.REMOVE_CREDENTIALS].
+         * Empty for [ExportCredentialPolicy.INCLUDE_CREDENTIALS] (or when the
+         * guest had none). A `.gnupg` directory is reported once, not per
+         * descendant, because its whole subtree is pruned.
+         */
+        val removedCredentials: List<String> = emptyList(),
     ) : ExportResult
 
     /**

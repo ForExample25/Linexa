@@ -896,8 +896,8 @@ internal class VncSurfaceView(
         // pinch centroid, so the content under the fingers stays under them.
         scaleDetector.onTouchEvent(event)
 
-        val touch = when (event.actionMasked) {
-            android.view.MotionEvent.ACTION_DOWN -> {
+        val touch = when (vncTouchKindOf(event.actionMasked)) {
+            VncTouchKind.Down -> {
                 // The gesture's machine is chosen at finger-down from
                 // [touchMode]: a settings switch takes effect on the next
                 // touch, never mid-gesture.
@@ -917,7 +917,7 @@ internal class VncSurfaceView(
                 VncTouch.Down(event.x, event.y, event.eventTime)
             }
 
-            android.view.MotionEvent.ACTION_MOVE -> {
+            VncTouchKind.Move -> {
                 if (event.pointerCount >= 2) {
                     val midX = (event.getX(0) + event.getX(1)) / 2f
                     val midY = (event.getY(0) + event.getY(1)) / 2f
@@ -934,7 +934,7 @@ internal class VncSurfaceView(
                 VncTouch.Move(event.getX(0), event.getY(0), event.eventTime)
             }
 
-            android.view.MotionEvent.ACTION_POINTER_DOWN -> {
+            VncTouchKind.SecondaryDown -> {
                 // A second finger arriving must not read as movement of the first.
                 resyncTouchOrigin(event.getX(0), event.getY(0))
                 multiPanActive = false
@@ -948,7 +948,7 @@ internal class VncSurfaceView(
                 )
             }
 
-            android.view.MotionEvent.ACTION_POINTER_UP -> {
+            VncTouchKind.SecondaryUp -> {
                 resyncTouchOrigin(event.getX(0), event.getY(0))
                 multiPanActive = false
                 multiPanDeltaX = 0f
@@ -961,19 +961,19 @@ internal class VncSurfaceView(
                 )
             }
 
-            android.view.MotionEvent.ACTION_UP -> {
+            VncTouchKind.Up -> {
                 // Deliberately no delta and no flush: lifting must not reposition
                 // the cursor, so a release is sent at wherever the cursor already is.
                 endTouch()
                 VncTouch.Up(event.getX(0), event.getY(0), event.eventTime)
             }
 
-            android.view.MotionEvent.ACTION_CANCEL -> {
+            VncTouchKind.Cancel -> {
                 endTouch()
                 VncTouch.Cancel
             }
 
-            else -> return super.onTouchEvent(event)
+            VncTouchKind.Other -> return super.onTouchEvent(event)
         }
 
         // §1.138: no tap-to-show-keyboard. A tap is a left click on the remote

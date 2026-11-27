@@ -1,5 +1,6 @@
 package com.fem.linexa.service.runtime.pty
 
+import com.fem.linexa.core.filesystem.ProcessIdentity
 import com.fem.linexa.domain.terminal.TerminalPreview
 import kotlinx.coroutines.flow.SharedFlow
 
@@ -32,6 +33,17 @@ interface PtySession {
 
     /** OS process id of the child running behind this pty. */
     val pid: Int
+
+    /**
+     * SS-001: host identity (PID + kernel start time + process group) of the
+     * pty child, captured when the child was launched. Container teardown
+     * uses it to snapshot and terminate the whole component tree *before* the
+     * child can die: PRoot's tracees are ordinary host processes that
+     * reparent to init once their tracer is gone, and a bare PID is never
+     * safe to signal after recycling. Null for fakes/backends that cannot
+     * expose a host process.
+     */
+    val processIdentity: ProcessIdentity? get() = null
 
     /** True while the child process is alive. */
     val isAlive: Boolean

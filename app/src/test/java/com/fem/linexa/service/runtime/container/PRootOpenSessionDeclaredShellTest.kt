@@ -53,13 +53,18 @@ class PRootOpenSessionDeclaredShellTest {
         File(dir, "config.yaml").writeText(yaml)
     }
 
-    /** A rootfs that really contains [shells], so the existence check passes. */
+    /**
+     * A rootfs that really contains [shells] as executable scripts. Both
+     * checks matter after RootFS finding 018: a declared shell must exist
+     * **and** be executable, and its shebang interpreter must exist.
+     */
     private fun rootfsWith(vararg shells: String): String {
         val rootfs = harness.fakeRootfs()
         shells.forEach { shell ->
             val file = File(rootfs, shell.removePrefix("/"))
             file.parentFile?.mkdirs()
             file.writeText("#!/bin/sh\n")
+            check(file.setExecutable(true)) { "could not chmod +x $file" }
         }
         return rootfs.absolutePath
     }
@@ -137,7 +142,7 @@ class PRootOpenSessionDeclaredShellTest {
 
         assertEquals(
             "a declaration that is wrong about its own image must not be used",
-            listOf("/bin/sh", "--login"),
+            listOf("/bin/sh", "-l"),
             harness.createCalls.single().args.takeLast(2)
         )
     }
@@ -160,7 +165,7 @@ class PRootOpenSessionDeclaredShellTest {
         openSession("ws-1", rootfs)
 
         assertEquals(
-            listOf("/bin/sh", "--login"),
+            listOf("/bin/sh", "-l"),
             harness.createCalls.single().args.takeLast(2)
         )
     }
@@ -175,7 +180,7 @@ class PRootOpenSessionDeclaredShellTest {
         openSession("ws-1", rootfs)
 
         assertEquals(
-            listOf("/bin/sh", "--login"),
+            listOf("/bin/sh", "-l"),
             harness.createCalls.single().args.takeLast(2)
         )
     }
@@ -193,7 +198,7 @@ class PRootOpenSessionDeclaredShellTest {
         assertEquals(listOf("/bin/zsh", "--login"), harness.createCalls[0].args.takeLast(2))
         assertEquals(
             "ws-2 declared nothing, so it must keep the probe result",
-            listOf("/bin/sh", "--login"),
+            listOf("/bin/sh", "-l"),
             harness.createCalls[1].args.takeLast(2)
         )
     }

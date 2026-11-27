@@ -26,6 +26,20 @@ interface GuestFeatureHost {
     /** Run a bounded one-shot command inside the guest. */
     suspend fun execCommand(workspaceId: String, command: String): CommandResult
 
+    /**
+     * Finding 031: like [execCommand], but [stdin] is written to the guest
+     * process's standard input and then closed. VNC password provisioning
+     * (`vncpasswd -f`) uses this so the secret never appears in argv.
+     *
+     * [stdin] is a secret: callers must not log it. A failure to deliver it is
+     * an exec failure, never a run with empty stdin.
+     */
+    suspend fun execCommandWithInput(
+        workspaceId: String,
+        command: String,
+        stdin: String
+    ): CommandResult
+
     /** §1.83: start (or idempotently restart) a named long-lived guest daemon. */
     suspend fun startDaemon(workspaceId: String, name: String, command: String): Boolean
 

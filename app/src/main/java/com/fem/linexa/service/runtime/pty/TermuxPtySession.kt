@@ -1,20 +1,31 @@
 package com.fem.linexa.service.runtime.pty
 
+import com.fem.linexa.core.filesystem.ProcessIdentity
+import com.fem.linexa.core.filesystem.ProcessTableReader
+import com.fem.linexa.core.logging.DebugCapture
 import com.fem.linexa.core.logging.Logger
+import com.fem.linexa.core.perf.PerfCounters
+import com.fem.linexa.core.perf.PerfTrace
 import com.fem.linexa.service.runtime.RuntimeTrace
 import com.termux.terminal.TerminalColorScheme
-import com.termux.terminal.TerminalColors
 import com.termux.terminal.TerminalEmulator
+import com.termux.terminal.TerminalInstrumentation
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
-import com.termux.terminal.TextStyle
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import java.util.UUID
 
 /**
@@ -57,6 +68,54 @@ class TermuxPtySession(
     override val events: SharedFlow<PtyEvent> = _events.asSharedFlow()
 
     /**
+     * SS-002 + F-021: discrete events must reach consumers, but the queue that
+     * carries them must not be unbounded. The old design drained an UNLIMITED
+     * channel, so a guest that floods OSC 52 (ClipboardText) or repeatedly
+     * retitles itself could grow the queue for as long as a subscriber lagged
+     * — the one unbounded buffer in the terminal pipeline.
+     *
+     * The queue is now split by consequence:
+     *
+     *  * [eventChannel] carries *transient* events (title, bell, clipboard,
+     *    paste) in a fixed 64-slot buffer with DROP_OLDEST. Losing an old
+     *    clipboard chunk or an old title under a flood is harmless: the newest
+     *    value is the meaningful one, and every drop is counted
+     *    ([PerfCounters.ptyEventDropped]).
+     *  * [lifecycleChannel] carries [PtyEvent.Finished], which is emitted at
+     *    most once per session and must never be lost. Its capacity is
+     *    UNLIMITED by type, not by traffic: exactly one producer send exists
+     *    and it is guarded by [finishQueued].
+     *
+     * ScreenUpdated keeps using the 64-slot shared flow's `tryEmit`:
+     * repaint correctness is already guaranteed by the conflated
+     * [screenRevision] StateFlow, so coalescing it is both safe and desirable.
+     */
+    private val eventChannel = Channel<PtyEvent>(
+        capacity = EVENT_BUFFER_CAPACITY,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+        onUndeliveredElement = { PerfCounters.ptyEventDropped() }
+    )
+    private val lifecycleChannel = Channel<PtyEvent>(Channel.UNLIMITED)
+    private val finishQueued = java.util.concurrent.atomic.AtomicBoolean(false)
+    private val eventScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val eventPump = eventScope.launch {
+        for (event in eventChannel) _events.emit(event)
+    }
+    private val lifecyclePump = eventScope.launch {
+        for (event in lifecycleChannel) _events.emit(event)
+    }
+
+    private fun emitEvent(event: PtyEvent) {
+        if (event is PtyEvent.Finished) {
+            // One-shot by construction: a second Finished can only be a
+            // duplicate callback and carries no new state.
+            if (finishQueued.compareAndSet(false, true)) lifecycleChannel.trySend(event)
+        } else {
+            eventChannel.trySend(event)
+        }
+    }
+
+    /**
      * 2026-08-30 (session-lifecycle fix): the deterministic repaint signal —
      * see [TermuxTerminalSessionProvider.screenRevision]. Bumped by the two
      * emulator callbacks that change what the terminal view draws: screen
@@ -70,6 +129,7 @@ class TermuxPtySession(
 
     private fun bumpScreenRevision() {
         _screenRevision.value += 1
+        PerfCounters.screenRevision()
     }
 
     private val exitDeferred = CompletableDeferred<Int>()
@@ -79,50 +139,65 @@ class TermuxPtySession(
 
     private fun ageMs(): String = "${System.currentTimeMillis() - createdAtMs}ms"
 
-    init {
-        // 2026-08-29 (appearance fix, Issue 3): terminal-owned color scheme.
-        // If the workspace's HOME carries a Termux-format
-        // `.termux/colors.properties`, apply it to the terminal color scheme
-        // BEFORE the emulator is constructed (the emulator copies the scheme
-        // at construction). Parse errors are logged and ignored — a malformed
-        // file must never block a terminal. Runtime (session-only) color
-        // changes stay the OSC layer's domain (OSC 4/10/11/12 mutate the
-        // emulator's own current colors; OSC 104 resets to this scheme).
-        // Haven UI tokens never touch this path.
-        if (terminalConfigHome != null) {
-            try {
-                val props = java.util.Properties()
-                java.io.File(terminalConfigHome, ".termux/colors.properties")
-                    .takeIf { it.isFile }
-                    ?.inputStream()?.use { props.load(it) }
-                if (props.size > 0) {
-                    // Parse into a scratch scheme first: updateWith is strict
-                    // (throws on unknown keys/invalid colors) and partially
-                    // mutates — a scratch copy keeps the live scheme intact on
-                    // failure.
-                    val scratch = TerminalColorScheme()
-                    scratch.updateWith(props)
-                    System.arraycopy(
-                        scratch.mDefaultColors, 0,
-                        TerminalColors.COLOR_SCHEME.mDefaultColors, 0,
-                        TextStyle.NUM_INDEXED_COLORS
-                    )
-                    Logger.i(TAG, "Terminal colors applied from $terminalConfigHome/.termux/colors.properties (${props.size} keys)")
-                }
-            } catch (e: Exception) {
-                Logger.w(TAG, "Ignoring invalid .termux/colors.properties: ${e.message}")
+    /**
+     * 2026-08-29 (appearance fix, Issue 3): terminal-owned color scheme.
+     * If the workspace's HOME carries a Termux-format
+     * `.termux/colors.properties`, parse it here — BEFORE the emulator is
+     * constructed (the emulator copies the scheme at construction). Parse
+     * errors are logged and ignored; a malformed file must never block a
+     * terminal. Runtime (session-only) color changes stay the OSC layer's
+     * domain (OSC 4/10/11/12 mutate the emulator's own current colors;
+     * OSC 104 resets to this scheme).
+     *
+     * RN-006: the result is a PER-SESSION scheme handed to this session's
+     * emulator. It deliberately does not touch the process-global palette
+     * singleton: that object is shared by
+     * every terminal in the process, so applying one workspace's file there
+     * changed the defaults (and OSC 104 results) of terminals in other
+     * workspaces. Haven UI tokens never touch this path.
+     */
+    private val configuredColorScheme: TerminalColorScheme? = terminalConfigHome?.let { configHome ->
+        try {
+            val props = java.util.Properties()
+            java.io.File(configHome, ".termux/colors.properties")
+                .takeIf { it.isFile }
+                ?.inputStream()?.use { props.load(it) }
+            if (props.size > 0) {
+                // Parse into a scratch scheme: updateWith is strict (throws on
+                // unknown keys/invalid colors) and partially mutates, so an
+                // exception leaves only the scratch object inconsistent.
+                val scratch = TerminalColorScheme()
+                scratch.updateWith(props)
+                Logger.i(TAG, "Terminal colors applied from $configHome/.termux/colors.properties (${props.size} keys)")
+                scratch
+            } else {
+                null
             }
+        } catch (e: Exception) {
+            Logger.w(TAG, "Ignoring invalid .termux/colors.properties: ${e.message}")
+            null
         }
     }
 
     private val callback = object : TerminalSessionClient {
         override fun onTextChanged(changedSession: TerminalSession?) {
+            // Phase M0-A: the vendored module cannot read DebugCapture, so this
+            // sanctioned adapter mirrors the flag on each output batch. Volatile
+            // write only; no logging/allocation.
+            TerminalInstrumentation.setEnabled(DebugCapture.isEnabled())
             bumpScreenRevision()
+            PerfCounters.screenUpdate()
             _events.tryEmit(PtyEvent.ScreenUpdated)
         }
 
+        override fun onFirstOutput(changedSession: TerminalSession?, bytesRead: Int) {
+            // Phase M0-A (E6): first pty output, correlated by the session id
+            // attached before the child was forked. Not a prompt-ready signal.
+            PerfTrace.markFirstOutput(id, bytesRead)
+        }
+
         override fun onTitleChanged(changedSession: TerminalSession?) {
-            _events.tryEmit(PtyEvent.TitleChanged(changedSession?.title))
+            emitEvent(PtyEvent.TitleChanged(changedSession?.title))
         }
 
         override fun onSessionFinished(finishedSession: TerminalSession?) {
@@ -143,25 +218,27 @@ class TermuxPtySession(
                     "childOutput=${transcriptTailPreview(outputTail)}"
             )
             exitDeferred.complete(code)
-            _events.tryEmit(PtyEvent.Finished(code))
+            emitEvent(PtyEvent.Finished(code))
+            eventChannel.close()
+            lifecycleChannel.close()
         }
 
         override fun onCopyTextToClipboard(session: TerminalSession?, text: String?) {
             // OSC 52 and the vendored TerminalView's selection Copy action both
             // land here; the terminal screen owns the Android clipboard, so the
             // request travels out as an event (see RealTerminalView's collector).
-            if (text != null) _events.tryEmit(PtyEvent.ClipboardText(text))
+            if (text != null) emitEvent(PtyEvent.ClipboardText(text))
         }
 
         override fun onPasteTextFromClipboard(session: TerminalSession?) {
             // The vendored selection toolbar's Paste button. Same ownership
             // reasoning as onCopyTextToClipboard: the screen reads the Android
             // clipboard and writes it into the pty.
-            _events.tryEmit(PtyEvent.PasteRequested)
+            emitEvent(PtyEvent.PasteRequested)
         }
 
         override fun onBell(session: TerminalSession?) {
-            _events.tryEmit(PtyEvent.Bell)
+            emitEvent(PtyEvent.Bell)
         }
 
         override fun onColorsChanged(session: TerminalSession?) {
@@ -233,6 +310,15 @@ class TermuxPtySession(
     init {
         Logger.i("TerminalChain", "CHAIN: ENTER TermuxPtySession.init (TerminalSession constructed)")
         runtimeTrace.record(workspaceId, "TermuxPtySession constructor ENTER")
+        // Phase M0-A: mirror capture into the vendored module (it cannot read
+        // DebugCapture), then correlate this pty with the workspace trace BEFORE
+        // updateSize forks the child — a very fast first read must find its record.
+        TerminalInstrumentation.setEnabled(DebugCapture.isEnabled())
+        PerfTrace.attachPty(workspaceId, id)
+        // RN-006: install the workspace's own scheme on THIS session before
+        // the emulator exists. TerminalSession forwards it to the emulator at
+        // construction; the process-global default is never mutated.
+        configuredColorScheme?.let { session.setColorScheme(it) }
         // The first updateSize() call both sets pty geometry AND starts the
         // child process (TerminalSession.initializeEmulator is only called
         // while its emulator is null) — this is not just cosmetic. Cell pixel
@@ -258,6 +344,19 @@ class TermuxPtySession(
         runtimeTrace.record(workspaceId, "TermuxPtySession constructor EXIT pid=${session.pid}")
     }
 
+    /**
+     * SS-001: captured once, immediately after the child is forked. The
+     * container snapshots this tree before [destroy] can kill the pty child;
+     * the start time makes a recycled PID unreachable.
+     */
+    override val processIdentity: ProcessIdentity? = session.pid
+        .takeIf { it > 0 }
+        ?.let { p ->
+            ProcessTableReader.readEntry(p)?.let {
+                ProcessIdentity(p, it.startTimeTicks, it.processGroupId)
+            }
+        }
+
     override val pid: Int get() = session.pid
     override val isAlive: Boolean get() = session.isRunning
     override val exitCode: Int? get() = if (session.isRunning) null else session.exitStatus
@@ -275,16 +374,21 @@ class TermuxPtySession(
      */
     override fun resize(columns: Int, rows: Int) = session.updateSize(columns, rows, 0, 0)
 
-    override fun currentTranscript(): String =
+    override fun currentTranscript(): String = synchronized(session.mEmulatorLock) {
         session.emulator?.screen?.getTranscriptText().orEmpty()
+    }
 
     override fun recentOutput(maxChars: Int): String {
-        val full = session.emulator?.screen?.getTranscriptText().orEmpty()
+        val full = synchronized(session.mEmulatorLock) {
+            session.emulator?.screen?.getTranscriptText().orEmpty()
+        }
         if (full.length <= maxChars) return full
         return full.takeLast(maxChars)
     }
 
-    override val title: String? get() = session.title
+    // CC-003: titles are emulator state too; the main-looper append path is
+    // the only writer, so every cross-thread read goes through the same lock.
+    override val title: String? get() = synchronized(session.mEmulatorLock) { session.title }
 
     override fun foregroundProcessName(): String? =
         ProcForegroundProcess.foregroundProcessName(pid)
@@ -302,9 +406,11 @@ class TermuxPtySession(
      */
     override fun previewText(maxLines: Int, maxChars: Int): String {
         val visible = try {
-            session.emulator?.screen
-                ?.getSelectedText(0, 0, PREVIEW_MAX_COLUMNS, PREVIEW_MAX_ROWS)
-                .orEmpty()
+            synchronized(session.mEmulatorLock) {
+                session.emulator?.screen
+                    ?.getSelectedText(0, 0, PREVIEW_MAX_COLUMNS, PREVIEW_MAX_ROWS)
+                    .orEmpty()
+            }
         } catch (_: Exception) {
             ""
         }
@@ -347,11 +453,24 @@ class TermuxPtySession(
     }
 
     override fun destroy() {
-        session.finishIfRunning()
+        // SS-001: SIGHUP first, then a bounded escalation to SIGKILL inside
+        // TerminalSession. The container awaits awaitExit() before releasing
+        // this terminal's scratch tree.
+        PerfTrace.abandonTerminal(id, "destroyed-before-first-screen-update")
+        session.finishGracefully()
+        // SS-002 + F-021: no consumer can need this session's discrete events
+        // after an explicit destroy; stop both pumps so neither can outlive
+        // the session.
+        eventChannel.close()
+        lifecycleChannel.close()
+        eventScope.cancel()
     }
 
     private companion object {
         const val TAG = "TermuxPtySession"
+
+        /** F-021: fixed capacity of the transient-event queue (drop-oldest). */
+        const val EVENT_BUFFER_CAPACITY = 64
 
         /**
          * Scrollback depth, in transcript rows: Termux's own

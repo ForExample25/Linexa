@@ -19,6 +19,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.viewinterop.AndroidView
 import com.fem.linexa.core.logging.Logger
+import com.fem.linexa.core.perf.PerfCounters
+import com.fem.linexa.core.perf.PerfTrace
 import com.fem.linexa.domain.settings.TerminalFontPreference
 import com.fem.linexa.domain.settings.TerminalShortcut
 import com.fem.linexa.service.runtime.pty.PtyEvent
@@ -285,7 +287,21 @@ fun RealTerminalView(
                 )
             }
             lastRevision = revision
-            terminalViewState.value?.onScreenUpdated()
+            val boundView = terminalViewState.value
+            if (boundView != null) {
+                boundView.onScreenUpdated()
+                // Phase M0-A (E7): a repaint was actually delivered to a bound
+                // view. The engine records only the first one per pty; later
+                // revisions are normal operation and cost one map lookup.
+                val recorded = PerfTrace.markFirstScreenUpdate(
+                    ptyId = ptySession.id,
+                    screenRevision = revision,
+                    bytesRead = nativeSession.perfBytesRead,
+                    handlerMessages = nativeSession.perfHandlerMessages,
+                    screenUpdates = nativeSession.perfScreenUpdates
+                )
+                if (recorded) PerfCounters.logSummary()
+            }
         }
     }
 

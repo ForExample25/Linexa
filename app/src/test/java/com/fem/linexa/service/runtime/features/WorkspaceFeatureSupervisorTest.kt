@@ -57,7 +57,7 @@ class WorkspaceFeatureSupervisorTest {
     fun enableReportsProgressStatesInOrder() = runBlocking {
         val guest = FakeGuest().apply {
             responses["command -v sshd"] = CommandResult(1, "", "not found")
-            responses["which apt-get"] = CommandResult(0, "/usr/bin/apt-get\n", "")
+            responses[PackageManagerDetector.PROBE_COMMAND] = CommandResult(0, "/usr/bin/apt-get\n", "")
             responses["os-release"] = CommandResult(0, "ID=debian\n", "")
         }
         // Re-probe after install must succeed, so flip the probe response
@@ -120,7 +120,7 @@ class WorkspaceFeatureSupervisorTest {
     fun noSupportedPackageManagerFailsWithoutRunningAnInstall() = runBlocking {
         val guest = FakeGuest().apply {
             responses["command -v sshd"] = CommandResult(1, "", "")
-            responses["which apt-get"] = CommandResult(1, "", "")
+            responses[PackageManagerDetector.PROBE_COMMAND] = CommandResult(1, "", "")
             responses["os-release"] = CommandResult(1, "", "")
         }
         val supervisor = WorkspaceFeatureSupervisor(guest)
@@ -136,7 +136,7 @@ class WorkspaceFeatureSupervisorTest {
     fun failedInstallSurfacesTheGuestErrorTail() = runBlocking {
         val guest = FakeGuest().apply {
             responses["command -v sshd"] = CommandResult(1, "", "")
-            responses["which apt-get"] = CommandResult(0, "/usr/bin/apt-get\n", "")
+            responses[PackageManagerDetector.PROBE_COMMAND] = CommandResult(0, "/usr/bin/apt-get\n", "")
             responses["os-release"] = CommandResult(0, "ID=debian\n", "")
             responses["apt-get install"] = CommandResult(100, "", "E: Unable to locate package openssh-server")
         }
@@ -153,7 +153,7 @@ class WorkspaceFeatureSupervisorTest {
     fun installThatExitsZeroButLeavesNoBinaryFails() = runBlocking {
         val guest = FakeGuest().apply {
             responses["command -v sshd"] = CommandResult(1, "", "")
-            responses["which apt-get"] = CommandResult(0, "/usr/bin/apt-get\n", "")
+            responses[PackageManagerDetector.PROBE_COMMAND] = CommandResult(0, "/usr/bin/apt-get\n", "")
             responses["os-release"] = CommandResult(0, "ID=debian\n", "")
             responses["apt-get install"] = CommandResult(0, "done", "")
         }
@@ -320,7 +320,7 @@ class WorkspaceFeatureSupervisorTest {
     fun noCommandTouchesTheWorkspaceLifecycleOrOtherDaemons() = runBlocking {
         val guest = FakeGuest().apply {
             responses["command -v sshd"] = CommandResult(1, "", "")
-            responses["which apt-get"] = CommandResult(0, "/usr/bin/apt-get\n", "")
+            responses[PackageManagerDetector.PROBE_COMMAND] = CommandResult(0, "/usr/bin/apt-get\n", "")
             responses["os-release"] = CommandResult(0, "ID=debian\n", "")
         }
         WorkspaceFeatureSupervisor(guest).reconcileSsh(ws, enabled = true)

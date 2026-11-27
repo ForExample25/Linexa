@@ -770,6 +770,43 @@ private fun VncModeSettings(
     }) {
         Text(stringResource(R.string.feature_settings_desktop_password_generate))
     }
+
+    // Finding 007: no-password starts are fail-closed unless this explicit
+    // consent is on. The help text says exactly what the risk is — loopback is
+    // not an app boundary on Android — instead of presenting it as a neutral
+    // toggle.
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(role = Role.Switch) {
+                onSettingsChange(
+                    settings.copy(
+                        desktopVncAllowUnauthenticated = !settings.desktopVncAllowUnauthenticated
+                    )
+                )
+            }
+            .padding(vertical = Spacing.xs),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = stringResource(R.string.feature_settings_desktop_allow_unauth_label),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            Text(
+                text = stringResource(R.string.feature_settings_desktop_allow_unauth_help),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        Switch(
+            checked = settings.desktopVncAllowUnauthenticated,
+            onCheckedChange = {
+                onSettingsChange(settings.copy(desktopVncAllowUnauthenticated = it))
+            }
+        )
+    }
 }
 
 @Composable

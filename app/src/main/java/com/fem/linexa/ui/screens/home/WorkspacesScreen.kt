@@ -47,6 +47,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -69,6 +70,9 @@ import com.fem.linexa.domain.workspace.WorkspaceListOptions
 import com.fem.linexa.domain.workspace.WorkspaceListPolicy
 import com.fem.linexa.domain.workspace.WorkspaceSort
 import com.fem.linexa.domain.workspace.WorkspaceStatusFilter
+import com.fem.linexa.domain.whatsnew.ReleaseDateLabel
+import com.fem.linexa.domain.whatsnew.ReleaseNotesCatalog
+import com.fem.linexa.service.exporter.ExportCredentialPolicy
 import com.fem.linexa.service.exporter.ExportFlowState
 import com.fem.linexa.service.runtime.pty.PtySession
 import com.fem.linexa.ui.components.DistroIdentity
@@ -80,6 +84,7 @@ import com.fem.linexa.ui.components.haven.HavenButtonSize
 import com.fem.linexa.ui.components.haven.HavenButtonVariant
 import com.fem.linexa.ui.theme.haven.HavenDim
 import com.fem.linexa.ui.components.haven.HPageHeader
+import com.fem.linexa.ui.components.haven.HPill
 import com.fem.linexa.ui.theme.haven.HavenType
 import com.fem.linexa.ui.theme.haven.HavenTheme
 import com.fem.linexa.ui.components.haven.HBottomNav
@@ -167,6 +172,13 @@ fun WorkspacesScreen(
     // § export: a refused pre-gate (running workspace, no rootfs, …) surfaces
     // here instead of opening a destination pick that could never succeed.
     var exportBlockReason by remember { mutableStateOf<String?>(null) }
+    // § export: the workspace waiting on the credential warning (finding 022),
+    // and the policy the user chose for the destination pick that follows. The
+    // policy must outlive the picker because SAF returns only a Uri.
+    var pendingCredentialWorkspace by remember { mutableStateOf<Workspace?>(null) }
+    var exportCredentialPolicy by remember {
+        mutableStateOf(ExportCredentialPolicy.REMOVE_CREDENTIALS)
+    }
 
     LaunchedEffect(terminalOpen) {
         if (terminalOpen) terminalViewModel.start()
@@ -193,8 +205,17 @@ fun WorkspacesScreen(
         exportTarget = null
         if (uri != null && target != null) {
             val suggested = exportViewModel.suggestedFileName(target)
-            exportViewModel.start(target, uri, suggested)
+            exportViewModel.start(target, uri, suggested, exportCredentialPolicy)
         }
+    }
+
+    // § export: both answers to the credential warning lead to the same
+    // destination picker; only the policy carried into the export differs.
+    val launchExportPicker: (Workspace, ExportCredentialPolicy) -> Unit = { workspace, policy ->
+        pendingCredentialWorkspace = null
+        exportCredentialPolicy = policy
+        exportTarget = workspace
+        exportLauncher.launch(exportViewModel.suggestedFileName(workspace))
     }
 
     // System back closes the terminal overlay before it leaves the tab.
@@ -308,8 +329,10 @@ fun WorkspacesScreen(
                                         if (blockReason != null) {
                                             exportBlockReason = blockReason
                                         } else {
-                                            exportTarget = workspace
-                                            exportLauncher.launch(exportViewModel.suggestedFileName(workspace))
+                                            // Always warn before the picker: the
+                                            // guest tree may hold a VNC password,
+                                            // SSH private keys or GnuPG keys.
+                                            pendingCredentialWorkspace = workspace
                                         }
                                     }
                                     WorkspaceMenuAction.DELETE -> {
@@ -401,7 +424,11 @@ fun WorkspacesScreen(
                 showDistroCatalog = false
             },
             title = stringResource(R.string.home_add_workspace),
-            subtitle = stringResource(R.string.home_import_subtitle)
+            subtitle = stringResource(R.string.home_import_subtitle),
+            // The distro catalog is a plain column of rows, so at a large font
+            // scale it can outgrow the sheet: the scrolling body keeps every
+            // entry reachable.
+            skipPartiallyExpanded = false
         ) {
             if (showDistroCatalog) {
                 DistroCatalogPane(
@@ -527,6 +554,38 @@ fun WorkspacesScreen(
     // the coordinator removes the partial file when it fires), and both
     // terminal states dismiss back to Idle through consumeExportResult().
 
+    pendingCredentialWorkspace?.let { workspace ->
+        HDialog(
+            title = stringResource(R.string.export_credentials_title),
+            body = stringResource(R.string.export_credentials_body),
+            onDismiss = { pendingCredentialWorkspace = null },
+            actions = {
+                HButton(
+                    label = stringResource(R.string.common_cancel),
+                    onClick = { pendingCredentialWorkspace = null },
+                    variant = HavenButtonVariant.SECONDARY,
+                    size = HavenButtonSize.SMALL
+                )
+                HButton(
+                    label = stringResource(R.string.export_credentials_as_is),
+                    onClick = {
+                        launchExportPicker(workspace, ExportCredentialPolicy.INCLUDE_CREDENTIALS)
+                    },
+                    variant = HavenButtonVariant.SECONDARY,
+                    size = HavenButtonSize.SMALL
+                )
+                HButton(
+                    label = stringResource(R.string.export_credentials_remove),
+                    onClick = {
+                        launchExportPicker(workspace, ExportCredentialPolicy.REMOVE_CREDENTIALS)
+                    },
+                    variant = HavenButtonVariant.PRIMARY,
+                    size = HavenButtonSize.SMALL
+                )
+            }
+        )
+    }
+
     when (val state = exportState) {
         is ExportFlowState.Active -> ExportProgressDialog(
             state = state,
@@ -536,6 +595,15 @@ fun WorkspacesScreen(
             title = stringResource(R.string.export_success_title),
             body = buildString {
                 append(stringResource(R.string.export_success_body, state.fileName, formatBytes(state.outputBytes)))
+                if (state.removedCredentials.isNotEmpty()) {
+                    append('\n')
+                    append(
+                        stringResource(
+                            R.string.export_success_credentials_removed,
+                            state.removedCredentials.size
+                        )
+                    )
+                }
                 if (state.skippedEntries.isNotEmpty()) {
                     append('\n')
                     append(stringResource(R.string.export_success_skipped, state.skippedEntries.size))
@@ -622,8 +690,7 @@ private fun ExportProgressDialog(
                         text = state.workspaceName,
                         style = HavenType.desc,
                         color = h.text2,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                        maxLines = 2,
                         modifier = Modifier.padding(top = 3.dp)
                     )
                 }
@@ -959,8 +1026,7 @@ fun HavenWorkspaceCard(
                     text = workspace.name,
                     style = HavenType.title,
                     color = h.text,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    maxLines = 2
                 )
                 val meta = listOfNotNull(
                     workspace.distroName?.let { distro ->
@@ -977,8 +1043,7 @@ fun HavenWorkspaceCard(
                         style = HavenType.desc,
                         color = h.text2,
                         modifier = Modifier.padding(top = 3.dp),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        maxLines = 2
                     )
                 }
             }
@@ -1030,20 +1095,45 @@ private fun HavenWhatsNewBanner(
     onViewAll: () -> Unit
 ) {
     val h = HavenTheme.colors
+    val locale = LocalConfiguration.current.locales[0]
+    val dateLabel = ReleaseDateLabel.format(notes.releaseDate, locale)
     HBanner {
         Row(verticalAlignment = Alignment.Top) {
             Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     Text(
                         text = stringResource(R.string.haven_whats_new),
                         style = HavenType.desc.copy(fontWeight = FontWeight.SemiBold, fontSize = androidx.compose.ui.unit.TextUnit(14f, androidx.compose.ui.unit.TextUnitType.Sp)),
                         color = h.text
                     )
+                    if (notes.isBeta) {
+                        HPill(
+                            text = stringResource(R.string.whats_new_beta),
+                            color = h.amber,
+                            container = h.surface
+                        )
+                    }
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(top = 3.dp)
+                ) {
                     Text(
                         text = "${notes.versionName} (${notes.versionCode})",
                         style = HavenType.descMono,
                         color = h.text2
                     )
+                    dateLabel?.let {
+                        Text(
+                            text = stringResource(R.string.whats_new_released, it),
+                            style = HavenType.small,
+                            color = h.muted
+                        )
+                    }
                 }
                 if (notes.summary != null) {
                     Text(
@@ -1063,9 +1153,7 @@ private fun HavenWhatsNewBanner(
                             Text(
                                 text = change.text,
                                 style = HavenType.desc,
-                                color = h.text2,
-                                maxLines = 2,
-                                overflow = TextOverflow.Ellipsis
+                                color = h.text2
                             )
                         }
                     }
@@ -1114,20 +1202,50 @@ private fun HavenWhatsNewFullCard(
     onCollapse: () -> Unit
 ) {
     val h = HavenTheme.colors
+    val locale = LocalConfiguration.current.locales[0]
+    val dateLabel = ReleaseDateLabel.format(notes.releaseDate, locale)
+    val previous = remember(notes.versionCode) {
+        ReleaseNotesCatalog.previousVersions(notes.versionCode)
+    }
+    var historyExpanded by rememberSaveable(notes.versionCode) { mutableStateOf(false) }
     com.fem.linexa.ui.components.haven.HCard {
         Row(verticalAlignment = Alignment.Top) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = stringResource(R.string.haven_whats_new),
-                    style = HavenType.title,
-                    color = h.text
-                )
-                Text(
-                    text = "${notes.versionName} (${notes.versionCode})",
-                    style = HavenType.descMono,
-                    color = h.text2,
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = stringResource(R.string.haven_whats_new),
+                        style = HavenType.title,
+                        color = h.text
+                    )
+                    if (notes.isBeta) {
+                        HPill(
+                            text = stringResource(R.string.whats_new_beta),
+                            color = h.amber,
+                            container = h.surface
+                        )
+                    }
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.padding(top = 4.dp)
-                )
+                ) {
+                    Text(
+                        text = "${notes.versionName} (${notes.versionCode})",
+                        style = HavenType.descMono,
+                        color = h.text2
+                    )
+                    dateLabel?.let {
+                        Text(
+                            text = stringResource(R.string.whats_new_released, it),
+                            style = HavenType.small,
+                            color = h.muted
+                        )
+                    }
+                }
             }
             HIconGhost(
                 iconRes = R.drawable.ic_haven_close,
@@ -1160,6 +1278,70 @@ private fun HavenWhatsNewFullCard(
                             .height(HavenDim.hairline)
                             .background(h.border)
                     )
+                }
+            }
+        }
+        if (previous.isNotEmpty()) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp)
+                    .height(HavenDim.hairline)
+                    .background(h.border)
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { historyExpanded = !historyExpanded }
+                    .padding(vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    text = stringResource(R.string.whats_new_previous_title),
+                    style = HavenType.desc.copy(fontWeight = FontWeight.Medium),
+                    color = h.text,
+                    modifier = Modifier.weight(1f)
+                )
+                HChevron(expanded = historyExpanded)
+            }
+            if (historyExpanded) {
+                previous.forEach { older ->
+                    val olderDate = ReleaseDateLabel.format(older.releaseDate, locale)
+                    Column(modifier = Modifier.padding(bottom = 12.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                text = "${older.versionName} (${older.versionCode})",
+                                style = HavenType.descMono,
+                                color = h.text2
+                            )
+                            if (older.isBeta) {
+                                HPill(
+                                    text = stringResource(R.string.whats_new_beta),
+                                    color = h.amber,
+                                    container = h.surface
+                                )
+                            }
+                            olderDate?.let {
+                                Text(
+                                    text = stringResource(R.string.whats_new_released, it),
+                                    style = HavenType.small,
+                                    color = h.muted
+                                )
+                            }
+                        }
+                        older.summary?.let {
+                            Text(
+                                text = it,
+                                style = HavenType.desc,
+                                color = h.text2,
+                                modifier = Modifier.padding(top = 3.dp)
+                            )
+                        }
+                    }
                 }
             }
         }

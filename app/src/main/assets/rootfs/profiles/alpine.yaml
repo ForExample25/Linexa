@@ -47,7 +47,10 @@ detection:
     - sbin/apk
     - lib/ld-musl-aarch64.so.1
 
-supported_architectures: [arm64, armv7l, x86_64, i686]
+# Linexa-hosted architectures only (arm64/armv7 PRoot is packaged); Alpine's
+# x86_64/i686 images are detected and rejected by ArchitectureCompatibility
+# rather than advertised as runnable here (finding 029).
+supported_architectures: [arm64, armv7l]
 
 layout:
   # Deliberately shorter than Debian's list. Alpine minirootfs ships bin, etc,

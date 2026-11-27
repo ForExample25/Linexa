@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -86,8 +87,7 @@ fun HStatus(
             text = text,
             style = HavenType.desc.copy(fontWeight = FontWeight.Medium),
             color = if (coloredText) color else HavenTheme.colors.text2,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
+            maxLines = 2
         )
     }
 }
@@ -103,10 +103,10 @@ fun HPill(
 ) {
     Row(
         modifier = modifier
-            .height(HavenDim.pillH)
+            .heightIn(min = HavenDim.pillH)
             .clip(RoundedCornerShape(50))
             .background(container)
-            .padding(horizontal = 12.dp),
+            .padding(horizontal = 12.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(7.dp)
     ) {
@@ -115,8 +115,7 @@ fun HPill(
             text = text,
             style = HavenType.small.copy(fontWeight = FontWeight.SemiBold),
             color = color,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
+            maxLines = 2
         )
     }
 }
@@ -149,7 +148,7 @@ fun HChip(
     val interaction = remember { MutableInteractionSource() }
     Row(
         modifier = modifier
-            .height(HavenDim.chipH)
+            .heightIn(min = HavenDim.chipH)
             .havenPressScale(interaction, enabled = enabled)
             .clip(RoundedCornerShape(50))
             .background(bg)
@@ -159,20 +158,21 @@ fun HChip(
                 enabled = enabled,
                 onClick = onClick
             )
-            .padding(horizontal = 14.dp),
+            .padding(horizontal = 14.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
             text = label,
             style = HavenType.desc.copy(fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium),
             color = if (enabled) fg else fg.copy(alpha = 0.4f),
-            maxLines = 1
+            textAlign = TextAlign.Center,
+            maxLines = 2
         )
     }
 }
 
-/** Category chip — the NEW/IMPROVED/FIXED/CHANGED tags of What's New. */
-enum class HavenCatKind { NEW, IMPROVED, FIXED, CHANGED }
+/** Category chip — the NEW/IMPROVED/FIXED/CHANGED/PERFORMANCE tags of What's New. */
+enum class HavenCatKind { NEW, IMPROVED, FIXED, CHANGED, PERFORMANCE }
 
 /** Maps a domain [com.fem.linexa.domain.whatsnew.ChangeCategory] onto the chip kinds. */
 fun HCatKindOf(category: com.fem.linexa.domain.whatsnew.ChangeCategory): HavenCatKind = when (category) {
@@ -180,6 +180,7 @@ fun HCatKindOf(category: com.fem.linexa.domain.whatsnew.ChangeCategory): HavenCa
     com.fem.linexa.domain.whatsnew.ChangeCategory.IMPROVED -> HavenCatKind.IMPROVED
     com.fem.linexa.domain.whatsnew.ChangeCategory.FIXED -> HavenCatKind.FIXED
     com.fem.linexa.domain.whatsnew.ChangeCategory.CHANGED -> HavenCatKind.CHANGED
+    com.fem.linexa.domain.whatsnew.ChangeCategory.PERFORMANCE -> HavenCatKind.PERFORMANCE
 }
 
 @Composable
@@ -190,6 +191,7 @@ fun HCatChip(kind: HavenCatKind, modifier: Modifier = Modifier) {
         HavenCatKind.IMPROVED -> Triple(h.blueTint, h.blue, "IMPROVED")
         HavenCatKind.FIXED -> Triple(h.amberTint, h.amber, "FIXED")
         HavenCatKind.CHANGED -> Triple(if (h.isDark) Color.White.copy(alpha = 0.07f) else Color(0xFFECEAE5), h.text2, "CHANGED")
+        HavenCatKind.PERFORMANCE -> Triple(h.blueTint, h.blue, "PERFORMANCE")
     }
     Box(
         modifier = modifier
@@ -201,7 +203,7 @@ fun HCatChip(kind: HavenCatKind, modifier: Modifier = Modifier) {
     ) {
         Text(
             text = label,
-            style = HavenType.small.copy(fontWeight = FontWeight.Bold, letterSpacing = com.fem.linexa.ui.theme.haven.em(0.08f)),
+            style = HavenType.small.copy(fontWeight = FontWeight.Bold, letterSpacing = HavenType.tracking(0.08f)),
             color = fg,
             fontSize = androidx.compose.ui.unit.TextUnit(10f, androidx.compose.ui.unit.TextUnitType.Sp)
         )
@@ -250,7 +252,7 @@ fun HBadge(
             style = HavenType.small.copy(
                 fontFamily = HavenType.mono,
                 fontWeight = FontWeight.Bold,
-                letterSpacing = com.fem.linexa.ui.theme.haven.em(0.04f)
+                letterSpacing = HavenType.tracking(0.04f)
             ),
             color = if (enabled) fg else fg.copy(alpha = 0.4f),
             maxLines = 1
@@ -487,7 +489,7 @@ fun HTile(
             text = label.uppercase(),
             style = HavenType.tileLabel,
             color = h.muted,
-            maxLines = 1
+            maxLines = 2
         )
         Text(
             text = value,
@@ -501,7 +503,7 @@ fun HTile(
                 text = sub,
                 style = HavenType.small,
                 color = h.muted,
-                maxLines = 1
+                maxLines = 2
             )
         }
         if (history.size >= 2) {
@@ -568,7 +570,8 @@ fun HFactRow(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .height(50.dp),
+            .heightIn(min = 50.dp)
+            .padding(vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(13.dp)
     ) {
@@ -604,7 +607,8 @@ fun HVRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(44.dp),
+                .heightIn(min = 44.dp)
+                .padding(vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             if (labelContent != null) labelContent() else {

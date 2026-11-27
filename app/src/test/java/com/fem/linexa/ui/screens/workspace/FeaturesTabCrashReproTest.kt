@@ -83,7 +83,7 @@ class FeaturesTabCrashReproTest {
     // BEFORE resetMain — leaked Main-dispatcher resumptions used to hit the
     // missing-Main fallback (unmocked Looper) and print fatal exceptions that
     // poisoned the next test class's setMain check. See
-    // HomeViewModelPreviewTest for the full mechanism note.
+    // HomeViewModelEnrichmentTest for the full mechanism note.
     private val createdScopes = mutableListOf<kotlinx.coroutines.Job>()
 
     private fun realFeaturesViewModel(): FeaturesViewModel =

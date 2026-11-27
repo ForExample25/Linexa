@@ -1,5 +1,8 @@
 package com.fem.linexa.ui.screens.filemanager
 
+import androidx.annotation.StringRes
+import com.fem.linexa.R
+
 /**
  * Issue #9 (2026-09-03): file-type knowledge for the QuickEdit/ZArchiver-style
  * file manager — which names the built-in text editor handles, and the
@@ -83,26 +86,26 @@ object FileTypes {
      * for scripts, `{}` for JSON — never a pretend project.
      */
     data class FileTemplate(
-        val label: String,
+        @StringRes val labelRes: Int,
         val extension: String,
         val content: String?
     )
 
     /** The New-File dialog's presets, in dialog order. */
     val templates: List<FileTemplate> = listOf(
-        FileTemplate("Plain text", "txt", null),
-        FileTemplate("Shell script", "sh", "#!/bin/bash\nset -euo pipefail\n"),
-        FileTemplate("Python", "py", "#!/usr/bin/env python3\n\n\ndef main() -> None:\n    pass\n\n\nif __name__ == \"__main__\":\n    main()\n"),
-        FileTemplate("JSON", "json", "{\n    \n}\n"),
-        FileTemplate("YAML", "yaml", "---\n"),
-        FileTemplate("HTML", "html", "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n    <meta charset=\"utf-8\">\n    <title></title>\n</head>\n<body>\n</body>\n</html>\n"),
-        FileTemplate("CSS", "css", null),
-        FileTemplate("JavaScript", "js", null),
-        FileTemplate("TypeScript", "ts", null),
-        FileTemplate("Java", "java", null),
-        FileTemplate("Kotlin", "kt", null),
-        FileTemplate("Markdown", "md", "# \n"),
-        FileTemplate("Subtitles", "srt", "1\n00:00:00,000 --> 00:00:02,000\n\n"),
-        FileTemplate("Config", "conf", null)
+        FileTemplate(R.string.file_manager_template_plain_text, "txt", null),
+        FileTemplate(R.string.file_manager_template_shell_script, "sh", "#!/bin/bash\nset -euo pipefail\n"),
+        FileTemplate(R.string.file_manager_template_python, "py", "#!/usr/bin/env python3\n\n\ndef main() -> None:\n    pass\n\n\nif __name__ == \"__main__\":\n    main()\n"),
+        FileTemplate(R.string.file_manager_template_json, "json", "{\n    \n}\n"),
+        FileTemplate(R.string.file_manager_template_yaml, "yaml", "---\n"),
+        FileTemplate(R.string.file_manager_template_html, "html", "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n    <meta charset=\"utf-8\">\n    <title></title>\n</head>\n<body>\n</body>\n</html>\n"),
+        FileTemplate(R.string.file_manager_template_css, "css", null),
+        FileTemplate(R.string.file_manager_template_javascript, "js", null),
+        FileTemplate(R.string.file_manager_template_typescript, "ts", null),
+        FileTemplate(R.string.file_manager_template_java, "java", null),
+        FileTemplate(R.string.file_manager_template_kotlin, "kt", null),
+        FileTemplate(R.string.file_manager_template_markdown, "md", "# \n"),
+        FileTemplate(R.string.file_manager_template_subtitles, "srt", "1\n00:00:00,000 --> 00:00:02,000\n\n"),
+        FileTemplate(R.string.file_manager_template_config, "conf", null)
     )
 }

@@ -1,6 +1,7 @@
 package com.fem.linexa.domain.packagemanager
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -9,7 +10,7 @@ import org.junit.Test
 /**
  * §1.92 — JVM tests for automatic package-manager detection.
  *
- * Pin the `which` probe → key mapping, the multi-manager precedence via
+ * Pin the `command -v` probe → key mapping, the multi-manager precedence via
  * /etc/os-release, and the fail-closed behavior when nothing is found.
  */
 class PackageManagerDetectorTest {
@@ -42,7 +43,7 @@ class PackageManagerDetectorTest {
     @Test
     fun blankProbeFailsClosed() {
         assertNull(PackageManagerDetector.resolve("", ""))
-        assertNull(PackageManagerDetector.resolve("which: no package manager found\n", ""))
+        assertNull(PackageManagerDetector.resolve("command -v: not found\n", ""))
         assertNull(PackageManagerDetector.resolve("   \n  \n", ""))
     }
 
@@ -152,9 +153,24 @@ class PackageManagerDetectorTest {
     }
 
     @Test
+    fun theFullProbeUsesOneSingleNameCommandVPerManagerAndNeverWhich() {
+        val command = PackageManagerDetector.PROBE_COMMAND
+        assertFalse("the external which binary may be absent on Alpine", command.contains("which"))
+        assertTrue("the probe must use the POSIX builtin", command.contains("command -v"))
+        assertTrue("the probe must iterate the managers", command.contains("for "))
+        // POSIX defines `command -v` for one name; a single invocation inside
+        // the loop is what makes multi-manager lookup portable to dash.
+        assertEquals(1, Regex("command -v").findAll(command).count())
+        PackageManagerDetector.supportedKeys.forEach { key ->
+            val binary = PackageManagerDetector.binaryFor(key)!!
+            assertTrue("probe does not look for '$binary'", command.contains(binary))
+        }
+    }
+
+    @Test
     fun theVerifyCommandChecksExactlyOneManager() {
         val command = PackageManagerDetector.verifyCommandFor("apk")!!
-        assertEquals("which apk 2>/dev/null", command)
+        assertEquals("command -v apk 2>/dev/null", command)
         // Cheaper than PROBE_COMMAND is the whole point.
         listOf("apt-get", "pacman", "dnf", "zypper").forEach {
             assertTrue("verify probe must not mention $it", !command.contains(it))
@@ -165,7 +181,7 @@ class PackageManagerDetectorTest {
     fun theVerifyCommandInstallsNothing() {
         PackageManagerDetector.supportedKeys.forEach { key ->
             val command = PackageManagerDetector.verifyCommandFor(key)!!
-            assertTrue(command.startsWith("which "))
+            assertTrue(command.startsWith("command -v "))
             assertTrue(!command.contains("install"))
         }
     }

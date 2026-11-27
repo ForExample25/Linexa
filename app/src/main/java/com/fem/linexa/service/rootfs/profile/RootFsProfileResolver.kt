@@ -282,9 +282,10 @@ object RootFsProfileResolver {
             arch.abi !in profile.supportedArchitectures
         ) {
             // Advisory only: a self-built rootfs for an unlisted architecture is
-            // legitimate, and the profile's list is documentation of what the
-            // distribution *publishes*, not a permission check.
-            notes += "architecture ${arch.label} is not among ${profile.id}'s published architectures"
+            // legitimate, and the profile's list is what THIS BUILD can run
+            // (packaged PRoot ABIs), not what the distribution publishes. The
+            // hard rejection is ArchitectureCompatibility, before extraction.
+            notes += "architecture ${arch.label} is not among the architectures this build runs for ${profile.id}"
         }
 
         val identity = RootFsProbe.Identity(

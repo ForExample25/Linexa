@@ -191,8 +191,8 @@ fun FeaturesTab(
             val configurable = FeatureConfig.isConfigurable(feature.id)
             FeatureItem(
                 iconRes = feature.iconRes,
-                title = feature.title,
-                description = feature.description,
+                title = stringResource(feature.titleRes),
+                description = stringResource(feature.descriptionRes),
                 checked = toggles[feature.id] ?: feature.enabledByDefault,
                 onCheckedChange = { enabled ->
                     onToggleChange(feature.id, enabled)

@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import com.fem.linexa.R
 import com.fem.linexa.core.format.FileSizeFormatter
 import com.fem.linexa.domain.resource.WorkspaceProcessSample
+import com.fem.linexa.ui.screens.activity.processStateLabel
 import com.fem.linexa.ui.components.haven.HButton
 import com.fem.linexa.ui.components.haven.HCard
 import com.fem.linexa.ui.components.haven.HChevron
@@ -123,15 +124,13 @@ fun TaskManagerScreen(
                     text = stringResource(R.string.tm_screen_title),
                     style = HavenType.h2,
                     color = h.text,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    maxLines = 2
                 )
                 Text(
                     text = workspaceName,
                     style = HavenType.desc,
                     color = h.text2,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    maxLines = 2
                 )
             }
             Spacer(modifier = Modifier.weight(1f))
@@ -480,7 +479,7 @@ private fun PerCoreBars(perCore: Map<Int, Float?>, accent: Color) {
                             modifier = Modifier.padding(top = 3.dp)
                         )
                         Text(
-                            text = "CPU $core",
+                            text = stringResource(R.string.tm_cpu_core_label, core),
                             style = HavenType.mono12,
                             color = h.muted
                         )
@@ -532,7 +531,7 @@ private fun ProcessCard(process: WorkspaceProcessSample, onEnd: () -> Unit) {
                         append("PID ${process.pid}")
                         append(" · ${ResourceText.percent(process.cpuPercentOfDevice)}")
                         append(" · ${process.memKb?.let { FileSizeFormatter.format(it * 1024L) } ?: "—"}")
-                        append(" · ${WorkspaceProcessSample.stateLabel(process.stateChar)}")
+                        append(" · ${processStateLabel(process.stateChar)}")
                     },
                     style = HavenType.mono12,
                     color = h.muted,

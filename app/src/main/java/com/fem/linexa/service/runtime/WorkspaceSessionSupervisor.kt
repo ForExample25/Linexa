@@ -3,7 +3,9 @@ package com.fem.linexa.service.runtime
 import com.fem.linexa.core.logging.DiagnosticLogManager
 import com.fem.linexa.core.logging.Logger
 import com.fem.linexa.domain.runtime.RuntimeState
+import com.fem.linexa.domain.workspace.WorkspaceCapabilities
 import com.fem.linexa.domain.workspace.WorkspaceLaunchValidator
+import com.fem.linexa.domain.workspace.WorkspaceMetadata
 import com.fem.linexa.domain.workspace.WorkspaceReadiness
 import com.fem.linexa.domain.workspace.WorkspaceRepository
 import com.fem.linexa.service.runtime.desktop.X11SessionManager
@@ -17,9 +19,12 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The workspace-session launch choreography that used to live inline in
@@ -143,22 +148,38 @@ class WorkspaceSessionSupervisor(
      * one fallback window late. Cancellation (session stop) propagates
      * through the checks and [delay]; nothing here throws anything else.
      */
-    private suspend fun awaitDeferredPhaseStart(workspaceId: String) {
+    private suspend fun awaitDeferredPhaseStart(workspaceId: String, metadata: WorkspaceMetadata?) {
         val x11 = x11SessionManager ?: return
-        val deadline = System.currentTimeMillis() + deferredReconcileFallbackMillis
-        // Phase 2E-1 review fix: IDLE must hold too, not only STARTING. At session
-        // start the desktop has not been requested yet (state IDLE), and the common
-        // flow requests it seconds later — an immediate-IDLE run would put the
-        // deferred execs right back into the T0→T4 contention window (the exact
-        // effect this phase removes). Hold while the desktop has NOT settled:
-        // IDLE (may still start) or STARTING (in flight), until READY/FAILED
-        // (start settled — its exec storm is over) or the bounded fallback
-        // deadline (desktop never starts / feature disabled).
-        while ((x11.stateFor(workspaceId) == X11SessionState.X11_STARTING ||
-                x11.stateFor(workspaceId) == X11SessionState.IDLE) &&
-            System.currentTimeMillis() < deadline
-        ) {
-            delay(DEFERRED_POLL_INTERVAL_MS)
+        // LINEXA-PERF-013: the X11 state is an in-process StateFlow, so waiting
+        // for it needs no polling at all — one collector transition wakes us.
+        //
+        // LINEXA-PERF-005: an IDLE state only means "a desktop *may* start".
+        // For a workspace that cannot offer a desktop (no capability/intent)
+        // that will never happen, and the old 250 ms × 20 s wait delayed the
+        // whole deferred reconcile by ~19.6 s for no benefit (the audited
+        // terminal-open workspace was exactly this case). Only genuinely
+        // desktop-usable workspaces hold the IDLE window.
+        val settled = setOf(X11SessionState.X11_READY, X11SessionState.X11_FAILED)
+        val state = x11.stateFor(workspaceId)
+        if (state in settled) return
+        if (state == X11SessionState.IDLE) {
+            val desktopCanStart = metadata != null &&
+                WorkspaceCapabilities.desktopUsable(
+                    metadata.featureToggles,
+                    metadata.attributes
+                )
+            if (!desktopCanStart) {
+                // No desktop exists to wait for. Still let the terminal's
+                // own first paint + prompt land before three guest exec
+                // batches start, but once — not 80 polls over 20 s.
+                delay(LAUNCH_SETTLE_MS)
+                return
+            }
+        }
+        withTimeoutOrNull(deferredReconcileFallbackMillis) {
+            x11.states
+                .map { states -> states[workspaceId] ?: X11SessionState.IDLE }
+                .first { it in settled }
         }
     }
 
@@ -173,11 +194,12 @@ class WorkspaceSessionSupervisor(
     private fun launchDeferredReconcile(
         sessionScope: CoroutineScope,
         workspaceId: String,
+        metadata: WorkspaceMetadata?,
         t0: Long
     ): Job {
         return sessionScope.launch {
             runtimeTrace.record(workspaceId, "Feature reconcile DEFERRED phase scheduled (Phase 2E-1)")
-            awaitDeferredPhaseStart(workspaceId)
+            awaitDeferredPhaseStart(workspaceId, metadata)
             if (!isActive) return@launch
             runtimeTrace.record(workspaceId, "Applying deferred feature toggles (Phase 2E-1)")
             try {
@@ -218,11 +240,11 @@ class WorkspaceSessionSupervisor(
         var deferredReconcile: Job? = null
 
         val metadata = workspaceRepository.getById(workspaceId)
-        // §1.89: the validator re-walks the rootfs (hasValidRootfs +
-        // getRootfsSize); this coroutine otherwise runs on the main
-        // dispatcher (the service scope is Dispatchers.Main), so run the
-        // filesystem checks off the main thread. The size lookup is cached in
-        // WorkspaceFileManager, so repeated starts are cheap.
+        // §1.89: the validator checks the rootfs layout and probes for one
+        // real file (P0-3: hasValidRootfs + hasAnyRegularFile — no size walk);
+        // this coroutine otherwise runs on the main dispatcher (the service
+        // scope is Dispatchers.Main), so run the filesystem checks off the
+        // main thread.
         val readiness = metadata?.let { meta ->
             withContext(Dispatchers.IO) { launchValidator.evaluate(meta) }
         }
@@ -367,7 +389,7 @@ class WorkspaceSessionSupervisor(
                     // T0→T4). The child waits for the desktop start to settle
                     // (X11 READY/FAILED) or the bounded fallback; a session
                     // stop cancels it before teardown releases host state.
-                    launchDeferredReconcile(sessionScope, workspaceId, t0)
+                    launchDeferredReconcile(sessionScope, workspaceId, metadata, t0)
                         .also { deferredReconcile = it }
 
                     Logger.i("TerminalChain", "CHAIN: ENTER awaitSessionEnd elapsed=${elapsedMs(t0)}")
@@ -519,7 +541,19 @@ class WorkspaceSessionSupervisor(
          */
         const val DEFERRED_FALLBACK_TIMEOUT_MS = 15_000L
 
-        /** Phase 2E-1: poll cadence for the X11 STARTING observation (one cheap in-process read; no guest exec). */
-        const val DEFERRED_POLL_INTERVAL_MS = 250L
+        /**
+         * LINEXA-PERF-013: the deferred phase no longer polls. It awaits the
+         * X11 state transition on the in-process `StateFlow` and wakes on the
+         * settling emission (READY/FAILED), so there is no poll cadence to
+         * tune and no wake-up that does no work.
+         */
+
+        /**
+         * LINEXA-PERF-005: for a workspace that cannot offer a desktop there
+         * is nothing to wait for, but the feature provisioning execs should
+         * still follow the terminal's first prompt rather than compete with
+         * it. One bounded delay replaces the former ~20 s (80 × 250 ms) wait.
+         */
+        private const val LAUNCH_SETTLE_MS = 2_000L
     }
 }

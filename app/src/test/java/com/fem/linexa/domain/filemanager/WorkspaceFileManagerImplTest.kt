@@ -38,7 +38,7 @@ import org.mockito.Mockito
  */
 class WorkspaceFileManagerImplTest {
 
-    private val subject = WorkspaceFileManagerImpl()
+    private val subject = WorkspaceFileManagerImpl(WorkspaceRootfsLocator.None)
     private val fileManager = Mockito.mock(WorkspaceFileManager::class.java)
 
     private fun binder(runtime: ScriptedRuntime): RuntimeBinder {
@@ -450,6 +450,13 @@ class WorkspaceFileManagerImplTest {
             commands += command
             return behavior(command)
         }
+
+        override suspend fun execWithInput(
+            workspaceId: String,
+            rootfsPath: String,
+            command: String,
+            stdin: String
+        ): CommandResult = exec(workspaceId, rootfsPath, command)
 
         override suspend fun execStreaming(
             workspaceId: String,

@@ -70,6 +70,23 @@ object RootExecProtocol {
     const val OUTPUT_FILE = "out"
     const val STATUS_FILE = "status"
 
+    /**
+     * F-035: the per-bridge token the guest copies from the marker into every
+     * request. A request directory without the current token is rejected.
+     *
+     * This is a replay/stranger guard, not an authorization boundary against
+     * a hostile guest: guest processes run as the same Android uid as the app
+     * and can read the marker. The real boundary is that the bridge validates
+     * the request directory is a real child of this rootfs's `/tmp` and that
+     * the app process, not the guest, executes the command. The token makes a
+     * request from a previous bridge session (or a hand-crafted directory that
+     * never read the marker) fail loudly instead of running.
+     */
+    const val TOKEN_FILE = "token"
+
+    /** A request token is a UUID; anything larger is not ours. */
+    const val MAX_TOKEN_BYTES = 128
+
     /** Refuse a request whose command text is larger than this. */
     const val MAX_COMMAND_BYTES = 64 * 1024
 
@@ -79,13 +96,21 @@ object RootExecProtocol {
     /** `timeout(1)` convention for a command killed by the operation timeout. */
     const val EXIT_TIMEOUT = 124
 
-    /** The bridge marker's full text. The token is diagnostic only. */
+    /** The bridge marker's full text. The token is a per-session replay guard. */
     fun markerContents(workspaceId: String, token: String): String =
         buildString {
             appendLine(MARKER_BANNER)
             appendLine("workspace=$workspaceId")
             appendLine("token=$token")
         }
+
+    /** The `token=` value in a marker, or null when absent/malformed. */
+    fun markerToken(markerText: String): String? =
+        markerText.lineSequence()
+            .firstOrNull { it.startsWith("token=") }
+            ?.removePrefix("token=")
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() && it.length <= MAX_TOKEN_BYTES }
 
     /** True when [name] is a request directory name this protocol owns. */
     fun isRequestName(name: String): Boolean =

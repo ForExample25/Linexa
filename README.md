@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/ForExample25/Linexa/releases/tag/v0.1.0-beta"><img src="https://img.shields.io/badge/release-0.1.0--beta-2AD178?style=flat-square" alt="Release 0.1.0-beta"></a>
+  <a href="https://github.com/ForExample25/Linexa/releases/tag/v0.2.0"><img src="https://img.shields.io/badge/release-0.2.0-2AD178?style=flat-square" alt="Release 0.2.0"></a>
   <img src="https://img.shields.io/badge/Android-9%2B-3DDC84?style=flat-square&logo=android&logoColor=white" alt="Android 9 or newer">
   <img src="https://img.shields.io/badge/Kotlin-2.1.20-7F52FF?style=flat-square&logo=kotlin&logoColor=white" alt="Kotlin 2.1.20">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--only-blue?style=flat-square" alt="GPL-3.0-only"></a>
@@ -19,7 +19,7 @@
 <p align="center">
   <a href="#english">English</a> ·
   <a href="#فارسی">فارسی</a> ·
-  <a href="https://github.com/ForExample25/Linexa/releases/tag/v0.1.0-beta">Download</a> ·
+  <a href="https://github.com/ForExample25/Linexa/releases/tag/v0.2.0">Download</a> ·
   <a href="./docs/README.md">Documentation</a>
 </p>
 
@@ -32,9 +32,25 @@ workspaces on top of PRoot, so you can install a root filesystem, open a real
 terminal, manage files and packages, and run a graphical desktop without root
 access or a separate Linux device.
 
-> **Beta status.** `0.1.0-beta` is an early public release. Interfaces,
+> **Beta status.** `0.2.0` is an early public release. Interfaces,
 > supported guests, and device behaviour may change between releases. Back up
 > important workspace data before upgrading.
+
+### What's new in 0.2.0
+
+- **In-app updates** — Linexa checks the published GitHub releases, shows the
+  release notes and download size, verifies the APK's package, signing
+  identity, size, and SHA-256, then hands it to Android's installer.
+- **Persian interface** — right-to-left typography and a per-app language
+  choice in Global Settings.
+- **76% smaller download** — release builds now use R8 shrinking,
+  optimization, and resource shrinking: 13.5 MB instead of 57.3 MB.
+- **Faster workspace re-entry** — median 2,536 ms before and 243 ms after the
+  fix on the test device, with the previous size shown immediately after Stop.
+- **More reliable terminal** — stable first-frame layout, structured exit
+  explanations, a silent-output watchdog, and hardened PTY cleanup.
+- **Safer file handling** — workspace deletion and install cleanup no longer
+  follow guest-authored directory symlinks outside the workspace.
 
 ### Features
 
@@ -49,6 +65,10 @@ access or a separate Linux device.
 | 🧭 **Sessions and tasks** | 🌐 **Workspace networking** | 🔒 **Local-first and transparent** |
 |:---|:---|:---|
 | Manage multiple terminal sessions per workspace, keep long-running work in the background, and inspect or stop workspace processes with the task manager. | Configure per-workspace DNS, `/etc/hosts`, package mirrors, and a RootFS download mirror. Checksums still come from the official source. | Workspace metadata lives in Room on your device. No account, no cloud dependency, and no root. Bundled third-party programs stay under their own licenses in **Settings → About**. |
+
+| 🔄 **In-app updates** | 🌍 **Bilingual interface** | 🛡️ **Verified APKs** |
+|:---|:---|:---|
+| Check GitHub releases from Global Settings, read the notes, and install an update without leaving the app. | English and Persian, with right-to-left typography and a per-app language choice. | Every downloaded update is checked for the expected package, signing certificate, version, size, and SHA-256 before Android's installer sees it. |
 
 ### Screenshots
 
@@ -94,16 +114,20 @@ access or a separate Linux device.
 ### Installation
 
 1. Download the signed `app-release.apk` from the
-   [v0.1.0-beta release](https://github.com/ForExample25/Linexa/releases/tag/v0.1.0-beta).
+   [v0.2.0 release](https://github.com/ForExample25/Linexa/releases/tag/v0.2.0).
 2. Allow installation from your browser or file manager when Android asks.
 3. Open the APK and install it.
 4. Launch Linexa, choose **Add a Workspace**, then import a RootFS archive or
    download a distribution.
 
 **Requirements:** Android 9 (API 28) or newer, an `arm64-v8a` or
-`armeabi-v7a` device, and about 60 MB for the APK plus space for your
+`armeabi-v7a` device, and about 14 MB for the APK plus space for your
 workspaces. The release page publishes the APK SHA-256 checksum and signing
 certificate fingerprint.
+
+This build uses the same signing key as `0.1.0-beta` and its `versionCode`
+(`1002`) is greater than `0.1.0`'s (`1`), so it installs as an in-place
+upgrade. Your workspaces are kept.
 
 Linexa does not require root. PRoot provides a user-space guest environment;
 the Android app itself runs with ordinary app permissions.
@@ -174,7 +198,7 @@ state `GPL-3.0-only` for Linexa's own source.
 - [System architecture](./docs/architecture/SYSTEM_ARCHITECTURE.md)
 - [Third-party notices](./THIRD_PARTY_NOTICES.md)
 - [Native binary manifest](./app/src/main/jniLibs/BINARY-MANIFEST.md)
-- [PRoot build notes](./app/src/main/jniLibs/proot-build/BUILD-NOTES.md)
+- [PRoot build notes](./third_party/proot/BUILD-NOTES.md)
 
 ### Security and contributing
 
@@ -198,8 +222,21 @@ Linexa محیط‌های لینوکس را به اندروید می‌آورد. 
 </p>
 
 <p dir="rtl" align="right">
-<strong>وضعیت بتا:</strong> نسخه <code>0.1.0-beta</code> یک انتشار عمومی اولیه است. رابط کاربری، توزیع‌های پشتیبانی‌شده و رفتار برنامه ممکن است بین نسخه‌ها تغییر کند. پیش از به‌روزرسانی از داده‌های مهم فضای کاری نسخه پشتیبان بگیرید.
+<strong>وضعیت بتا:</strong> نسخه <code>0.2.0</code> یک انتشار عمومی اولیه است. رابط کاربری، توزیع‌های پشتیبانی‌شده و رفتار برنامه ممکن است بین نسخه‌ها تغییر کند. پیش از به‌روزرسانی از داده‌های مهم فضای کاری نسخه پشتیبان بگیرید.
 </p>
+
+### چه چیزی در ۰.۲.۰ تازه است
+
+<div dir="rtl" align="right">
+
+- **به‌روزرسانی درون‌برنامه‌ای** — Linexa انتشارهای GitHub را بررسی می‌کند، یادداشت‌های نسخه و حجم دانلود را نشان می‌دهد، بسته، امضا، حجم و SHA-256 فایل APK را بررسی می‌کند و سپس آن را به نصب‌کننده اندروید می‌سپارد.
+- **رابط فارسی** — چیدمان راست‌به‌چپ و انتخاب زبان مستقل برای برنامه در تنظیمات کلی.
+- **دانلود ۷۶٪ کوچک‌تر** — ساخت‌های انتشار اکنون از R8 برای کوچک‌سازی، بهینه‌سازی و حذف منابع استفاده می‌کنند: ۱۳.۵ مگابایت به‌جای ۵۷.۳ مگابایت.
+- **بازگشت سریع‌تر به فضای کاری** — میانه ۲٬۵۳۶ میلی‌ثانیه پیش از اصلاح و ۲۴۳ میلی‌ثانیه پس از آن در دستگاه آزمایش.
+- **ترمینال مطمئن‌تر** — چیدمان پایدار فریم اول، توضیح ساختاریافته خروج، نگهبان خروجی خاموش و پاک‌سازی سخت‌گیرانه PTY.
+- **مدیریت امن‌تر فایل** — حذف فضای کاری و پاک‌سازی نصب دیگر پیوندهای نمادین پوشه‌ای ساخته‌شده در مهمان را بیرون از فضای کاری دنبال نمی‌کند.
+
+</div>
 
 ### ویژگی‌ها
 
@@ -214,6 +251,10 @@ Linexa محیط‌های لینوکس را به اندروید می‌آورد. 
 | 🧭 **نشست‌ها و فرایندها** | 🌐 **شبکه فضای کاری** | 🔒 **محلی و شفاف** |
 |:---|:---|:---|
 | چند نشست ترمینال برای هر فضا مدیریت کنید، کارهای طولانی را در پس‌زمینه نگه دارید و فرایندهای فضا را با مدیر وظایف بررسی یا متوقف کنید. | DNS، فایل `/etc/hosts`، آینه‌های بسته و آینه دانلود RootFS را برای هر فضا تنظیم کنید. checksum همچنان از منبع رسمی گرفته می‌شود. | فراداده فضاها در Room روی دستگاه شما ذخیره می‌شود. بدون حساب کاربری، بدون وابستگی ابری و بدون روت. برنامه‌های شخص ثالث تحت پروانه‌های خودشان در **Settings → About** فهرست شده‌اند. |
+
+| 🔄 **به‌روزرسانی درون‌برنامه‌ای** | 🌍 **رابط دوزبانه** | 🛡️ **APK تأییدشده** |
+|:---|:---|:---|
+| انتشارهای GitHub را از تنظیمات کلی بررسی کنید، یادداشت‌ها را بخوانید و بدون خروج از برنامه به‌روزرسانی را نصب کنید. | انگلیسی و فارسی، با چیدمان راست‌به‌چپ و انتخاب زبان مستقل برای برنامه. | هر به‌روزرسانی دانلودشده از نظر بسته، گواهی امضا، نسخه، حجم و SHA-256 پیش از رسیدن به نصب‌کننده اندروید بررسی می‌شود. |
 
 ### تصاویر برنامه
 
@@ -259,7 +300,7 @@ Linexa محیط‌های لینوکس را به اندروید می‌آورد. 
 ### نصب
 
 ۱. فایل امضاشده `app-release.apk` را از
-[صفحه انتشار v0.1.0-beta](https://github.com/ForExample25/Linexa/releases/tag/v0.1.0-beta)
+[صفحه انتشار v0.2.0](https://github.com/ForExample25/Linexa/releases/tag/v0.2.0)
 دانلود کنید.
 
 ۲. وقتی اندروید درخواست کرد، نصب از مرورگر یا مدیر فایل را مجاز کنید.
@@ -270,8 +311,12 @@ Linexa محیط‌های لینوکس را به اندروید می‌آورد. 
 کنید یا یک توزیع دانلود کنید.
 
 **پیش‌نیازها:** اندروید ۹ (API 28) یا جدیدتر، دستگاه `arm64-v8a` یا
-`armeabi-v7a`، و حدود ۶۰ مگابایت برای APK به‌علاوه فضای موردنیاز فضای کاری.
+`armeabi-v7a`، و حدود ۱۴ مگابایت برای APK به‌علاوه فضای موردنیاز فضای کاری.
 صفحه انتشار، checksum SHA-256 و اثر انگشت گواهی امضای APK را منتشر می‌کند.
+
+این نسخه با همان کلید امضای `0.1.0-beta` امضا شده و `versionCode` آن (۱۰۰۲)
+از نسخه ۰.۱.۰ (۱) بزرگ‌تر است؛ بنابراین به‌صورت به‌روزرسانی درجا نصب می‌شود و
+فضاهای کاری شما حفظ می‌شوند.
 
 Linexa به روت نیاز ندارد. PRoot یک محیط مهمان در فضای کاربر فراهم می‌کند و
 خود برنامه اندروید با مجوزهای معمول برنامه اجرا می‌شود.
@@ -340,7 +385,7 @@ Linexa نرم‌افزار آزاد است: می‌توانید آن را تحت
 - [معماری سیستم](./docs/architecture/SYSTEM_ARCHITECTURE.md)
 - [اعلان‌های شخص ثالث](./THIRD_PARTY_NOTICES.md)
 - [فهرست کتابخانه‌های بومی](./app/src/main/jniLibs/BINARY-MANIFEST.md)
-- [یادداشت‌های ساخت PRoot](./app/src/main/jniLibs/proot-build/BUILD-NOTES.md)
+- [یادداشت‌های ساخت PRoot](./third_party/proot/BUILD-NOTES.md)
 
 ### امنیت و مشارکت
 

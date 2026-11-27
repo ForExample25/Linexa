@@ -1,16 +1,20 @@
 package com.fem.linexa.service.runtime
 
 import com.fem.linexa.core.logging.Logger
+import com.fem.linexa.core.perf.PerfCounters
+import com.fem.linexa.core.perf.PerfTrace
 import com.fem.linexa.domain.runtime.RuntimeState
 import com.fem.linexa.service.runtime.container.RecoverySweepReport
 import com.fem.linexa.service.runtime.pty.PtySession
 import com.fem.linexa.service.runtime.wakelock.WorkspaceWakeLockManager
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import javax.inject.Inject
@@ -104,6 +108,31 @@ class RuntimeLifecycleManager @Inject constructor(
     private val transitionMutex = Mutex()
 
     /**
+     * Phase M0-A: the single wrapper around every [transitionMutex] acquisition.
+     * The mutex itself is unchanged — same instance, same acquisition order,
+     * same cancellation behavior — this only records wait time before the lock
+     * and hold time inside it when capture is enabled.
+     */
+    private suspend fun <T> withTransitionLock(block: suspend () -> T): T {
+        val waitStart = PerfCounters.mutexWaitBegin()
+        var acquired = false
+        try {
+            return transitionMutex.withLock {
+                acquired = true
+                PerfCounters.mutexWaitEnd(waitStart)
+                val holdStart = PerfCounters.mutexHoldBegin()
+                try {
+                    block()
+                } finally {
+                    PerfCounters.mutexHoldEnd(holdStart)
+                }
+            }
+        } finally {
+            if (!acquired) PerfCounters.mutexWaitAbandoned(waitStart)
+        }
+    }
+
+    /**
      * §P0: per-workspace session generation, bumped at the START of every
      * [requestStart] (inside the mutex, before any suspension). Guards the
      * stale-launchSession-coroutine race: a coroutine that was waiting on
@@ -157,7 +186,11 @@ class RuntimeLifecycleManager @Inject constructor(
      * [liveStartLocked] for the predicate and the §1.165 entry for the race.
      */
     suspend fun requestStart(workspaceId: String, rootfsPath: String): StartOutcome {
-        return transitionMutex.withLock {
+        // Phase M0-A (E0): the request is accepted here. A duplicate start for
+        // a workspace that already has a live trace is ignored by the engine,
+        // so the incumbent's timestamps are never reset.
+        PerfTrace.beginWorkspaceStart(workspaceId)
+        return withTransitionLock {
             // §1.165: the re-entrancy guard runs BEFORE the generation bump, so a
             // redundant start leaves the incumbent's generation — and therefore
             // the incumbent launch coroutine's ownership of the teardown path —
@@ -177,7 +210,7 @@ class RuntimeLifecycleManager @Inject constructor(
                     workspaceId,
                     "requestStart re-entrancy guard: returning the live session (generation $generation)"
                 )
-                return@withLock StartOutcome.AlreadyStarted(incumbent, generation)
+                return@withTransitionLock StartOutcome.AlreadyStarted(incumbent, generation)
             }
             // §P0: bump the session generation FIRST — before any suspension
             // that could let a previous launchSession coroutine for THIS
@@ -208,7 +241,8 @@ class RuntimeLifecycleManager @Inject constructor(
                     val reason = "Could not stop active workspace $active (teardown failed/timed out); $workspaceId not started"
                     Logger.w(TAG, "requestStart($workspaceId) BLOCKED: $reason")
                     sessionManager.updateState(workspaceId, RuntimeState.Error(reason))
-                    return@withLock StartOutcome.Blocked(active, generation)
+                    PerfTrace.abandonWorkspace(workspaceId, "blocked-by-active-teardown")
+                    return@withTransitionLock StartOutcome.Blocked(active, generation)
                 }
             }
             _activeWorkspaceId.value = workspaceId
@@ -219,12 +253,14 @@ class RuntimeLifecycleManager @Inject constructor(
                 val pty = workspaceTerminalManager.openTerminal(workspaceId, rootfsPath, terminalId)
                 StartOutcome.Started(pty, generation)
             } catch (e: CancellationException) {
+                PerfTrace.abandonWorkspace(workspaceId, "start-cancelled")
                 throw e
             } catch (e: Exception) {
                 val reason = e.message ?: "Failed to open session"
                 Logger.w(TAG, "requestStart($workspaceId) FAILED: $reason")
                 sessionManager.updateState(workspaceId, RuntimeState.Error(reason))
                 _activeWorkspaceId.value = null
+                PerfTrace.abandonWorkspace(workspaceId, "start-failed")
                 // §1.165: this workspace-wide close is safe *because* of the
                 // guard above — it is only reachable when the workspace had no
                 // live session to begin with, so it can only be tearing down
@@ -283,13 +319,18 @@ class RuntimeLifecycleManager @Inject constructor(
      * could leave a wake lock held. Keeping a single gate keeps a single release.
      */
     suspend fun requestStop(workspaceId: String): Boolean {
-        return transitionMutex.withLock {
+        return withTransitionLock {
             val active = _activeWorkspaceId.value
             if (active == null || active != workspaceId) {
-                return@withLock stopWorkspaceLocked(workspaceId)
+                val stopped = stopWorkspaceLocked(workspaceId)
+                if (stopped) PerfTrace.abandonWorkspace(workspaceId, "stopped")
+                return@withTransitionLock stopped
             }
             val stopped = stopWorkspaceLocked(workspaceId)
-            if (stopped) _activeWorkspaceId.value = null
+            if (stopped) {
+                _activeWorkspaceId.value = null
+                PerfTrace.abandonWorkspace(workspaceId, "stopped")
+            }
             stopped
         }
     }
@@ -328,7 +369,7 @@ class RuntimeLifecycleManager @Inject constructor(
      * Starting).
      */
     suspend fun sessionEnded(workspaceId: String) {
-        transitionMutex.withLock {
+        withTransitionLock {
             if (_activeWorkspaceId.value == workspaceId && sessionTrulyOver(workspaceId)) {
                 _activeWorkspaceId.value = null
             }
@@ -355,9 +396,10 @@ class RuntimeLifecycleManager @Inject constructor(
      * left to release it.
      */
     suspend fun shutdown() {
-        transitionMutex.withLock {
+        withTransitionLock {
             sessionManager.getActiveSessions().forEach { session ->
                 runCatching { stopWorkspaceLocked(session.workspaceId) }
+                PerfTrace.abandonWorkspace(session.workspaceId, "service-shutdown")
             }
             _activeWorkspaceId.value = null
             wakeLockManager.releaseAll()
@@ -420,14 +462,15 @@ class RuntimeLifecycleManager @Inject constructor(
      * serialized on the SAME mutex as every lifecycle transition. Runs once
      * per process (this is a singleton, so the flag survives service
      * recreation within a process — exactly the guard that keeps a later
-     * service instance from re-sweeping a live workspace). Called by the
-     * service on first bind AND ensured at the head of every start path
-     * ([runStartupSweepLocked]), so a START/STOP/RESTART can never race it and
-     * a workspace can never open before the sweep finishes. Best-effort and
-     * bounded: a partial failure is returned in the report, never thrown, and
-     * never blocks a start.
+     * service instance from re-sweeping a live workspace). The sweep is
+     * ensured at the head of every start path ([runStartupSweepLocked]) — the
+     * service no longer runs it eagerly in `onCreate` (PERF-003: that ran on
+     * Main during Activity entry, for sessions that did not exist) — so a
+     * START/STOP/RESTART can never race it and a workspace can never open
+     * before the sweep finishes. Best-effort and bounded: a partial failure is
+     * returned in the report, never thrown, and never blocks a start.
      */
-    suspend fun startupSweep(): RecoverySweepReport = transitionMutex.withLock {
+    suspend fun startupSweep(): RecoverySweepReport = withTransitionLock {
         runStartupSweepLocked()
     }
 
@@ -442,9 +485,14 @@ class RuntimeLifecycleManager @Inject constructor(
         if (startupSweepDone) return RecoverySweepReport(0, 0, 0)
         startupSweepDone = true
         val report = withTimeoutOrNull(teardownTimeoutMs) {
-            runCatching { workspaceTerminalManager.initialize() }.getOrElse {
-                Logger.w(TAG, "startup recovery sweep threw: ${it.message}")
-                RecoverySweepReport(0, 0, 1)
+            // PERF-003: this is filesystem work (stale PROOT_TMP_DIR scopes,
+            // tmux sockets). `requestStart` can run on a Main-dispatched
+            // caller, so the sweep must not do its IO there.
+            withContext(Dispatchers.IO) {
+                runCatching { workspaceTerminalManager.initialize() }.getOrElse {
+                    Logger.w(TAG, "startup recovery sweep threw: ${it.message}")
+                    RecoverySweepReport(0, 0, 1)
+                }
             }
         } ?: RecoverySweepReport(0, 0, 1)
         Logger.i(TAG, "startup recovery sweep: $report")
@@ -473,12 +521,12 @@ class RuntimeLifecycleManager @Inject constructor(
      * cannot hang a start; whatever was not consumed stays marked for next
      * launch. Best-effort: never throws, never blocks a start.
      */
-    private suspend fun consumeShutdownMarkers() {
+    private suspend fun consumeShutdownMarkers() = withContext(Dispatchers.IO) {
         val base = fileManager.getWorkspaceBasePath("")
         val marked = runCatching {
             base.listFiles()?.filter { it.isDirectory && File(it, SHUTDOWN_MARKER).exists() }
         }.getOrNull().orEmpty()
-        if (marked.isEmpty()) return
+        if (marked.isEmpty()) return@withContext
         Logger.i(TAG, "shutdown markers left by a previous process: ${marked.joinToString { it.name }}")
         val consumed = withTimeoutOrNull(teardownTimeoutMs) {
             marked.forEach { dir ->
@@ -531,7 +579,14 @@ class RuntimeLifecycleManager @Inject constructor(
             val stopped: Boolean = withTimeoutOrNull(teardownTimeoutMs) {
                 try {
                     workspaceTerminalManager.closeWorkspace(workspaceId)
-                    fileManager.invalidateRootfsSize(workspaceId)
+                    // DEEP-AUDIT (2026-11-26): stopping the runtime does not
+                    // change the workspace's size and is not a read request.
+                    // Mark the in-memory generation stale only; the persisted
+                    // value stays readable and the next screen revalidates it
+                    // in the background. A full invalidate here forced the
+                    // next entry's detail build into a blocking multi-GB tree
+                    // walk (measured 3 927 ms: the re-entry slowdown).
+                    fileManager.markRootfsSizeStale(workspaceId)
                     true
                 } catch (e: CancellationException) {
                     throw e

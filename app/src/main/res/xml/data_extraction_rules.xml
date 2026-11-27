@@ -3,7 +3,8 @@
   Pre-release audit fix (2026-09-02, security finding S3): the API 31+
   (dataExtractionRules) half of the backup-surface fix. See backup_rules.xml
   for the rationale: the workspace database stores the desktop VNC password
-  in plaintext (workspace attributes), and the workspaces tree holds every
+  as an AES-GCM envelope (legacy plaintext is migrated at app start), and the
+  workspaces tree holds every
   rootfs — multi-GB payload a device transfer should never carry. Cloud
   backup AND device-to-device transfer both exclude these roots.
 -->
@@ -15,7 +16,13 @@
         <exclude domain="file" path="workspaces" />
         <exclude domain="file" path="logs" />
         <exclude domain="file" path="bootstrap" />
-        <exclude domain="sharedpref" path="linexa_settings.xml" />
+        <!-- F-034: every SharedPreferences file is listed explicitly. The
+         workspace database is excluded above, so restoring only some of the
+         app's preferences would leave settings that reference workspaces
+         which do not exist on the restored device. -->
+    <exclude domain="sharedpref" path="linexa_settings.xml" />
+    <exclude domain="sharedpref" path="linexa_terminal.xml" />
+    <exclude domain="sharedpref" path="linexa_update_prefs.xml" />
     </cloud-backup>
     <device-transfer>
         <exclude domain="database" path="linexa.db" />
@@ -24,6 +31,12 @@
         <exclude domain="file" path="workspaces" />
         <exclude domain="file" path="logs" />
         <exclude domain="file" path="bootstrap" />
-        <exclude domain="sharedpref" path="linexa_settings.xml" />
+        <!-- F-034: every SharedPreferences file is listed explicitly. The
+         workspace database is excluded above, so restoring only some of the
+         app's preferences would leave settings that reference workspaces
+         which do not exist on the restored device. -->
+    <exclude domain="sharedpref" path="linexa_settings.xml" />
+    <exclude domain="sharedpref" path="linexa_terminal.xml" />
+    <exclude domain="sharedpref" path="linexa_update_prefs.xml" />
     </device-transfer>
 </data-extraction-rules>

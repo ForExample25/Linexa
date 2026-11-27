@@ -27,7 +27,22 @@
          hard 60-minute ceiling (WakeLockPolicy.MAX_HOLD_MS) and released by every
          teardown path. Never held for a workspace that is not running. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- In-app update checker (2026-11-16): lets Linexa hand its OWN downloaded
+         update APK to Android's PackageInstaller. Install-time permission, never
+         auto-granted: the first install attempt routes the user through
+         Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES for this app, and the install
+         itself is Android's normal confirmation dialog — never silent, never root. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- Global LTR layout policy. `android:supportsRtl="false"` asks the
+         platform to keep the app's layout direction left-to-right regardless
+         of the selected locale (the documented meaning of that attribute). It
+         does NOT disable Persian: values-fa/ still resolves, and text rendering
+         keeps Unicode bidi, so Persian sentences and punctuation retain their
+         RTL text direction. The Compose root independently pins
+         LocalLayoutDirection to Ltr and AppLocale.localizedContext clears the
+         RTL configuration bit. See
+         docs/design/ACCESSIBILITY_AND_LOCALIZATION.md §4.2.1. -->
     <application
         android:name=".LinexaApplication"
         android:allowBackup="true"
@@ -36,16 +51,19 @@
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:networkSecurityConfig="@xml/network_security_config"
-        android:supportsRtl="true"
+        android:localeConfig="@xml/locales_config"
+        android:supportsRtl="false"
         android:enableOnBackInvokedCallback="true"
         android:theme="@style/Theme.Linexa">
         <!-- Security fix (2026-09-02): allowBackup stays true (preferences and
              misc state remain restorable), but the backup/transfer surface is
              now explicitly scoped by @xml/backup_rules (API ≤ 30) and
              @xml/data_extraction_rules (API 31+): the Room DB (workspace
-             attributes carry the desktop VNC password as plaintext), the
-             workspaces tree (rootfs payloads), the runtime logs and the
-             bootstrap dir are excluded from cloud backup AND device transfer. -->
+             attributes carry the desktop VNC password as an AES-GCM envelope,
+             with legacy plaintext migrated at app start; the DB is still
+             excluded as defence in depth), the workspaces tree
+             (rootfs payloads), the runtime logs and the bootstrap dir are
+             excluded from cloud backup AND device transfer. -->
         <!-- UI/UX Phase 9: opt into Android's modern (predictive) back
              dispatch. With this flag, every back press — Compose BackHandler,
              the NavHosts' pop, dialogs — is routed by androidx.activity
@@ -95,12 +113,35 @@
         <service
             android:name=".service.importservice.ImportService"
             android:exported="false"
-            android:foregroundServiceType="specialUse" />
+            android:foregroundServiceType="specialUse">
+            <!-- Finding 012: Android 14+ expects a specialUse FGS to declare its
+                 subtype. Import is a finite, user-initiated rootfs extraction,
+                 so `rootfs-import` is the stable Play-review description. -->
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="rootfs-import" />
+        </service>
 
         <service
             android:name=".service.distro.DownloadService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- In-app update checker (2026-11-16): the target of the install
+             session's status PendingIntent (AppUpdateCoordinator →
+             AndroidUpdateInstaller.commit). The broadcast runs with THIS app's
+             identity — the PendingIntent is created by this app — so
+             exported=false is correct and nothing external can reach it.
+             On STATUS_PENDING_USER_ACTION it starts Android's own installation
+             confirmation activity; on SUCCESS/FAILURE the coordinator's state
+             follows the platform's verdict only. -->
+        <receiver
+            android:name=".service.update.UpdateInstallStatusReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.fem.linexa.action.UPDATE_INSTALL_STATUS" />
+            </intent-filter>
+        </receiver>
 
         <!-- §1.74: SAF DocumentsProvider. Browses every workspace rootfs and
              the Public shared folder; create/delete/rename/write are allowed

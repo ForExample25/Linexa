@@ -320,6 +320,13 @@ class TerminalSessionOverviewTest {
         override suspend fun exec(workspaceId: String, rootfsPath: String, command: String): CommandResult =
             CommandResult(exitCode = 0, output = "")
 
+        override suspend fun execWithInput(
+            workspaceId: String,
+            rootfsPath: String,
+            command: String,
+            stdin: String
+        ): CommandResult = exec(workspaceId, rootfsPath, command)
+
         override suspend fun execStreaming(
             workspaceId: String,
             rootfsPath: String,

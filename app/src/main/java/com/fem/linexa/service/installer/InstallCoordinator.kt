@@ -109,6 +109,24 @@ class InstallCoordinator @Inject constructor(
     private var pending: Pending? = null
 
     /**
+     * RF-011: every flow gets a generation. Cancelling (or starting a new
+     * flow) bumps it, so a cancelled job that is still winding down — or a
+     * progress callback already queued on the dispatcher — cannot overwrite
+     * the newer flow's state or the post-cancel [InstallFlowState.Idle].
+     */
+    private var flowGeneration: Long = 0L
+
+    /**
+     * Publishes [state] only while [generation] is still the active flow.
+     * All job-internal state writes go through this; terminal teardown
+     * ([abortActive]) does not, because it is the one that invalidates the
+     * generation deliberately.
+     */
+    private fun publishState(generation: Long, state: InstallFlowState) {
+        if (generation == flowGeneration) _state.value = state
+    }
+
+    /**
      * Issue #5 (2026-09-03): the shared weighted monotonic progress tracker
      * for the active flow. Recreated by [prepare]; read by the download,
      * analyze, extract, fix, finalize and verify event mappers so every
@@ -147,13 +165,15 @@ class InstallCoordinator @Inject constructor(
         // flow (download → analyze → extract → fix → finalize → verify), so
         // stage transitions no longer restart the bar at 0. Fresh per flow.
         progressTracker = newProgressTracker()
+        val generation = ++flowGeneration
         _state.value = InstallFlowState.Preparing(initialStep(selection), 0f)
 
         activeJob = scope.launch {
+            fun publish(state: InstallFlowState) = publishState(generation, state)
             try {
                 val source = when (selection) {
                     is InstallSelection.Distro -> {
-                        _state.value = InstallFlowState.Preparing(InstallStep.DOWNLOADING, 0f)
+                        publish(InstallFlowState.Preparing(InstallStep.DOWNLOADING, 0f))
                         prepareDistroSource(workspaceId, selection.manifest)
                     }
                     is InstallSelection.File -> {
@@ -162,7 +182,7 @@ class InstallCoordinator @Inject constructor(
                     }
                 }
 
-                _state.value = InstallFlowState.Preparing(InstallStep.ANALYZING, progressTracker?.update(STAGE_ANALYZING, null) ?: 0f)
+                publish(InstallFlowState.Preparing(InstallStep.ANALYZING, progressTracker?.update(STAGE_ANALYZING, null) ?: 0f))
                 val analysis = installer.analyze(
                     workspaceId = workspaceId,
                     sourceUri = source.uri,
@@ -171,10 +191,12 @@ class InstallCoordinator @Inject constructor(
                         // Issue #5: the analyzer's fraction rides the shared
                         // weighted scale; a null (unknown content length) leaves
                         // the bar where it is instead of inventing a value.
-                        _state.value = InstallFlowState.Preparing(
-                            InstallStep.ANALYZING,
-                            progressTracker?.update(STAGE_ANALYZING, analyzeFraction(progress)),
-                            progress.currentEntryName
+                        publish(
+                            InstallFlowState.Preparing(
+                                InstallStep.ANALYZING,
+                                progressTracker?.update(STAGE_ANALYZING, analyzeFraction(progress)),
+                                progress.currentEntryName
+                            )
                         )
                     },
                     // 2026-09-01: hand the installer the distro's bundled
@@ -198,12 +220,12 @@ class InstallCoordinator @Inject constructor(
                 when (analysis) {
                     is AnalyzeResult.Failure -> {
                         cleanupWorkspace(workspaceId)
-                        _state.value = InstallFlowState.Failed(analysis.reason)
+                        publish(InstallFlowState.Failed(analysis.reason))
                     }
                     is AnalyzeResult.Success -> {
                         val summary = buildSummary(workspaceId, selection, analysis)
                         pending = Pending(selection, workspaceId, summary, analysis, source.expectedSha256 != null)
-                        _state.value = InstallFlowState.Ready(summary)
+                        publish(InstallFlowState.Ready(summary))
                     }
                 }
             } catch (e: CancellationException) {
@@ -211,7 +233,7 @@ class InstallCoordinator @Inject constructor(
             } catch (e: Exception) {
                 Logger.e(TAG, "Install preparation failed", e)
                 cleanupWorkspace(workspaceId)
-                _state.value = InstallFlowState.Failed(e.message ?: "Preparation failed")
+                publish(InstallFlowState.Failed(e.message ?: "Preparation failed"))
             }
         }
     }
@@ -232,10 +254,12 @@ class InstallCoordinator @Inject constructor(
         // Transition out of Ready SYNCHRONOUSLY: the confirmation screen pops
         // itself immediately after calling this, and its `onCleared` must not
         // cancel a flow the user just committed (cancel() only aborts
-        // Preparing/Ready).
+        // non-terminal flows now that Installing is cancellable too).
         _state.value = InstallFlowState.Installing(InstallStep.EXTRACTING, null)
+        val generation = ++flowGeneration
 
         activeJob = scope.launch {
+            fun publish(state: InstallFlowState) = publishState(generation, state)
             try {
                 // §1.88: re-verify free space at the moment of commit — time
                 // has passed since the analysis estimate and other installs may
@@ -246,8 +270,10 @@ class InstallCoordinator @Inject constructor(
                 if (requiredFreeBytes > 0 && availableBytes < requiredFreeBytes) {
                     Logger.w(TAG, "Disk space re-check failed at confirm: need ${FileSizeFormatter.format(requiredFreeBytes)}, have ${FileSizeFormatter.format(availableBytes)}")
                     cleanupWorkspace(p.workspaceId)
-                    _state.value = InstallFlowState.Failed(
-                        "Insufficient disk space to install: need ~${FileSizeFormatter.format(requiredFreeBytes)}, have ${FileSizeFormatter.format(availableBytes)}"
+                    publish(
+                        InstallFlowState.Failed(
+                            "Insufficient disk space to install: need ~${FileSizeFormatter.format(requiredFreeBytes)}, have ${FileSizeFormatter.format(availableBytes)}"
+                        )
                     )
                     return@launch
                 }
@@ -274,10 +300,12 @@ class InstallCoordinator @Inject constructor(
                         InstallPhase.FINALIZING -> progressTracker?.complete(STAGE_FINALIZING)
                         InstallPhase.ANALYZING -> Unit // analyze owns its own stage; install never re-runs it
                     }
-                    _state.value = InstallFlowState.Installing(
-                        stepOf(progress.phase),
-                        progressTracker?.overallNullable,
-                        progress.currentEntryName ?: lastEntry
+                    publish(
+                        InstallFlowState.Installing(
+                            stepOf(progress.phase),
+                            progressTracker?.overallNullable,
+                            progress.currentEntryName ?: lastEntry
+                        )
                     )
                 }) {
                     is InstallResult.Success -> {
@@ -286,50 +314,61 @@ class InstallCoordinator @Inject constructor(
                         // or a dead DB row here must surface as failure + a Broken
                         // record, never as a completed install that the workspace list
                         // cannot actually list/run.
-                        _state.value = InstallFlowState.Installing(
-                            InstallStep.VERIFYING,
-                            progressTracker?.update(STAGE_VERIFYING, 0f) ?: 0.98f,
-                            null
+                        publish(
+                            InstallFlowState.Installing(
+                                InstallStep.VERIFYING,
+                                progressTracker?.update(STAGE_VERIFYING, 0f) ?: 0.98f,
+                                null
+                            )
                         )
                         val verifyFailure = verifyRootfs(p)
                         if (verifyFailure != null) {
                             Logger.w(TAG, "Rootfs verification failed for ${p.workspaceId}: $verifyFailure")
                             repository.updateStatus(p.workspaceId, WorkspaceStatus.Broken(verifyFailure))
-                            _state.value = InstallFlowState.Failed(verifyFailure, workspaceId = p.workspaceId)
+                            publish(InstallFlowState.Failed(verifyFailure, workspaceId = p.workspaceId))
                         } else if (!updateWorkspaceAfterSuccess(p, result.sha256)) {
                             Logger.e(TAG, "Metadata persistence failed for ${p.workspaceId} — not showing success")
                             repository.updateStatus(p.workspaceId, WorkspaceStatus.Broken("Workspace record could not be persisted"))
-                            _state.value = InstallFlowState.Failed("Workspace record could not be persisted", workspaceId = p.workspaceId)
+                            publish(InstallFlowState.Failed("Workspace record could not be persisted", workspaceId = p.workspaceId))
                         } else {
                             fileManager.deleteDownloadCache(p.workspaceId)
-                            _state.value = InstallFlowState.Completed(p.workspaceId)
+                            publish(InstallFlowState.Completed(p.workspaceId))
                             Logger.i(TAG, "Install completed for ${p.workspaceId} (sha256=${result.sha256}, verified=${p.sha256Verified})")
                         }
                     }
                     is InstallResult.Failure -> {
                         Logger.w(TAG, "Install failed for ${p.workspaceId}: ${result.reason}")
                         repository.updateStatus(p.workspaceId, WorkspaceStatus.Broken(result.reason))
-                        _state.value = InstallFlowState.Failed(result.reason, workspaceId = p.workspaceId)
+                        publish(InstallFlowState.Failed(result.reason, workspaceId = p.workspaceId))
                     }
                 }
             } catch (e: CancellationException) {
+                // RF-010: a user cancel during Installing. abortActive() owns
+                // the teardown (it joins this job, then deletes the workspace
+                // row + directory) — the job itself must not write a Broken
+                // status or a Failed state on the way out.
                 throw e
             } catch (e: Exception) {
                 Logger.e(TAG, "Install failed for ${p.workspaceId}", e)
                 repository.updateStatus(p.workspaceId, WorkspaceStatus.Broken(e.message ?: "Installation failed"))
-                _state.value = InstallFlowState.Failed(e.message ?: "Installation failed", workspaceId = p.workspaceId)
+                publish(InstallFlowState.Failed(e.message ?: "Installation failed", workspaceId = p.workspaceId))
             }
         }
     }
 
     /**
-     * Aborts a flow the user has not confirmed yet (progress card or
-     * confirmation card). No-op once installation is underway or terminal —
-     * an in-flight extraction is left to finish and its workspace survives.
+     * Aborts a flow the user has not committed, or one they explicitly cancel
+     * while it is installing (RF-010/UX-001). The cancelled job keeps running
+     * until its next suspension/cancellation check, so the workspace is
+     * deleted only after the job has finished (RF-011): deleting the
+     * directory underneath a still-running writer can orphan paths and
+     * resurrect files inside a tree being removed.
      */
     fun cancel() {
         when (_state.value) {
-            is InstallFlowState.Preparing, is InstallFlowState.Ready -> abortActive()
+            is InstallFlowState.Preparing,
+            is InstallFlowState.Ready,
+            is InstallFlowState.Installing -> abortActive()
             else -> Unit
         }
     }
@@ -620,7 +659,7 @@ class InstallCoordinator @Inject constructor(
             return "Extracted rootfs has no declared shell " +
                 "(looked for ${shellCandidates.joinToString(", ") { "/${it.removePrefix("/")}" }}) ($context)"
         }
-        if (fileManager.getRootfsSize(p.workspaceId) <= 0L) {
+        if (!fileManager.hasAnyRegularFile(p.workspaceId)) {
             return "Extracted rootfs is empty ($context)"
         }
         val healthCheck = p.analysis.descriptor.metadata?.healthCheck ?: return null
@@ -677,11 +716,24 @@ class InstallCoordinator @Inject constructor(
     // ── teardown helpers ────────────────────────────────────────────────
 
     private fun abortActive() {
-        activeJob?.cancel()
+        val job = activeJob
+        val workspaceId = activeWorkspaceId
+        // RF-011: invalidate every state write the cancelled job (or a
+        // progress callback it already queued) might still perform.
+        flowGeneration++
         activeJob = null
         pending = null
-        activeWorkspaceId?.let { workspaceId ->
-            scope.launch {
+        progressTracker = null
+        activeWorkspaceId = null
+        _state.value = InstallFlowState.Idle
+        job?.cancel()
+        if (job == null && workspaceId == null) return
+        scope.launch {
+            // The job's blocking loops observe cancellation only at their next
+            // suspension/ensureActive point; join before touching the tree it
+            // is still writing into.
+            job?.join()
+            if (workspaceId != null) {
                 // deleteWorkspace removes the DB row (if any) and the workspace
                 // dir (download cache / import cache / staging), tolerating
                 // read-only directories left by a partial extraction.
@@ -691,8 +743,6 @@ class InstallCoordinator @Inject constructor(
                 }
             }
         }
-        activeWorkspaceId = null
-        _state.value = InstallFlowState.Idle
     }
 
     /** Removes a prepared-but-not-confirmed workspace's temp data (no DB row yet). */

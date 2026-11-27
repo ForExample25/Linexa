@@ -33,6 +33,16 @@ class DiagnosticLogManager @Inject constructor(
     private val application: Application
 ) {
 
+    /** F-033: append count per workspace, for periodic total-cap enforcement. */
+    private val appendCounts = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    private companion object {
+        const val TAG = "DiagnosticLog"
+
+        /** Total-cap check cadence; per-file trimming runs on every append. */
+        const val PRUNE_EVERY_APPENDS = 64
+    }
+
     /**
      * §1.53: Returns the logs directory for a workspace, creating it if needed.
      * Location: `{app.filesDir}/workspaces/{workspaceId}/logs/`
@@ -57,9 +67,34 @@ class DiagnosticLogManager @Inject constructor(
                     writer.append("\n")
                     writer.flush()
                 }
+                // F-033 / R-40: a single runaway file is trimmed immediately;
+                // the directory-wide cap is enforced periodically so the common
+                // append does not list the directory every time.
+                LogRetention.trimToTail(logFile)
+            }
+            val appends = appendCounts.merge(workspaceId, 1, Int::plus) ?: 1
+            if (appends % PRUNE_EVERY_APPENDS == 0) {
+                pruneWorkspaceLogs(workspaceId)
             }
         } catch (_: Exception) {
             // Best effort — don't crash the app for logging failures
+        }
+    }
+
+    /**
+     * F-033 / R-40: enforce the per-workspace log ceiling. Public so the
+     * diagnostics screen can offer an explicit "compact logs" action and so
+     * the retention policy can be exercised directly.
+     */
+    fun pruneWorkspaceLogs(workspaceId: String) {
+        try {
+            val dir = getLogsDir(workspaceId)
+            val deleted = LogRetention.enforceTotalCap(dir.listFiles()?.toList().orEmpty())
+            if (deleted.isNotEmpty()) {
+                Logger.w(TAG, "Pruned ${deleted.size} diagnostic log(s) for $workspaceId: ${deleted.joinToString()}")
+            }
+        } catch (_: Exception) {
+            // Best effort.
         }
     }
 

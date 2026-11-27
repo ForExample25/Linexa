@@ -1,8 +1,12 @@
 package com.fem.linexa.ui.components
 
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -22,6 +26,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.unit.dp
 import com.fem.linexa.R
 
 /**
@@ -56,7 +61,7 @@ fun LinexaAlertDialog(
         onDismissRequest = onDismiss,
         modifier = modifier,
         title = { Text(title, style = MaterialTheme.typography.titleMedium) },
-        text = { Text(message, style = MaterialTheme.typography.bodyMedium) },
+        text = { ScrollableDialogMessage(message) },
         confirmButton = {
             Button(
                 onClick = onConfirm,
@@ -99,7 +104,7 @@ fun LinexaMessageDialog(
         onDismissRequest = onDismiss,
         modifier = modifier,
         title = { Text(title, style = MaterialTheme.typography.titleMedium) },
-        text = { Text(message, style = MaterialTheme.typography.bodyMedium) },
+        text = { ScrollableDialogMessage(message) },
         confirmButton = {
             Button(onClick = onDismiss) {
                 Text(stringResource(R.string.common_ok))
@@ -213,4 +218,29 @@ fun LinexaInputDialog(
             }
         }
     )
+}
+
+/**
+ * A dialog message that scrolls when the localized copy is taller than the
+ * space the dialog can give it. The cap is a fraction of the slot's own
+ * measured height (never a hard dp), so it adapts to the screen, the font
+ * scale and the dialog's title: the action row always keeps room.
+ */
+@Composable
+private fun ScrollableDialogMessage(message: String) {
+    BoxWithConstraints {
+        // A dialog host always gives a bounded height, but guard the unbounded
+        // case (a test harness or a future popup host) so verticalScroll never
+        // receives an infinite constraint.
+        // Exactly the original `maxHeight.value.isFinite()`: finite → scale the
+        // cap; ±Inf or NaN (both non-finite) → fall back to 240.dp.
+        val cap = if (!maxHeight.value.isInfinite() && !maxHeight.value.isNaN()) maxHeight * 0.6f else 240.dp
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier
+                .heightIn(max = cap)
+                .verticalScroll(rememberScrollState())
+        )
+    }
 }

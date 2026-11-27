@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -27,9 +28,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.fem.linexa.R
 import com.fem.linexa.data.Workspace
 import com.fem.linexa.ui.components.DistroIdentity
 import com.fem.linexa.ui.theme.haven.HavenDim
@@ -67,27 +69,27 @@ fun HavenSidebar(
 
         sidebarRow(
             iconRes = com.fem.linexa.R.drawable.ic_haven_grid,
-            label = "Workspaces",
+            label = stringResource(R.string.haven_nav_workspaces),
             selected = selected == HavenDestination.WORKSPACES,
             trailingCount = workspaces.size.takeIf { it > 0 }?.toString(),
             onClick = { onSelect(HavenDestination.WORKSPACES) }
         )
         sidebarRow(
             iconRes = com.fem.linexa.R.drawable.ic_haven_activity,
-            label = "Activity",
+            label = stringResource(R.string.haven_nav_activity),
             selected = selected == HavenDestination.ACTIVITY,
             onClick = { onSelect(HavenDestination.ACTIVITY) }
         )
         sidebarRow(
             iconRes = com.fem.linexa.R.drawable.ic_custom_settings,
-            label = "Settings",
+            label = stringResource(R.string.haven_nav_settings),
             selected = selected == HavenDestination.SETTINGS,
             onClick = { onSelect(HavenDestination.SETTINGS) }
         )
 
         Text(
-            text = "WORKSPACES",
-            style = HavenType.eyebrow.copy(letterSpacing = com.fem.linexa.ui.theme.haven.em(0.16f)),
+            text = stringResource(R.string.haven_sidebar_workspaces),
+            style = HavenType.eyebrow.copy(letterSpacing = HavenType.tracking(0.16f)),
             color = h.muted,
             modifier = Modifier.padding(start = 12.dp, top = 18.dp, bottom = 8.dp)
         )
@@ -103,10 +105,10 @@ fun HavenSidebar(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(44.dp)
+                        .heightIn(min = 44.dp)
                         .clip(RoundedCornerShape(HavenDim.rSidebarRow))
                         .clickable { onOpenWorkspace(workspace.id) }
-                        .padding(horizontal = 10.dp),
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -124,8 +126,7 @@ fun HavenSidebar(
                                 fontSize = androidx.compose.ui.unit.TextUnit(13.5f, androidx.compose.ui.unit.TextUnitType.Sp)
                             ),
                             color = h.text,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            maxLines = 2
                         )
                         if (workspace.storageUsedLabel != null) {
                             Text(
@@ -162,7 +163,7 @@ private fun sidebarRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(42.dp)
+            .heightIn(min = 42.dp)
             .clip(RoundedCornerShape(HavenDim.rSidebarRow))
             .background(if (selected) h.surface2 else androidx.compose.ui.graphics.Color.Transparent)
             .clickable(
@@ -170,7 +171,7 @@ private fun sidebarRow(
                 indication = null,
                 onClick = onClick
             )
-            .padding(horizontal = 12.dp),
+            .padding(horizontal = 12.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(11.dp)
     ) {
@@ -188,7 +189,7 @@ private fun sidebarRow(
             ),
             color = if (selected) h.text else h.text2,
             modifier = Modifier.weight(1f),
-            maxLines = 1
+            maxLines = 2
         )
         if (trailingCount != null) {
             Box(

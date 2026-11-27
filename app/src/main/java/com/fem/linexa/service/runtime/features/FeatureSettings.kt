@@ -49,13 +49,14 @@ package com.fem.linexa.service.runtime.features
  * take effect the next time the desktop starts — a running Xvnc or web server
  * is not restarted underneath the user.
  *
- * The VNC password is stored in the same plaintext Room attributes as every
- * other setting. That is an acceptable trade for what it protects — the VNC
- * endpoint is loopback-only, and the password's threat model is *other apps on
- * the device*, not disk-level attackers — but it is stated here rather than
- * left implicit, and [com.fem.linexa.ui.screens.desktop.DesktopVncAuthProvisioner]
- * generates it via [java.security.SecureRandom] so the default story is "a
- * password the user never chose and never has to type".
+ * The VNC password is persisted in the workspace's Room `attributes` as an
+ * AES-GCM envelope (`WorkspaceSecretAttributes`); a legacy plaintext value is
+ * migrated at app start. The backup rules still exclude the database as
+ * defence in depth. The threat model is *other apps on the device*, not
+ * disk-level attackers, and
+ * [com.fem.linexa.ui.screens.desktop.DesktopVncAuthProvisioner] generates the
+ * default via [java.security.SecureRandom] so the story is "a password the
+ * user never chose and never has to type".
  *
  * ## Where it lives
  *
@@ -118,18 +119,34 @@ data class FeatureSettings(
     val desktopVncPreferZrle: Boolean = false,
     /**
      * The VNC authentication password for the VNC run mode, or **empty** for
-     * `SecurityTypes None` — the pre-Desktop-Modes behaviour, kept as the
-     * default so an upgrade cannot lock anyone out of their own desktop.
+     * `SecurityTypes None` when [desktopVncAllowUnauthenticated] is explicitly
+     * enabled.
+     *
+     * The empty default is **not** a no-authentication choice: the desktop
+     * enable flow generates a password before the first start (finding 007),
+     * and a start with no password fails closed unless the user has turned on
+     * [desktopVncAllowUnauthenticated] in the VNC settings panel.
      *
      * When set, the ViewModel provisions the password with the guest's own
      * `vncpasswd` into the guest FS and starts Xvnc with `-rfbauth`; the
      * embedded client then performs the RFB VNC-Auth challenge/response
      * ([com.fem.linexa.ui.screens.desktop.VncAuth]). The password never has to
      * be typed anywhere — the client and the server are both Linexa's — so the
-     * panel's Generate button is the intended flow, and the empty default is a
-     * choice the user made, not an accident.
+     * panel's Generate button is the intended flow.
      */
     val desktopVncPassword: String = "",
+    /**
+     * Finding 007: explicit consent to start Xvnc with `-SecurityTypes None`.
+     *
+     * Default **false**. Android has no per-app localhost isolation, so
+     * `-localhost yes` is not an authentication boundary: every app on the
+     * device can connect to `127.0.0.1:<port>`. A no-password desktop is
+     * therefore refused unless the user turns this on, and the settings panel
+     * states that any app can then view and control the desktop. Kept as a
+     * separate flag (not inferred from an empty password) so a lost secret can
+     * never be mistaken for this deliberate choice.
+     */
+    val desktopVncAllowUnauthenticated: Boolean = false,
     /**
      * The TCP port the WebView run mode's guest web server listens on
      * (validated like [sshPort] on the write path). The app connects to it on
@@ -200,6 +217,7 @@ data class FeatureSettings(
         "FeatureSettings(sshPort=$sshPort, desktopMode=$desktopMode, " +
             "desktopVncPassword=${if (desktopVncPassword.isEmpty()) "<empty>" else "<redacted>"}, " +
             "desktopVncPasswordUnreadable=$desktopVncPasswordUnreadable, " +
+            "desktopVncAllowUnauthenticated=$desktopVncAllowUnauthenticated, " +
             "desktopBackend=$desktopBackend, terminalPersistence=$terminalPersistence)"
 
     /**
@@ -234,6 +252,7 @@ data class FeatureSettings(
         KEY_DESKTOP_RESOLUTION to desktopResolution.id,
         KEY_DESKTOP_VNC_ZRLE to desktopVncPreferZrle.toString(),
         KEY_DESKTOP_VNC_PASSWORD to desktopVncPassword,
+        KEY_DESKTOP_VNC_ALLOW_UNAUTHENTICATED to desktopVncAllowUnauthenticated.toString(),
         // Always written (true or false): the attributes merge cannot remove a key, so a
         // stale "true" would otherwise outlive the password the user just set.
         KEY_DESKTOP_VNC_PASSWORD_UNREADABLE to
@@ -273,6 +292,13 @@ data class FeatureSettings(
          * aliases' tri-state, there is no third state to distinguish.
          */
         const val KEY_DESKTOP_VNC_PASSWORD = "feature.desktop.vnc.password"
+
+        /**
+         * Finding 007: attribute key for the explicit no-authentication consent.
+         * Absent/false means "refuse a no-password start".
+         */
+        const val KEY_DESKTOP_VNC_ALLOW_UNAUTHENTICATED =
+            "feature.desktop.vnc.allowUnauthenticated"
 
         /**
          * Attribute key marking that the stored [KEY_DESKTOP_VNC_PASSWORD] could not be
@@ -349,6 +375,8 @@ data class FeatureSettings(
             desktopResolution = DesktopResolution.fromId(attributes[KEY_DESKTOP_RESOLUTION]),
             desktopVncPreferZrle = attributes[KEY_DESKTOP_VNC_ZRLE]?.trim() == "true",
             desktopVncPassword = attributes[KEY_DESKTOP_VNC_PASSWORD] ?: "",
+            desktopVncAllowUnauthenticated =
+                attributes[KEY_DESKTOP_VNC_ALLOW_UNAUTHENTICATED]?.trim() == "true",
             desktopVncPasswordUnreadable =
                 attributes[KEY_DESKTOP_VNC_PASSWORD_UNREADABLE]?.trim() == "true" &&
                     (attributes[KEY_DESKTOP_VNC_PASSWORD] ?: "").isEmpty(),

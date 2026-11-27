@@ -8,15 +8,19 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
+import com.fem.linexa.core.i18n.AppLocale
 import com.fem.linexa.domain.settings.ColorTheme
 import com.fem.linexa.ui.components.haven.LocalHavenMotions
 import com.fem.linexa.ui.components.haven.rememberHavenMotions
 import com.fem.linexa.ui.theme.haven.HavenColors
+import com.fem.linexa.ui.theme.haven.HavenScript
 import com.fem.linexa.ui.theme.haven.LocalHavenColors
 
 /**
@@ -59,15 +63,29 @@ fun LinexaTheme(
         HavenColors.lightPalette(HavenColors.accentFor(colorTheme, dark = false))
     }
 
+    // Window/system-bar mutations are side effects: they belong in SideEffect so
+    // they run after a successful composition and never as a side effect of a
+    // recomposition that is later discarded (OEM-specific flicker otherwise).
     val view = LocalView.current
     if (!view.isInEditMode) {
-        val window = (view.context as? android.app.Activity)?.window
-        window?.let {
-            it.statusBarColor = Color.Transparent.toArgb()
-            it.navigationBarColor = Color.Transparent.toArgb()
-            WindowCompat.getInsetsController(it, view).isAppearanceLightStatusBars = !darkTheme
+        SideEffect {
+            val window = (view.context as? android.app.Activity)?.window
+            window?.let {
+                it.statusBarColor = Color.Transparent.toArgb()
+                it.navigationBarColor = Color.Transparent.toArgb()
+                WindowCompat.getInsetsController(it, view).isAppearanceLightStatusBars = !darkTheme
+            }
         }
     }
+
+    // Publish the script profile of the active UI language BEFORE any content
+    // reads HavenType, so Persian text is composed with its calibrated metrics
+    // on the very first frame (see HavenScript). The configuration is the
+    // localized one provided by MainActivity's root wrapper.
+    val locales = LocalConfiguration.current.locales
+    HavenScript.publish(
+        locales.size() > 0 && locales[0].language.equals(AppLocale.PERSIAN_TAG, ignoreCase = true)
+    )
 
     val motions = rememberHavenMotions()
     CompositionLocalProvider(

@@ -168,6 +168,24 @@ class WorkspaceClipboardSupervisorTest {
     }
 
     @Test
+    fun aLateWatcherTickCannotResurrectTheMirrorAfterDisable() = runBlocking {
+        // Cancellation is cooperative: a poller tick can begin after `clearMirror`
+        // bumped the epoch. Such a tick sees the NEW epoch, so the epoch guard
+        // alone would let it write the user's clipboard back into a workspace
+        // whose Clipboard feature is off. The watcher path checks the enabled set
+        // as well; this drives that path directly, deterministically.
+        val clipboard = RecordingHostClipboard(text = "user text")
+        val supervisor = supervisor(clipboard = clipboard)
+
+        supervisor.reconcileClipboard(ws, enabled = true)
+        supervisor.reconcileClipboard(ws, enabled = false)
+
+        supervisor.mirrorOnce(ws, onlyIfEnabled = true)
+
+        assertNull("a disabled workspace must not regain a clipboard mirror", mirrorText())
+    }
+
+    @Test
     fun disablingDrainsWhatTheGuestAlreadyCopiedBeforeRemovingTheShims() = runBlocking {
         val clipboard = RecordingHostClipboard()
         val supervisor = supervisor(clipboard = clipboard)

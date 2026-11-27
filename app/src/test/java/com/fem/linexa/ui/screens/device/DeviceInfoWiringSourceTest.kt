@@ -66,6 +66,26 @@ class DeviceInfoWiringSourceTest {
     }
 
     @Test
+    fun theRouteIsForegroundGated() {
+        assertTrue(
+            "P0-5: a nav destination stays composed while the app is backgrounded — " +
+                "the route must read the lifecycle flag",
+            navGraph.contains("rememberIsForeground()")
+        )
+        assertTrue(
+            "start/pause must be keyed on the foreground flag, not composition alone",
+            Regex(
+                "LaunchedEffect\\(viewModel, foreground\\)\\s*\\{[^}]*if \\(foreground\\) viewModel\\.start\\(\\) else viewModel\\.pause\\(\\)",
+                RegexOption.DOT_MATCHES_ALL
+            ).containsMatchIn(navGraph)
+        )
+        assertTrue(
+            "leaving the destination must still pause the poller",
+            Regex("DisposableEffect\\(viewModel\\)\\s*\\{[^}]*onDispose \\{ viewModel\\.pause\\(\\) \\}").containsMatchIn(navGraph)
+        )
+    }
+
+    @Test
     fun theRouteIsNavigatedToFromHome() {
         assertTrue(
             "nothing navigates to the Device-info route",

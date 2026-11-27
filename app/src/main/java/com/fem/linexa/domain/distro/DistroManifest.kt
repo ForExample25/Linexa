@@ -164,24 +164,21 @@ object DistroCatalog {
             version = "12 (Bookworm)",
             avatarLetter = "D",
             avatarColorHex = "#A80030",
-            approxDownloadSizeLabel = "~130 MB",
-            source = DistroSource.Direct(
-                // debuerreotype/docker-debian-artifacts publishes one branch
-                // per architecture (dist-arm64v8) containing one directory
-                // per release; GitHub's /raw/<branch>/... always serves that
-                // branch's current HEAD, so this tracks their monthly
-                // rebuilds without needing a resolver step.
-                downloadUrl = "https://github.com/debuerreotype/docker-debian-artifacts/raw/dist-arm64v8/bookworm/rootfs.tar.xz",
-                // Best-effort: debuerreotype publishes a checksum for every
-                // build (surfaced at docker.debian.net), but this exact
-                // sidecar path/filename wasn't confirmed from this sandbox
-                // (no network access here to fetch and inspect it — see
-                // class doc). ChecksumResolver treats a 404/parse-miss here
-                // as "unverified", not as an install failure, so this is
-                // safe to leave in optimistically: it verifies for free if
-                // right, and costs nothing if the file isn't actually there.
-                checksumUrl = "https://github.com/debuerreotype/docker-debian-artifacts/raw/dist-arm64v8/bookworm/rootfs.tar.xz.sha256",
-                checksumFormat = ChecksumFormat.SINGLE_HASH_LINE
+            approxDownloadSizeLabel = "~95 MB",
+            source = DistroSource.Resolved(
+                // Acceptance finding (2026-11-26, fresh-install run): the
+                // previous Direct URL
+                // (github.com/debuerreotype/docker-debian-artifacts/raw/
+                // dist-arm64v8/bookworm/rootfs.tar.xz) now answers HTTP 404,
+                // so every "Download a Distribution → Debian" attempt failed
+                // during preparation on the acceptance device. The image
+                // server used for Fedora already publishes Debian with a
+                // per-build SHA256SUMS, so Debian now resolves through the
+                // same verified path instead of a stale static URL.
+                resolverId = DistroResolverIds.LINUX_CONTAINERS,
+                distro = "debian",
+                release = "bookworm",
+                arch = "arm64"
             )
         ),
         DistroManifest(

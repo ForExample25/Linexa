@@ -43,9 +43,15 @@
     <string name="export_step_packing">Packing RootFS…</string>
     <string name="export_step_finalizing">Finishing…</string>
     <string name="export_step_verifying">Verifying archive…</string>
+    <!-- Finding 022: shown before every export, whatever the guest contains. -->
+    <string name="export_credentials_title">Guest credentials in this backup</string>
+    <string name="export_credentials_body">A RootFS export copies the guest filesystem. It may include the VNC password, SSH private keys, and GnuPG keys. Remove these credential files from the backup? The workspace itself is not changed.</string>
+    <string name="export_credentials_as_is">Export as-is</string>
+    <string name="export_credentials_remove">Remove credentials</string>
     <string name="export_success_title">Export complete</string>
     <string name="export_success_body">\"%1$s\" was saved (%2$s). Use Add a Workspace → Import RootFS to install this backup again.</string>
     <string name="export_success_skipped">%1$d files could not be included in the backup.</string>
+    <string name="export_success_credentials_removed">Credential files removed from this backup: %1$d</string>
     <string name="export_failed_title">Couldn\'t export workspace</string>
     <string name="export_cleanup_note">The incomplete export file could not be removed automatically — delete it manually.</string>
 
@@ -62,6 +68,7 @@
     <string name="install_source_catalog">From the distribution catalog</string>
     <string name="install_workspace_name">Workspace name</string>
     <string name="install_keep_open_hint">Keep this screen open until the installation finishes.</string>
+    <string name="install_stop_button">Stop installation</string>
     <string name="install_step_downloading">Downloading archive…</string>
     <string name="install_step_analyzing">Analyzing root filesystem…</string>
     <string name="install_step_extracting">Extracting files…</string>
@@ -182,6 +189,11 @@
     <string name="whats_new_category_improved">Improved</string>
     <string name="whats_new_category_fixed">Fixed</string>
     <string name="whats_new_category_changed">Changed</string>
+    <string name="whats_new_category_performance">Performance</string>
+    <string name="whats_new_beta">BETA</string>
+    <!-- %1$s is a locale-formatted release date, e.g. "Nov 27, 2026". -->
+    <string name="whats_new_released">Released %1$s</string>
+    <string name="whats_new_previous_title">Previous releases</string>
 
     <!-- Global Settings (§ Home redesign — bottom-nav destination) -->
     <string name="global_settings_debug_title">Enable debug info</string>
@@ -192,6 +204,18 @@
       the two descriptions must not imply different behaviour.
     -->
     <string name="global_settings_debug_desc">Collect runtime traces and app logs. Off means nothing is recorded.</string>
+
+    <!-- Localization (English/Persian): the language selector is the first group
+         in main Settings, reachable before any workspace exists. Each language is
+         named in its own script in every locale, because someone who cannot read
+         the current UI must still be able to find their language. "System default"
+         spells out the fallback instead of reading as an unset value. -->
+    <string name="global_settings_language_group">Language</string>
+    <string name="global_settings_language_system">System default</string>
+    <string name="global_settings_language_system_desc">Follow the device language when it is English or Persian; otherwise English.</string>
+    <string name="global_settings_language_english">English</string>
+    <string name="global_settings_language_persian">فارسی</string>
+    <string name="global_settings_language_selected">Selected</string>
 
     <!-- UI/UX Phase 4: three groups over machinery that already shipped but had
          no control surface — the light/dark choice, the terminal font size
@@ -209,6 +233,7 @@
          it does not affect whether the app is in light or dark mode, and
          switching light/dark must not reset the chosen color theme. -->
     <string name="global_settings_color_theme_title">Color theme</string>
+    <string name="global_settings_color_theme_default_suffix">%1$s · default</string>
     <!-- States plainly that the two axes are independent — the most common
          misreading is "I picked Forest, why did dark mode undo it?" -->
     <string name="global_settings_color_theme_desc">Applies to the whole app, separate from light/dark</string>
@@ -262,10 +287,69 @@
     <string name="global_settings_telegram_channel_subtitle">Join the Telegram channel</string>
     <string name="global_settings_developer_subtitle">Message the developer on Telegram</string>
 
+    <!-- In-app update checker (2026-11-16): the Application Updates section.
+         State copy is per-state, not per-word: each outcome (up to date, no
+         release, failed check, failed download, blocked install …) says what
+         happened and what to do next in one place. -->
+    <string name="app_update_group_title">Application Updates</string>
+    <string name="app_update_current_version">Current version</string>
+    <string name="app_update_check_button">Check for Updates</string>
+    <string name="app_update_check_button_retry">Try Again</string>
+    <string name="app_update_checking">Checking GitHub…</string>
+    <string name="app_update_last_check_never">Never checked</string>
+    <string name="app_update_last_check">Last checked %1$s</string>
+    <string name="app_update_up_to_date_title">You are up to date</string>
+    <string name="app_update_up_to_date_desc">Linexa %1$s is the newest published release.</string>
+    <string name="app_update_newer_installed_title">This build is ahead of the releases</string>
+    <string name="app_update_newer_installed_desc">The installed build %1$s is newer than the newest GitHub release, so nothing is offered.</string>
+    <string name="app_update_no_release_title">No release available</string>
+    <string name="app_update_no_release_desc">GitHub has no published release this build can update to yet.</string>
+    <string name="app_update_available_title">New Update Available</string>
+    <string name="app_update_badge_new">NEW</string>
+    <string name="app_update_badge_prerelease">PRE-RELEASE</string>
+    <string name="app_update_published">Published %1$s</string>
+    <string name="app_update_download_size">Download size %1$s</string>
+    <string name="app_update_show_notes">Show full release notes</string>
+    <string name="app_update_hide_notes">Hide release notes</string>
+    <string name="app_update_download">Download Update</string>
+    <string name="app_update_downloading">Downloading Linexa %1$s</string>
+    <string name="app_update_download_progress">%1$s of %2$s</string>
+    <string name="app_update_cancel">Cancel</string>
+    <string name="app_update_download_failed_title">Download failed</string>
+    <string name="app_update_download_failed_network">The download did not complete. Check your connection and try again — it resumes where it stopped.</string>
+    <string name="app_update_download_failed_disk">The download could not be written to storage.</string>
+    <string name="app_update_download_failed_verify">The downloaded file did not match the release (size, SHA-256, package, or signing identity) and was deleted.</string>
+    <string name="app_update_download_failed_untrusted">The release points to a download that is not from Linexa’s GitHub repository, so it was blocked.</string>
+    <string name="app_update_retry">Try Again</string>
+    <string name="app_update_downloaded_title">Update downloaded</string>
+    <string name="app_update_downloaded_desc">Linexa %1$s is verified and ready to install.</string>
+    <string name="app_update_install">Install Update</string>
+    <string name="app_update_installing">Installing…</string>
+    <string name="app_update_installing_desc">Handing Linexa %1$s to Android. The system will show its own installation prompt.</string>
+    <string name="app_update_install_permission_title">Allow installation from Linexa</string>
+    <string name="app_update_install_permission_desc">Android requires one explicit permission for Linexa to install its own update. Turn on “Install unknown apps” for Linexa, then come back and tap Install Update.</string>
+    <string name="app_update_install_permission_button">Open Android Settings</string>
+    <string name="app_update_install_failed_title">Installation failed</string>
+    <string name="app_update_install_failed_desc">Android did not install the update.%1$s</string>
+    <string name="app_update_install_failed_detail_suffix"> Reason: %1$s</string>
+    <string name="app_update_install_success_title">Update installed</string>
+    <string name="app_update_install_success_desc">Reopen Linexa to continue on %1$s.</string>
+    <string name="app_update_check_failed_title">Could not check for updates</string>
+    <string name="app_update_check_failed_network">No connection to GitHub. Check your internet and try again.</string>
+    <string name="app_update_check_failed_rate">GitHub’s request limit is reached. Please try again later.</string>
+    <string name="app_update_check_failed_server">GitHub is having a problem. Try again shortly.</string>
+    <string name="app_update_check_failed_unavailable">The update repository could not be reached.</string>
+    <string name="app_update_check_failed_parse">GitHub’s response could not be read.</string>
+    <string name="app_update_check_failed_unknown">Something went wrong while checking for updates.</string>
+    <string name="app_update_no_apk_title">Release has no installable APK</string>
+    <string name="app_update_no_apk_desc">The newest release does not include an APK this build can install. The releases page has the files.</string>
+    <string name="app_update_include_prereleases">Include pre-releases</string>
+    <string name="app_update_include_prereleases_desc">Also offer beta and pre-release builds from GitHub.</string>
+    <string name="app_update_releases_page">Open releases page</string>
+
     <!-- §1.130: About / open-source attribution. Linexa distributes 17 prebuilt
          native projects and 12 library coordinates, several copyleft. -->
-    <string name="global_settings_about_group">About</string>
-    <string name="global_settings_about_title">Open source licenses</string>
+    <string name="global_settings_about_group">About</string>    <string name="global_settings_about_title">Open source licenses</string>
     <string name="global_settings_about_desc">The projects Linexa ships, their licenses, and where their source is</string>
 
     <!-- UI/UX Phase 4 (3): the footer under the app icon. The value is the build's own
@@ -273,7 +357,6 @@
     <string name="global_settings_version">Version %1$s</string>
 
     <string name="about_title">Open source licenses</string>
-    <string name="about_own_license">Linexa itself is licensed under GPL-3.0-only. The programs listed below remain under their own licenses.</string>
     <!-- States plainly that these are OTHER people's programs shipped inside the
          APK — which is what makes the attribution meaningful rather than a list. -->
     <string name="about_intro">Linexa runs Linux on Android by bundling programs written by other people. Everything below is included in this app, under the license shown. Source for each project is linked.</string>
@@ -458,6 +541,30 @@
     <string name="settings_battery_optimization_desc">Keep the workspace runtime alive in the background</string>
     <string name="settings_notifications">Notifications</string>
     <string name="settings_notifications_desc">Show the running workspace notification</string>
+    <!-- Foreground-service and runtime notifications. Non-composition callers
+         resolve these through AppLocale so they follow the app-selected
+         language; the terminal count uses a plural resource. -->
+    <string name="runtime_notification_title">Linexa Runtime</string>
+    <string name="runtime_channel_name">Runtime Service</string>
+    <string name="runtime_channel_description">Shows when a workspace runtime is active</string>
+    <plurals name="runtime_notification_text">
+        <item quantity="one">Workspace: %1$s (%2$d terminal, %3$s)</item>
+        <item quantity="other">Workspace: %1$s (%2$d terminals, %3$s)</item>
+    </plurals>
+    <string name="runtime_notification_open">Open</string>
+    <string name="runtime_notification_stop">Stop</string>
+    <string name="runtime_notification_status_starting">Starting</string>
+    <string name="runtime_notification_status_running">Running</string>
+    <string name="runtime_notification_keep_awake">Keep awake</string>
+    <string name="runtime_notification_awake_minutes">Awake %1$dm</string>
+    <string name="download_notification_title">Linexa Download</string>
+    <string name="download_notification_text">Downloading %1$s…</string>
+    <string name="download_channel_name">Distro Download</string>
+    <string name="download_channel_description">Shows when downloading a distribution</string>
+    <string name="import_notification_title">Linexa Import</string>
+    <string name="import_notification_text">Importing workspace…</string>
+    <string name="import_channel_name">Import Service</string>
+    <string name="import_channel_description">Shows when importing a workspace</string>
     <string name="setting_status_on">On</string>
     <string name="setting_status_off">Off</string>
     <string name="settings_phantom_limit_title">Process limit</string>
@@ -493,6 +600,10 @@
          not the Linexa app, and a resource readout with an unstated denominator
          is the easiest kind of number to misread. -->
     <string name="resource_monitor_title">Performance</string>
+    <plurals name="workspace_process_count">
+        <item quantity="one">%1$d process</item>
+        <item quantity="other">%1$d processes</item>
+    </plurals>
     <string name="resource_monitor_scope">This workspace</string>
     <string name="resource_cpu">CPU</string>
     <string name="resource_ram">RAM</string>
@@ -519,6 +630,10 @@
     <string name="desktop_vnc_error">Desktop connection failed: %1$s</string>
     <string name="desktop_xvnc_missing">Xvnc is not installed in this workspace. Install it (e.g. apt install tigervnc-standalone-server) and try again.</string>
     <string name="desktop_xvnc_installing">Installing Xvnc in this workspace…</string>
+    <!-- Finding 009: the combined discovery probe did not produce its framing
+         (exec failure/timeout), so "Xvnc is absent" is unknown. Nothing is
+         installed on an unknown result; the placeholder's Start button retries. -->
+    <string name="desktop_probe_failed">Could not inspect this workspace: the desktop discovery probe did not finish. Nothing was installed or started. Try again.</string>
     <string name="desktop_xvnc_probe_timeout">Could not detect this workspace\'s package manager within the time limit. Try installing Xvnc manually (e.g. apt install tigervnc-standalone-server).</string>
     <string name="desktop_xvnc_install_failed">Could not auto-install Xvnc: %1$s</string>
     <string name="desktop_xvnc_install_timeout">Xvnc installation timed out. Check the workspace\'s network connection and try again.</string>
@@ -531,6 +646,8 @@
          this message is the safe behavior: the user can install vncpasswd in
          the guest or clear the configured password. -->
     <string name="desktop_vnc_auth_provision_failed">VNC password could not be set up in this workspace (vncpasswd missing or failed). The desktop was NOT started unauthenticated — install a VNC server in the guest or clear the configured password, then try again.</string>
+    <string name="desktop_vnc_no_auth_requires_consent">VNC has no password, so the desktop was NOT started. Loopback does not isolate apps on Android — any app on this device could reach it. Set a VNC password, or explicitly enable \"Allow desktop without a VNC password\" in Desktop settings, then try again.</string>
+    <string name="desktop_vnc_bind_unverified">The desktop\'s network binding could not be verified (the guest has no ss/netstat tool), so the desktop was NOT started without a password. Set a VNC password or explicitly allow an unauthenticated desktop in Desktop settings.</string>
     <!-- Phase 07 (OPT-SEC-004, Step B2): an unauthenticated Xvnc start was
          refused because the guest's Xvnc predates TigerVNC 1.11 (it rejects
          -localhost), so the server could not have been restricted to
@@ -588,8 +705,10 @@
     <string name="feature_settings_desktop_touch_direct">Direct</string>
     <string name="feature_settings_desktop_touch_help">Touchpad: your finger moves the cursor relatively (precise). Direct: tap where you want to click; drag to drag; long-press for right-click. Applies immediately.</string>
     <string name="feature_settings_desktop_password_label">VNC password (optional)</string>
-    <string name="feature_settings_desktop_password_help">Empty = no authentication. When set, other apps on this device must authenticate to reach the desktop. Applied on the next desktop start.</string>
+    <string name="feature_settings_desktop_password_help">Empty = no authentication (requires the no-password consent below). When set, other apps on this device must authenticate to reach the desktop. Applied on the next desktop start.</string>
     <string name="feature_settings_desktop_password_generate">Generate a random password</string>
+    <string name="feature_settings_desktop_allow_unauth_label">Allow desktop without a VNC password</string>
+    <string name="feature_settings_desktop_allow_unauth_help">Not recommended. Loopback does not isolate apps on Android: any app on this device can view the desktop and control the pointer. Only enable this if you accept that risk.</string>
     <string name="feature_settings_desktop_web_port_label">Web server port</string>
     <string name="feature_settings_desktop_web_port_help">The port your guest web server listens on (default %1$d is fine for most).</string>
     <string name="feature_settings_desktop_web_port_error">Enter a port between %1$d and %2$d</string>
@@ -597,6 +716,21 @@
     <string name="feature_settings_desktop_web_command_help">Runs inside the workspace when the desktop starts — e.g. a webtop service, noVNC, or: python3 -m http.server 8080</string>
 
     <!-- Workspace Features (§1.109: the SSH toggle's guest-side condition) -->
+    <!-- Workspace feature rows. SSH, VNC and GPU stay Latin technical names. -->
+    <string name="feature_audio_title">Audio</string>
+    <string name="feature_audio_desc">Route sound from the workspace</string>
+    <string name="feature_clipboard_title">Clipboard</string>
+    <string name="feature_clipboard_desc">Share clipboard with the host</string>
+    <string name="feature_ssh_title">SSH</string>
+    <string name="feature_ssh_desc">Expose an SSH server on the workspace</string>
+    <string name="feature_notifications_title">Notifications</string>
+    <string name="feature_notifications_desc">Forward workspace notifications</string>
+    <string name="feature_storage_title">Shared Storage</string>
+    <string name="feature_storage_desc">Mount host storage into the workspace</string>
+    <string name="feature_desktop_title">Desktop</string>
+    <string name="feature_desktop_desc">Enable the Desktop entry and choose how it runs (VNC or web)</string>
+    <string name="feature_gpu_title">GPU Acceleration</string>
+    <string name="feature_gpu_desc">Hardware GL via VirGL (falls back to software when unavailable)</string>
     <string name="feature_ssh_unavailable">Will start when the workspace is running</string>
     <string name="feature_ssh_probing">Checking for an SSH server…</string>
     <string name="feature_ssh_installing">Installing OpenSSH server via %1$s…</string>
@@ -653,6 +787,17 @@
          the terminal placeholder mirrors the actual TerminalState lifecycle) -->
     <string name="terminal_session_error">Session error: %1$s</string>
     <string name="terminal_unavailable">This terminal is not available. It may have been closed, or the workspace may not be running.</string>
+    <!-- Finding 019: a live pty that has not printed anything. The banner is
+         informational; it never kills the session. -->
+    <string name="terminal_no_output_title">No output yet</string>
+    <string name="terminal_no_output_body">No output for %1$d s. It may still be starting.</string>
+    <!-- Finding 011: recovery actions for a dead terminal. Restart opens a new
+         pty under the same tab id; Diagnostics shows the terminal-scoped report;
+         Copy error copies status, reason and last output. -->
+    <string name="terminal_error_restart">Restart</string>
+    <string name="terminal_error_diagnostics">Diagnostics</string>
+    <string name="terminal_error_copy">Copy error</string>
+    <string name="terminal_diagnostics_title">Terminal diagnostics</string>
     <!-- §1.191: the SIGKILL (-9) case. A killed process cannot report anything
          itself, so this is the only explanation the user can get. Copy hedges
          ("may have") because a guest-side `kill -9` produces the same status. -->
@@ -784,6 +929,11 @@
     <string name="pkg_manager_op_refresh">Refreshing package lists</string>
     <string name="pkg_manager_unsupported">This workspace\'s package manager is not supported.</string>
     <string name="pkg_manager_unsupported_none">No supported package manager was found in this workspace.</string>
+    <!-- Finding 021: the lock was named by apt/dpkg. The holder may be a
+         terminal command or another process, so the hint names what the tool
+         reported instead of claiming it is a terminal. Linexa never stops it. -->
+    <string name="pkg_manager_lock_hint">Another package operation is holding the package-manager lock. Wait for it to finish, then retry.</string>
+    <string name="pkg_manager_lock_hint_process">Another package operation is holding the package-manager lock (process %1$s). Wait for it to finish, then retry.</string>
 
     <!-- File Manager -->
     <string name="file_manager_title">File Manager</string>
@@ -809,6 +959,15 @@
     <!-- Issue #9 (2026-09-03): create-file, editor, selection and inspection. -->
     <string name="file_manager_new_file">New File</string>
     <string name="file_manager_file_name_hint">File name (e.g. notes.txt)</string>
+    <plurals name="file_manager_item_count">
+        <item quantity="one">%1$d item</item>
+        <item quantity="other">%1$d items</item>
+    </plurals>
+    <string name="file_manager_type_directory">directory</string>
+    <string name="file_manager_type_symlink">symbolic link</string>
+    <string name="file_manager_type_file">file</string>
+    <string name="file_manager_clip_label">Linexa file</string>
+    <string name="file_manager_paste_into_itself">%1$s: cannot paste a folder into itself</string>
     <string name="file_manager_template">Template</string>
     <string name="file_manager_template_none">Empty file</string>
     <string name="file_manager_edit">Edit</string>
@@ -827,6 +986,104 @@
     <string name="file_manager_info_permissions">Permissions</string>
     <string name="file_manager_info_modified">Modified</string>
     <string name="file_manager_info_target">Links to</string>
+    <!-- File Manager operation feedback (toasts/snackbar text). Kept in
+         resources so the non-composition ViewModel can resolve them in the
+         app-selected language through AppLocale; counts use plurals so a
+         Persian locale gets Persian plural rules, not an "(s)" suffix. -->
+    <string name="file_manager_list_failed">Failed to list files</string>
+    <string name="file_manager_cannot_read">Cannot read %1$s</string>
+    <plurals name="file_manager_deleted_count">
+        <item quantity="one">Deleted %1$d item</item>
+        <item quantity="other">Deleted %1$d items</item>
+    </plurals>
+    <string name="file_manager_delete_partial">Deleted %1$d, failed %2$d: %3$s</string>
+    <string name="file_manager_created_folder">Created folder: %1$s</string>
+    <string name="file_manager_created_file">Created file: %1$s</string>
+    <string name="file_manager_created_template_failed">Created %1$s, but the template failed: %2$s</string>
+    <string name="file_manager_operation_failed">Failed: %1$s</string>
+    <plurals name="file_manager_copied_count_hint">
+        <item quantity="one">Copied %1$d item — open a folder and paste</item>
+        <item quantity="other">Copied %1$d items — open a folder and paste</item>
+    </plurals>
+    <plurals name="file_manager_cut_count_hint">
+        <item quantity="one">Cut %1$d item — open a folder and paste</item>
+        <item quantity="other">Cut %1$d items — open a folder and paste</item>
+    </plurals>
+    <plurals name="file_manager_copied_count">
+        <item quantity="one">Copied %1$d item</item>
+        <item quantity="other">Copied %1$d items</item>
+    </plurals>
+    <plurals name="file_manager_moved_count">
+        <item quantity="one">Moved %1$d item</item>
+        <item quantity="other">Moved %1$d items</item>
+    </plurals>
+    <string name="file_manager_transfer_partial">%1$s, failed %2$d: %3$s</string>
+    <string name="file_manager_copied_named_hint">Copied %1$s — open a folder and paste</string>
+    <string name="file_manager_cut_named_hint">Cut %1$s — open a folder and paste</string>
+    <string name="file_manager_no_editor">No editor for this file type — opening the viewer</string>
+    <string name="file_manager_file_too_large_edit">File too large to edit (max %1$d KiB)</string>
+    <string name="file_manager_saved_named">Saved: %1$s</string>
+    <string name="file_manager_deleted_named">Deleted: %1$s</string>
+    <string name="file_manager_renamed_to">Renamed to: %1$s</string>
+    <string name="file_manager_read_failed">Failed to read file: %1$s</string>
+    <string name="file_manager_importing">Importing %1$s…</string>
+    <string name="file_manager_import_too_large">Too large to import (max %1$d KiB)</string>
+    <string name="file_manager_import_binary">Binary files cannot be imported yet</string>
+    <string name="file_manager_import_open_failed">Failed to open file</string>
+    <string name="file_manager_imported">Imported: %1$s</string>
+    <string name="file_manager_import_failed">Import failed: %1$s</string>
+    <string name="file_manager_exporting">Exporting %1$s…</string>
+    <string name="file_manager_export_open_failed">Failed to open output</string>
+    <string name="file_manager_exported">Exported: %1$s</string>
+    <string name="file_manager_export_failed">Export failed: %1$s</string>
+    <!-- New File templates. Technical language names (JSON, Python, Kotlin…)
+         intentionally stay identical in Persian; the prose labels ("Plain
+         text", "Shell script", "Subtitles", "Config") translate. -->
+    <string name="file_manager_template_plain_text">Plain text</string>
+    <string name="file_manager_template_shell_script">Shell script</string>
+    <string name="file_manager_template_python">Python</string>
+    <string name="file_manager_template_json">JSON</string>
+    <string name="file_manager_template_yaml">YAML</string>
+    <string name="file_manager_template_html">HTML</string>
+    <string name="file_manager_template_css">CSS</string>
+    <string name="file_manager_template_javascript">JavaScript</string>
+    <string name="file_manager_template_typescript">TypeScript</string>
+    <string name="file_manager_template_java">Java</string>
+    <string name="file_manager_template_kotlin">Kotlin</string>
+    <string name="file_manager_template_markdown">Markdown</string>
+    <string name="file_manager_template_subtitles">Subtitles</string>
+    <string name="file_manager_template_config">Config</string>
+    <!-- Android Storage Access Framework (Files app / document picker). -->
+    <string name="documents_provider_workspaces_summary">Workspace root filesystems</string>
+    <string name="documents_provider_public_title">Public</string>
+    <string name="documents_provider_public_summary">Host folder bound to /mnt/shared inside every workspace</string>
+    <string name="saf_refused_unknown_document">Unknown document ID: %1$s</string>
+    <string name="saf_refused_workspace_list_read_only">The Linexa workspace list is read-only; open a workspace to change its files.</string>
+    <string name="saf_refused_rootfs_immutable">A workspace\'s root filesystem cannot be changed through Files. Use the Linexa app to delete or repair the workspace.</string>
+    <string name="saf_refused_workspace_running">This workspace is running. Stop it before changing files in its rootfs.</string>
+    <string name="saf_refused_public_root_fixed">The Public root cannot be renamed or deleted; change its contents instead.</string>
+    <!-- Failure messages SAF clients (e.g. Android Files) surface when an operation
+         cannot be completed. Arguments are document ids, names, or technical details. -->
+    <string name="saf_error_unsupported_open_mode">Unsupported open mode \'%1$s\' for %2$s</string>
+    <string name="saf_error_is_directory">%1$s is a directory</string>
+    <string name="saf_error_cannot_open">Cannot open %1$s: %2$s</string>
+    <string name="saf_error_already_exists_in">%1$s already exists in %2$s</string>
+    <string name="saf_error_cannot_create">Cannot create %1$s: %2$s</string>
+    <string name="saf_error_cannot_create_in">Cannot create %1$s in %2$s</string>
+    <string name="saf_error_cannot_delete">Could not delete %1$s</string>
+    <string name="saf_error_no_parent">%1$s has no parent directory</string>
+    <string name="saf_error_already_exists">%1$s already exists</string>
+    <string name="saf_error_cannot_rename">Could not rename %1$s to %2$s</string>
+    <string name="saf_error_not_under_root">%1$s is not a file or directory under a root</string>
+    <string name="saf_error_does_not_exist">%1$s does not exist</string>
+    <string name="saf_error_cannot_resolve">Cannot resolve %1$s: %2$s</string>
+    <string name="saf_error_escapes_root">%1$s escapes its root</string>
+    <string name="saf_error_invalid_name">Invalid name: %1$s</string>
+    <string name="saf_error_empty_workspace_id">Empty workspace id</string>
+    <string name="saf_error_workspace_escapes">Workspace %1$s rootfs escapes its workspace directory</string>
+    <string name="saf_error_workspace_missing">Workspace %1$s rootfs is not present on disk</string>
+    <string name="saf_error_cannot_resolve_path">Cannot resolve path for %1$s: %2$s</string>
+    <string name="saf_error_not_directory">%1$s is not a directory</string>
     <string name="common_create">Create</string>
     <string name="common_refresh">Refresh</string>
 
@@ -1150,6 +1407,26 @@
     <!-- ═══ HAVEN rebuild (concept-2-haven) — new surfaces ═══ -->
     <string name="haven_workspaces_title">Workspaces</string>
     <string name="haven_settings_title">Settings</string>
+    <!-- Shell chrome (bottom nav, tablet sidebar, terminal ⋯ sheet). Labels live
+         here because the three destinations are rendered by the same composables
+         on phones and tablets; the LINEXA wordmark above the sidebar is a brand
+         name and stays untranslated. -->
+    <string name="haven_nav_workspaces">Workspaces</string>
+    <string name="haven_nav_activity">Activity</string>
+    <string name="haven_nav_settings">Settings</string>
+    <string name="haven_sidebar_workspaces">Workspaces</string>
+    <string name="haven_terminal_menu">Terminal menu</string>
+    <string name="haven_terminal_keyboard">Keyboard</string>
+    <string name="haven_terminal_all_sessions">All Sessions</string>
+    <string name="haven_terminal_sheet_title">Terminal</string>
+    <string name="haven_terminal_copy">Copy</string>
+    <string name="haven_terminal_copy_desc">Copy the selection or last output</string>
+    <string name="haven_terminal_paste">Paste</string>
+    <string name="haven_terminal_paste_desc">Insert host clipboard into the PTY</string>
+    <string name="haven_terminal_font_size">Font size</string>
+    <string name="haven_terminal_font_size_desc">Applies to every terminal. Pinch to zoom works too.</string>
+    <string name="haven_terminal_new">New terminal</string>
+    <string name="haven_terminal_close">Close session</string>
     <string name="haven_workspace_options">Workspace options</string>
     <string name="haven_whats_new">What\'s New</string>
     <string name="haven_dismiss">Dismiss</string>
@@ -1197,6 +1474,45 @@
     <string name="device_row_cpu_usage">Usage</string>
     <string name="device_network_metered">metered</string>
     <string name="device_network_unmetered">unmetered</string>
+    <!-- Device-info values: the words around measurements. Unit symbols (GB,
+         MHz, °C, mV, µA, mAh, Kbps) stay technical and untranslated. -->
+    <string name="device_summary_cores">%1$d cores</string>
+    <string name="device_storage_free">%1$s free</string>
+    <string name="device_value_present">present</string>
+    <string name="device_core_max">max %1$s</string>
+    <string name="device_memory_buffers">buffers %1$s</string>
+    <string name="device_memory_cached">cached %1$s</string>
+    <string name="device_memory_reclaimable">reclaimable %1$s</string>
+    <string name="device_selinux_enforcing">enforcing</string>
+    <string name="device_selinux_permissive">permissive</string>
+    <string name="device_value_on">on</string>
+    <string name="device_value_off">off</string>
+    <string name="device_network_internet">internet</string>
+    <string name="device_network_connected_only">connected only</string>
+    <string name="device_uptime_seconds">%1$ds</string>
+    <string name="device_uptime_minutes_seconds">%1$dm %2$ds</string>
+    <string name="device_uptime_hours_minutes">%1$dh %2$dm</string>
+    <string name="device_uptime_days_hours_minutes">%1$dd %2$dh %3$dm</string>
+    <string name="device_power_source_ac">AC</string>
+    <string name="device_power_source_usb">USB</string>
+    <string name="device_power_source_wireless">wireless</string>
+    <string name="device_power_source_dock">dock</string>
+    <string name="device_power_source_none">none</string>
+    <string name="device_power_source_unknown">unknown</string>
+    <string name="device_health_good">good</string>
+    <string name="device_health_overheat">overheat</string>
+    <string name="device_health_dead">dead</string>
+    <string name="device_health_overvoltage">overvoltage</string>
+    <string name="device_health_cold">cold</string>
+    <string name="device_health_unspecified_failure">unspecified failure</string>
+    <string name="device_health_unknown">unknown</string>
+    <string name="device_thermal_none">none</string>
+    <string name="device_thermal_light">light</string>
+    <string name="device_thermal_moderate">moderate</string>
+    <string name="device_thermal_severe">severe</string>
+    <string name="device_thermal_critical">critical</string>
+    <string name="device_thermal_emergency">emergency</string>
+    <string name="device_thermal_shutdown">shutdown</string>
     <string name="device_capability_note">Values marked Restricted are blocked by Android security policy for any app — Linexa reports them rather than guessing.</string>
 
     <!-- ── App-grid redesign: the Commands launcher grid ─────────────────────
@@ -1280,6 +1596,7 @@
     <string name="launcher_menu_edit_command">Edit command</string>
     <string name="launcher_menu_uninstall">Uninstall</string>
     <string name="launcher_edit_command_title">Edit %1$s command</string>
+    <string name="launcher_edited_name">%1$s (edited)</string>
     <string name="launcher_edit_command_hint">Command to run when tapped</string>
     <string name="launcher_phase_queued">%1$s — queued</string>
     <string name="launcher_phase_installing">Installing %1$s…</string>
@@ -1326,6 +1643,19 @@
     <string name="tm_search_processes">Search processes</string>
     <string name="tm_no_match">No process matches the filter.</string>
     <string name="tm_root_protected">Protected — the workspace root process</string>
+    <!-- "CPU" is technical and stays Latin; the numeral is the core index. -->
+    <string name="tm_cpu_core_label">CPU %1$d</string>
+    <!-- Linux process state letters (ps STAT), localized for process rows. -->
+    <string name="process_state_running">running</string>
+    <string name="process_state_sleeping">sleeping</string>
+    <string name="process_state_disk_sleep">disk sleep</string>
+    <string name="process_state_zombie">zombie</string>
+    <string name="process_state_stopped">stopped</string>
+    <string name="process_state_idle">idle</string>
+    <string name="process_state_dead">dead</string>
+    <string name="process_state_wakekill">wakekill</string>
+    <string name="process_state_waking">waking</string>
+    <string name="process_state_parked">parked</string>
 
     <!-- ── Workspace segment tabs ─────────────────────────────────────────
          2026-11 pass: the second tab (the old Sessions tab) is named
@@ -1398,11 +1728,28 @@
     <string name="fm_dir_documents">Documents</string>
     <string name="fm_dir_dcim">Camera (DCIM)</string>
     <string name="fm_android_grant">Grant access</string>
-    <string name="fm_linux_title">Linux workspace</string>
-    <string name="fm_collapse">Collapse</string>
-    <string name="fm_expand">Expand</string>
 
     <!-- Activity tab / Sessions redesign: resource scopes -->
+    <string name="activity_event_started">Started %1$s</string>
+    <string name="activity_event_installed">Installed %1$s</string>
+    <string name="activity_event_diagnostics">Diagnostics captured for %1$s</string>
+    <string name="activity_relative_just_now">just now</string>
+    <plurals name="activity_relative_minutes">
+        <item quantity="one">%1$d minute ago</item>
+        <item quantity="other">%1$d minutes ago</item>
+    </plurals>
+    <plurals name="activity_relative_hours">
+        <item quantity="one">%1$d hour ago</item>
+        <item quantity="other">%1$d hours ago</item>
+    </plurals>
+    <plurals name="activity_relative_days">
+        <item quantity="one">%1$d day ago</item>
+        <item quantity="other">%1$d days ago</item>
+    </plurals>
+    <string name="activity_management_terminal">Management Terminal</string>
+    <string name="activity_no_open_sessions">No open sessions</string>
+    <string name="activity_no_open_sessions_desc">Terminals you open inside a workspace appear here.</string>
+    <string name="activity_nothing_yet">Nothing yet</string>
     <string name="activity_section_resources">Resources</string>
     <string name="activity_section_processes">Host processes</string>
     <string name="activity_section_sessions">Terminal sessions</string>
@@ -1449,8 +1796,6 @@
     <string name="sessions_status_stopping">Stopping</string>
     <string name="sessions_status_error">Error</string>
     <string name="sessions_status_disconnected">Disconnected</string>
-    <string name="sessions_context_device_cpu">Device CPU</string>
-    <string name="sessions_context_device_ram">Device RAM</string>
     <string name="sessions_sort_label">Sort</string>
     <string name="sessions_sort_cpu">CPU</string>
     <string name="sessions_sort_ram">RAM</string>

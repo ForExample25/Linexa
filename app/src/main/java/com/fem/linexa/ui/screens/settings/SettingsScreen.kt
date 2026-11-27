@@ -9,13 +9,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -34,6 +34,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.fem.linexa.R
+import com.fem.linexa.domain.settings.AppLanguage
 import com.fem.linexa.domain.settings.ThemeMode
 import com.fem.linexa.ui.components.haven.HavenDestination
 import com.fem.linexa.ui.components.haven.HavenScreen
@@ -57,7 +58,8 @@ import com.fem.linexa.ui.theme.haven.HavenType as HType
  * The Settings tab — HAVEN (concept section 08, `fr-set`).
  *
  * The real groups in one calm scroll: Appearance (theme segments +
- * accent swatch rows), Diagnostics, Performance, Debug, Access, Help, Community, About — closed by
+ * accent swatch rows), Diagnostics, Performance, Debug, Access, Help, Community,
+ * Application Updates, About — closed by
  * the app icon + version footer ([AppInfoFooter]), the single bottom brand block
  * (a second HFootBrand footer below it rendered the logo twice; removed 2026-08-31).
  * The Terminal group holds only app-scoped presentation preferences —
@@ -81,6 +83,7 @@ fun SettingsScreen(
     val debugEnabled by viewModel.debugEnabled.collectAsState()
     val themeMode by viewModel.themeMode.collectAsState()
     val colorTheme by viewModel.colorTheme.collectAsState()
+    val appLanguage by viewModel.appLanguage.collectAsState()
     val recentSessionsLayout by viewModel.recentSessionsLayout.collectAsState()
     val terminalToolbar by viewModel.terminalToolbar.collectAsState()
     val logSizeBytes by viewModel.logSizeBytes.collectAsState()
@@ -117,17 +120,41 @@ fun SettingsScreen(
                     onSelectTab = onSelectTab
                 )
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-            ) {
-                HPageHeader(eyebrow = "LINEXA", title = stringResource(R.string.haven_settings_title))
+            LazyColumn(modifier = Modifier.fillMaxSize()) {
+                item {
+                    HPageHeader(eyebrow = "LINEXA", title = stringResource(R.string.haven_settings_title))
+                }
 
-                Column(
-                    modifier = Modifier.padding(horizontal = HavenDim.screenH),
-                    verticalArrangement = Arrangement.spacedBy(0.dp)
-                ) {
+                settingsSection {
+                    // ── Language ──
+                    // First, not buried: it is reachable before any workspace
+                    // exists, and a user who cannot read the current UI needs
+                    // it to be the first thing they see. Each language is
+                    // named in its own script in every locale, so the row is
+                    // findable even while the rest of the screen is in the
+                    // language the user is trying to leave.
+                    HSectionHeader(title = stringResource(R.string.global_settings_language_group))
+                    HCard(tight = true) {
+                        LanguageOptionRow(
+                            title = stringResource(R.string.global_settings_language_system),
+                            description = stringResource(R.string.global_settings_language_system_desc),
+                            selected = appLanguage == AppLanguage.SYSTEM,
+                            onClick = { viewModel.setAppLanguage(AppLanguage.SYSTEM) }
+                        )
+                        LanguageOptionRow(
+                            title = stringResource(R.string.global_settings_language_english),
+                            selected = appLanguage == AppLanguage.ENGLISH,
+                            onClick = { viewModel.setAppLanguage(AppLanguage.ENGLISH) }
+                        )
+                        LanguageOptionRow(
+                            title = stringResource(R.string.global_settings_language_persian),
+                            selected = appLanguage == AppLanguage.PERSIAN,
+                            onClick = { viewModel.setAppLanguage(AppLanguage.PERSIAN) }
+                        )
+                    }
+                }
+
+                settingsSection {
                     // ── Appearance ──
                     HSectionHeader(title = stringResource(R.string.global_settings_appearance_group))
                     HCard {
@@ -147,7 +174,9 @@ fun SettingsScreen(
                             }
                         }
                     }
+                }
 
+                settingsSection {
                     // ── Terminal ──
                     // The terminal owns its font (changed at the terminal,
                     // not here) — but these two are genuinely app-scoped UI
@@ -171,7 +200,9 @@ fun SettingsScreen(
                             trailing = { HChevron() }
                         )
                     }
+                }
 
+                settingsSection {
                     // ── Diagnostics ──
                     HSectionHeader(title = stringResource(R.string.global_settings_diagnostics_group))
                     HCard(tight = true) {
@@ -196,7 +227,7 @@ fun SettingsScreen(
                                     viewModel.clearAppLogs()
                                 }
                                 .padding(horizontal = 20.dp, vertical = 10.dp)
-                                .height(HavenDim.rowMin),
+                                .heightIn(min = HavenDim.rowMin),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(14.dp)
                         ) {
@@ -215,7 +246,9 @@ fun SettingsScreen(
                             )
                         }
                     }
+                }
 
+                settingsSection {
                     // ── Device ──
                     // UI/UX Phase 3: the standalone Performance Dashboard was
                     // removed — Devices & System Information already carries the
@@ -233,7 +266,9 @@ fun SettingsScreen(
                             trailing = { HChevron() }
                         )
                     }
+                }
 
+                settingsSection {
                     // ── Debug ──
                     HSectionHeader(title = stringResource(R.string.workspace_debug_title))
                     HCard {
@@ -258,11 +293,26 @@ fun SettingsScreen(
                             HToggle(checked = debugEnabled, onCheckedChange = viewModel::setDebugEnabled)
                         }
                     }
+                }
 
+                settingsSection {
                     // ── Access / Help / Community (existing Haven-colored groups) ──
                     AccessSettingsGroup()
                     HelpSettingsGroups()
+                }
 
+                settingsSection {
+                    // ── Application Updates (2026-11-16) ──
+                    // Before About, after Help/Community: it is an action group
+                    // (check → download → install), not an information group.
+                    // PERF-008 remainder (2026-11-24 continuation): the group
+                    // owns its default `hiltViewModel()`, so creating it here
+                    // defers the update coordinator window until this lazy item
+                    // is actually scrolled into view.
+                    AppUpdateGroup()
+                }
+
+                settingsSection {
                     // ── About ──
                     HSectionHeader(title = stringResource(R.string.global_settings_about_group))
                     HCard(tight = true) {
@@ -274,7 +324,9 @@ fun SettingsScreen(
                             trailing = { HChevron() }
                         )
                     }
+                }
 
+                settingsSection {
                     AppInfoFooter()
                 }
             }
@@ -283,6 +335,56 @@ fun SettingsScreen(
 }
 
 private const val CLEAR_CONFIRMATION_MS = 4_000L
+
+/**
+ * One Settings section as a single `LazyColumn` item.
+ *
+ * PERF-008: the body used to be a plain `Column` + `verticalScroll`, which
+ * composes every section — including `AppUpdateGroup` and its view model —
+ * on the first visit even though the lower half is below the fold. Lazy items
+ * compose when scrolled into view. The wrapper keeps the old horizontal inset
+ * (`HavenDim.screenH`) and, because sections stay whole, their internal
+ * spacing and card grouping are unchanged.
+ */
+private fun LazyListScope.settingsSection(content: @Composable () -> Unit) {
+    item {
+        Column(modifier = Modifier.padding(horizontal = HavenDim.screenH)) {
+            content()
+        }
+    }
+}
+
+/**
+ * One language row. The check is a real trailing state (not a color-only
+ * selection) and carries a translated content description, so the current
+ * choice is visible and announced before the row is tapped.
+ */
+@Composable
+private fun LanguageOptionRow(
+    title: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    description: String? = null
+) {
+    val h = HavenTheme.colors
+    HRow(
+        title = title,
+        description = description,
+        onClick = onClick,
+        trailing = if (selected) {
+            {
+                Icon(
+                    painter = androidx.compose.ui.res.painterResource(R.drawable.ic_haven_check),
+                    contentDescription = stringResource(R.string.global_settings_language_selected),
+                    tint = h.primary,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        } else {
+            null
+        }
+    )
+}
 
 /** Theme mode — the concept's mini segmented pill inside the Appearance card. */
 @Composable
@@ -348,15 +450,19 @@ private fun ColorSwatchRow(
             // second horizontal inset here made the swatch rows sit 40dp in
             // while the Theme row above sat at 20dp.
             .padding(vertical = 10.dp)
-            .height(54.dp),
+            .heightIn(min = 54.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            text = if (isDefault) "$label · default" else label,
+            text = if (isDefault) {
+                stringResource(R.string.global_settings_color_theme_default_suffix, label)
+            } else {
+                label
+            },
             style = HavenType.body.copy(fontWeight = FontWeight.Medium),
             color = h.text,
-            modifier = Modifier.weight(1f),
-            maxLines = 1
+            modifier = Modifier.weight(1f).padding(end = 8.dp),
+            maxLines = 2
         )
         // Swatch dots: accent on surface on text — the concept's swdot row.
         Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {

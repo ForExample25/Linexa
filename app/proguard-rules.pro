@@ -49,6 +49,16 @@
 -dontwarn org.apache.commons.compress.**
 
 # ---------------------------------------------------------------------------
+# snakeyaml (rootfs config.yaml / metadata parsing)
+# ---------------------------------------------------------------------------
+# LINEXA-PERF-012: R8's release pass reports missing `java.beans.*` classes
+# referenced from snakeyaml's JavaBeans introspector path. android.jar has no
+# java.beans package, and Linexa uses snakeyaml's explicit node API (not POJO
+# bean mapping), so that path is unreachable. Silence the missing-class check
+# rather than keeping dead bean-introspection code.
+-dontwarn java.beans.**
+
+# ---------------------------------------------------------------------------
 # terminal-lib / nhterm (real-PTY backend, libneoterm.so — §1.20)
 # ---------------------------------------------------------------------------
 # Same JNI name-binding argument as zstd-jni. ExtraKeysView is additionally
@@ -60,6 +70,24 @@
 }
 -keep class com.offsec.nhterm.frontend.session.view.extrakey.ExtraKeysView {
     public <init>(android.content.Context, android.util.AttributeSet);
+}
+
+# ---------------------------------------------------------------------------
+# terminal-emulator (vendored TAE backend, libtermux.so)
+# ---------------------------------------------------------------------------
+# `com.termux.terminal.JNI` is a package-private class whose four native
+# methods bind to libtermux.so by *fully-qualified class + method name*
+# (`Java_com_termux_terminal_JNI_createSubprocess`, `_setPtyWindowSize`,
+# `_waitFor`, `_close`). The nhterm rules above cover the separate
+# terminal-lib dependency; every real PTY in this app goes through the
+# vendored `:terminal-emulator` (`TermuxPtySession` → `TerminalSession` →
+# `JNI`), so renaming or stripping this class would fail the first terminal
+# open with UnsatisfiedLinkError instead of a diagnostic. Kept explicit
+# (rather than a package-wide keep) so the vendored classes can still shrink
+# around the four JNI entry points.
+-keep class com.termux.terminal.JNI { *; }
+-keepclasseswithmembernames class com.termux.terminal.** {
+    native <methods>;
 }
 
 # ---------------------------------------------------------------------------

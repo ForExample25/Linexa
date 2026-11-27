@@ -8,6 +8,9 @@ import android.content.ServiceConnection
 import android.os.IBinder
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.fem.linexa.R
+import com.fem.linexa.core.i18n.linexaQuantityString
+import com.fem.linexa.core.i18n.linexaString
 import com.fem.linexa.data.resource.HostProcessScanner
 import com.fem.linexa.data.resource.HostResourceSampler
 import com.fem.linexa.domain.resource.HostProcessSample
@@ -24,6 +27,7 @@ import com.fem.linexa.service.distro.DownloadService
 import com.fem.linexa.service.runtime.RuntimeBinder
 import com.fem.linexa.service.runtime.RuntimeService
 import com.fem.linexa.service.runtime.RuntimeServiceState
+import com.fem.linexa.service.runtime.SessionManager
 import com.fem.linexa.service.runtime.TerminalSession
 import com.fem.linexa.ui.misc.ProcessPolling
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -33,6 +37,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.Duration
@@ -69,6 +75,16 @@ import javax.inject.Inject
  * The workspace tree is sampled only for the single monitored workspace, and not
  * at all when nothing is running. A tick is idempotent: it overwrites readings,
  * it never appends sessions or processes, so refreshing cannot duplicate rows.
+ *
+ * **PERF-003 (performance remediation 2026-11-23):** the bind is gated on an
+ * actual session. `start()` used to `startService(RuntimeService)` as well as
+ * bind, so merely opening this tab created the service and left it *started*
+ * (`startRequested=true`) with no workspace running — and its `onCreate`
+ * recovery sweep then ran on the service's Main dispatcher, competing with the
+ * destination's first frame. The service is owned by the workspace start path
+ * (`RuntimeViewModel.startWorkspace` → `ACTION_START`); this screen only
+ * attaches to it while [SessionManager.sessionStates] reports an active
+ * session, and detaches on [pause].
  */
 @HiltViewModel
 class ActivityViewModel @Inject constructor(
@@ -76,7 +92,8 @@ class ActivityViewModel @Inject constructor(
     private val hostSampler: HostResourceSampler,
     private val hostScanner: HostProcessScanner,
     private val resourceMonitor: ResourceMonitor,
-    private val workspaceRepository: WorkspaceRepository
+    private val workspaceRepository: WorkspaceRepository,
+    private val sessionManager: SessionManager
 ) : AndroidViewModel(application) {
 
     /** Whether a figure is present, still being measured, or cannot be measured here. */
@@ -161,6 +178,13 @@ class ActivityViewModel @Inject constructor(
 
     private var binder: RuntimeBinder? = null
     private var isBound = false
+
+    /**
+     * Whether [bindService] actually registered [connection] — set from its
+     * return value, not from [onServiceConnected]. The two differ while a bind
+     * is in flight, and `unbindService` on a never-registered connection throws.
+     */
+    private var bindRequested = false
     private val _serviceState = MutableStateFlow<RuntimeServiceState>(RuntimeServiceState.Unbound)
     val serviceState: StateFlow<RuntimeServiceState> = _serviceState.asStateFlow()
 
@@ -173,6 +197,13 @@ class ActivityViewModel @Inject constructor(
     private var workspaceReading: WorkspaceReading? = null
     private var hostProcesses: HostProcessState? = null
 
+    /**
+     * Whether the process section is expanded on screen. Collapsed is the
+     * default and composes no rows, so PERF-006 skips the `smaps_rollup`
+     * page-table walk until the user actually opens the section.
+     */
+    private var hostProcessesExpanded = false
+
     /** The workspace the user explicitly chose to monitor; ignored once it stops running. */
     private var selectedWorkspaceId: String? = null
 
@@ -180,6 +211,20 @@ class ActivityViewModel @Inject constructor(
     private var sampledRoots: Set<Int> = emptySet()
 
     private var pollJob: Job? = null
+
+    /** Watches [SessionManager.sessionStates] while the screen is foreground. */
+    private var sessionWatchJob: Job? = null
+
+    /**
+     * The two collectors opened by [connection]'s `onServiceConnected`.
+     *
+     * PERF-003: because the bind is now session-gated, a bind/unbind cycle can
+     * happen every time the screen is backgrounded while a workspace runs.
+     * These collectors must die with the connection — left in
+     * `viewModelScope` they would accumulate, one pair per cycle, each
+     * re-rendering from a detached binder.
+     */
+    private val serviceCollectorJobs = mutableListOf<Job>()
 
     private data class WorkspaceReading(
         val workspaceId: String,
@@ -197,13 +242,15 @@ class ActivityViewModel @Inject constructor(
             binder = runtimeBinder
             isBound = true
             _serviceState.value = RuntimeServiceState.Connected
-            viewModelScope.launch {
+            serviceCollectorJobs.forEach { it.cancel() }
+            serviceCollectorJobs.clear()
+            serviceCollectorJobs += viewModelScope.launch {
                 runtimeBinder.sessionStates.collect { states ->
                     workspaceStates = states
                     render()
                 }
             }
-            viewModelScope.launch {
+            serviceCollectorJobs += viewModelScope.launch {
                 runtimeBinder.terminalSessions.collect { records ->
                     terminalRecords = records
                     render()
@@ -233,17 +280,23 @@ class ActivityViewModel @Inject constructor(
         }
     }
 
-    /** Begin the read-only bind + sampling; safe to call repeatedly. */
+    /**
+     * Begin session-gated binding + sampling; safe to call repeatedly.
+     *
+     * The session watch is what makes the bind lazy: `StateFlow` emits its
+     * current value immediately, so entering the tab while a workspace runs
+     * binds at once, and entering it idle costs one comparison and no service
+     * creation. Starting a workspace from elsewhere while this screen is visible
+     * binds on the `Starting` transition (which is why `Starting`/`Stopping`
+     * count as active, not just `Running`).
+     */
     fun start() {
-        if (!isBound && binder == null) {
-            val context = getApplication<Application>()
-            val intent = Intent(context, RuntimeService::class.java)
-            try {
-                context.startService(intent)
-                context.bindService(intent, connection, Context.BIND_AUTO_CREATE)
-            } catch (_: Exception) {
-                // A failed read-only bind leaves the screen on Room-derived
-                // state; it must never crash the Activity tab.
+        if (sessionWatchJob?.isActive != true) {
+            sessionWatchJob = viewModelScope.launch {
+                sessionManager.sessionStates
+                    .map { states -> states.values.any { it.isActiveSession() } }
+                    .distinctUntilChanged()
+                    .collect { active -> if (active) bindIfNeeded() else unbind() }
             }
         }
         if (pollJob?.isActive != true) {
@@ -262,10 +315,20 @@ class ActivityViewModel @Inject constructor(
         }
     }
 
-    /** Stop sampling (screen left the foreground). The bind stays; it costs nothing. */
+    /**
+     * Stop sampling and detach (screen left the foreground).
+     *
+     * PERF-003: the bind is now session-gated, so leaving it in place while the
+     * tab is off-screen would keep a connection — and, with it, a live service
+     * reference and two collectors — alive for a screen nobody is looking at.
+     * `onServiceConnected` re-establishes everything on the next [start].
+     */
     fun pause() {
         pollJob?.cancel()
         pollJob = null
+        sessionWatchJob?.cancel()
+        sessionWatchJob = null
+        unbind()
     }
 
     /** Point the Workspace card at [workspaceId] (only meaningful while several run). */
@@ -278,21 +341,76 @@ class ActivityViewModel @Inject constructor(
         if (pollJob?.isActive == true) viewModelScope.launch { runCatching { tick() } }
     }
 
+    /**
+     * The process section's expansion, reported by the screen.
+     *
+     * PERF-006: collapsed composes no rows at all, so collecting PSS for them
+     * was a page-table walk per readable process for figures nobody saw. The
+     * next scheduled tick includes PSS once this is true; rows rendered in the
+     * meantime carry the status-derived RSS with `memoryIsProportional=false`,
+     * which is the honest label for it.
+     */
+    fun setHostProcessesExpanded(expanded: Boolean) {
+        hostProcessesExpanded = expanded
+    }
+
     override fun onCleared() {
         // READ-ONLY: unlike the workspace graph's RuntimeViewModel, this
         // observer never sends ACTION_STOP — it only unbinds. Workspaces the
         // user started elsewhere keep running.
         pollJob?.cancel()
-        if (isBound) {
+        pollJob = null
+        sessionWatchJob?.cancel()
+        sessionWatchJob = null
+        unbind()
+        sampledRoots.forEach { resourceMonitor.forget(it) }
+        sampledRoots = emptySet()
+        super.onCleared()
+    }
+
+    // ── read-only service attachment ──────────────────────────────────
+
+    /** `Starting`/`Stopping` are included: the tab has a card for both. */
+    private fun RuntimeState.isActiveSession(): Boolean =
+        this is RuntimeState.Starting ||
+            this is RuntimeState.Running ||
+            this is RuntimeState.Stopping
+
+    private fun bindIfNeeded() {
+        if (bindRequested || isBound) return
+        val context = getApplication<Application>()
+        val intent = Intent(context, RuntimeService::class.java)
+        try {
+            // BIND_AUTO_CREATE alone cannot make an idle service outlive the
+            // connection, and it never sets startRequested — the leak PERF-003
+            // fixed was the explicit startService, not this call.
+            bindRequested = context.bindService(intent, connection, Context.BIND_AUTO_CREATE)
+        } catch (_: Exception) {
+            // A failed read-only bind leaves the screen on Room-derived state;
+            // it must never crash the Activity tab.
+            bindRequested = false
+        }
+    }
+
+    private fun unbind() {
+        serviceCollectorJobs.forEach { it.cancel() }
+        serviceCollectorJobs.clear()
+        if (bindRequested) {
             try {
                 getApplication<Application>().unbindService(connection)
             } catch (_: Exception) {
             }
-            isBound = false
+            bindRequested = false
         }
-        sampledRoots.forEach { resourceMonitor.forget(it) }
-        sampledRoots = emptySet()
-        super.onCleared()
+        isBound = false
+        binder = null
+        workspaceStates = emptyMap()
+        terminalRecords = emptyMap()
+        workspaceReading = null
+        if (_serviceState.value != RuntimeServiceState.Unbound) {
+            _serviceState.value = RuntimeServiceState.Unbound
+            render()
+        }
     }
 
     // ── sampling ──────────────────────────────────────────────────────
@@ -344,7 +462,9 @@ class ActivityViewModel @Inject constructor(
      * supervisor.
      */
     private suspend fun sampleHostProcesses() {
-        val snapshot = withContext(Dispatchers.IO) { hostScanner.snapshot() }
+        val snapshot = withContext(Dispatchers.IO) {
+            hostScanner.snapshot(includePss = hostProcessesExpanded)
+        }
         // Protect every root and every member of the workspace card we just
         // sampled: PRoot guests share Linexa's UID, so UID alone is not enough
         // to tell a host daemon from a guest task.
@@ -534,15 +654,15 @@ class ActivityViewModel @Inject constructor(
         val events = mutableListOf<Triple<Long, EventKind, String>>()
         workspaces.forEach { row ->
             row.lastLaunchedAt?.let {
-                events.add(Triple(it, EventKind.PRIMARY, "Started ${row.displayName}"))
+                events.add(Triple(it, EventKind.PRIMARY, getApplication<Application>().linexaString(R.string.activity_event_started, row.displayName)))
             }
-            events.add(Triple(row.createdAt, EventKind.BLUE, "Installed ${row.displayName}"))
+            events.add(Triple(row.createdAt, EventKind.BLUE, getApplication<Application>().linexaString(R.string.activity_event_installed, row.displayName)))
             if (row.status is WorkspaceStatus.Broken) {
                 events.add(
                     Triple(
                         row.lastLaunchedAt ?: row.createdAt,
                         EventKind.RED,
-                        "Diagnostics captured for ${row.displayName}"
+                        getApplication<Application>().linexaString(R.string.activity_event_diagnostics, row.displayName)
                     )
                 )
             }
@@ -550,7 +670,7 @@ class ActivityViewModel @Inject constructor(
         return events
             .sortedByDescending { it.first }
             .take(6)
-            .map { (time, kind, label) -> EventRow(kind, label, formatRelative(time, nowMs)) }
+            .map { (time, kind, label) -> EventRow(kind, label, formatRelative(getApplication(), time, nowMs)) }
     }
 
     companion object {
@@ -568,13 +688,25 @@ class ActivityViewModel @Inject constructor(
             }
         }
 
-        fun formatRelative(thenMs: Long, nowMs: Long): String {
+        fun formatRelative(context: Context, thenMs: Long, nowMs: Long): String {
             val minutes = (nowMs - thenMs) / 60_000
             return when {
-                minutes < 1 -> "just now"
-                minutes < 60 -> "${minutes}m ago"
-                minutes < 60 * 24 -> "${minutes / 60}h ago"
-                else -> "${minutes / (60 * 24)}d ago"
+                minutes < 1 -> context.linexaString(R.string.activity_relative_just_now)
+                minutes < 60 -> context.linexaQuantityString(
+                    R.plurals.activity_relative_minutes,
+                    minutes.toInt(),
+                    minutes
+                )
+                minutes < 60 * 24 -> context.linexaQuantityString(
+                    R.plurals.activity_relative_hours,
+                    (minutes / 60).toInt(),
+                    minutes / 60
+                )
+                else -> context.linexaQuantityString(
+                    R.plurals.activity_relative_days,
+                    (minutes / (60 * 24)).toInt(),
+                    minutes / (60 * 24)
+                )
             }
         }
     }

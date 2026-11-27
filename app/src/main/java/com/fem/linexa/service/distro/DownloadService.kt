@@ -8,6 +8,8 @@ import android.content.Intent
 import android.net.Uri
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import com.fem.linexa.R
+import com.fem.linexa.core.i18n.linexaString
 import com.fem.linexa.core.logging.Logger
 import com.fem.linexa.data.WorkspaceContent
 import com.fem.linexa.data.resolveFeatureToggles
@@ -490,8 +492,8 @@ class DownloadService : Service() {
 
     private fun startForegroundNotification(distroId: String) {
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Linexa Download")
-            .setContentText("Downloading $distroId\u2026")
+            .setContentTitle(linexaString(R.string.download_notification_title))
+            .setContentText(linexaString(R.string.download_notification_text, distroId))
             .setSmallIcon(android.R.drawable.stat_sys_download)
             .setOngoing(true)
             .build()
@@ -501,10 +503,10 @@ class DownloadService : Service() {
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "Distro Download",
+            linexaString(R.string.download_channel_name),
             NotificationManager.IMPORTANCE_LOW
         ).apply {
-            description = "Shows when downloading a distribution"
+            description = linexaString(R.string.download_channel_description)
         }
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(channel)

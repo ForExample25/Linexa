@@ -70,6 +70,9 @@ class ProotRuntimeTestHarness(
     lateinit var ptyFactory: RecordingPtySessionFactory
     lateinit var workspaceRepository: InMemoryWorkspaceRepository
 
+    /** RN-003 test seam: the runtime's trace, readable via [RuntimeTrace.render]. */
+    lateinit var runtimeTrace: RuntimeTrace
+
     /** Register a rootfs directory the harness should create for a test. */
     fun fakeRootfs(): File {
         val dir = File(filesDir, "rootfs-${Math.abs(System.nanoTime())}")
@@ -98,6 +101,7 @@ class ProotRuntimeTestHarness(
         bootstrapManager = BootstrapManager(app)
         launcher = PRootLauncher(app, bootstrapManager)
         ptyFactory = RecordingPtySessionFactory()
+        runtimeTrace = RuntimeTrace()
         rootfsExtractor = RootfsExtractor(app, bootstrapManager, DiagnosticLogManager(app))
         workspaceRepository = InMemoryWorkspaceRepository()
         val fileManager = WorkspaceFileManager(app)
@@ -109,7 +113,7 @@ class ProotRuntimeTestHarness(
             fileManager = fileManager,
             configParser = configParser,
             bootstrapManager = bootstrapManager,
-            runtimeTrace = RuntimeTrace(),
+            runtimeTrace = runtimeTrace,
             guestRootfsInitializer = GuestRootfsInitializer(bootstrapManager, DiagnosticLogManager(app)),
             workspaceRepository = workspaceRepository,
             // §1.118: real (not mocked) — with no config.yaml on disk it
@@ -390,7 +394,7 @@ class ControllableStubPtySession(
     val writes: MutableList<String> = mutableListOf()
 
     override val isAlive: Boolean get() = !exitSignal.isCompleted
-    override val exitCode: Int? get() = if (exitSignal.isCompleted) exitSignal.getCompleted() else null
+    override val exitCode: Int? get() = exitSignal.runCatching { getCompleted() }.getOrNull()
     override val title: String? get() = sessionTitle
     private val _events = MutableSharedFlow<PtyEvent>()
     override val events: SharedFlow<PtyEvent> = _events
@@ -424,6 +428,17 @@ class ControllableStubPtySession(
     fun completeExit(code: Int) {
         if (exitSignal.isCompleted) return
         exitSignal.complete(code)
+    }
+
+    /**
+     * Finding 027: make [awaitExit] fail, modelling a backend that cannot
+     * produce a status at all. A real [PtySession] does not normally do this,
+     * but the manager's defensive catch must not turn "unknown" into a
+     * fabricated signal number. [exitCode] reads null in this state.
+     */
+    fun failExit(cause: Throwable) {
+        if (exitSignal.isCompleted) return
+        exitSignal.completeExceptionally(cause)
     }
 }
 

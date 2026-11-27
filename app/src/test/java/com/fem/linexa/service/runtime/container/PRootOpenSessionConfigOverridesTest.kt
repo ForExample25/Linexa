@@ -24,9 +24,10 @@ import org.junit.rules.TemporaryFolder
  * [PRootLauncher.buildLaunchSpec]'s argv, the env merge still goes through
  * the HOST_ENV_KEYS filter — and the §1.73 must-not-breaks:
  *
- *  - no config.yaml → default `resolveShellPath` fallback + `--login`
- *    (byte-identical argv to pre-§1.73),
- *  - `launch.shell` without `launch.shellArgs` keeps the default `--login`,
+ *  - no config.yaml → default `resolveShellPath` fallback + POSIX `-l`
+ *    because the probe falls back to `/bin/sh` (dash rejects `--login`),
+ *  - `launch.shell` without `launch.shellArgs` keeps the default `--login`
+ *    for bash-family shells,
  *  - one-shot `exec` keeps the fixed `/bin/sh -c` bridge (shell override is
  *    interactive-only) but DOES get the extra binds,
  *  - a tampered/unparseable config.yaml fails open to defaults.
@@ -59,8 +60,24 @@ class PRootOpenSessionConfigOverridesTest {
         File(dir, "config.yaml").writeText(yaml)
     }
 
-    private fun openSession(workspaceId: String = "ws-1"): Unit = runBlocking {
-        harness.runtime.openTerminal(workspaceId, harness.fakeRootfs().absolutePath, DEFAULT_TERMINAL_ID, asRoot = false)
+    /**
+     * Opens a session against a rootfs containing [shells] as executable
+     * scripts. RootFS finding 018 rejects a `launch.shell` that is missing,
+     * non-executable, or points at a script whose interpreter is absent, so
+     * every override tested here must be a real usable file.
+     */
+    private fun openSession(
+        workspaceId: String = "ws-1",
+        shells: List<String> = emptyList()
+    ): Unit = runBlocking {
+        val rootfs = harness.fakeRootfs()
+        shells.forEach { shell ->
+            val file = File(rootfs, shell.removePrefix("/"))
+            file.parentFile?.mkdirs()
+            file.writeText("#!/bin/sh\n")
+            check(file.setExecutable(true)) { "could not chmod +x $file" }
+        }
+        harness.runtime.openTerminal(workspaceId, rootfs.absolutePath, DEFAULT_TERMINAL_ID, asRoot = false)
     }
 
     @Test
@@ -83,7 +100,7 @@ class PRootOpenSessionConfigOverridesTest {
             """.trimIndent()
         )
 
-        openSession("ws-1")
+        openSession("ws-1", shells = listOf("/bin/sh", "/bin/zsh"))
 
         val call = harness.createCalls.single()
         val args = call.args
@@ -117,7 +134,7 @@ class PRootOpenSessionConfigOverridesTest {
             """.trimIndent()
         )
 
-        openSession("ws-1")
+        openSession("ws-1", shells = listOf("/bin/sh", "/bin/ash"))
 
         val args = harness.createCalls.single().args
         assertEquals(
@@ -128,16 +145,37 @@ class PRootOpenSessionConfigOverridesTest {
     }
 
     @Test
+    fun dashShellOverrideUsesPosixLoginArg() {
+        writeConfig(
+            "ws-1",
+            """
+            linexa:
+              launch:
+                shell: /bin/dash
+            """.trimIndent()
+        )
+
+        openSession("ws-1", shells = listOf("/bin/sh", "/bin/dash"))
+
+        val args = harness.createCalls.single().args
+        assertEquals(
+            "a dash override must receive -l, not --login",
+            listOf("/bin/dash", "-l"),
+            args.takeLast(2)
+        )
+    }
+
+    @Test
     fun noConfigKeepsResolveShellPathFallback() {
-        // No config.yaml at all — must behave byte-identically to pre-§1.73:
-        // resolveShellPath over the empty fake rootfs → /bin/sh + --login,
-        // no extra binds.
+        // No config.yaml at all — the probe finds no bash in the fake rootfs
+        // and falls back to /bin/sh. RN-01: a POSIX sh/dash gets `-l`, never
+        // the GNU `--login` it would reject with exit 2.
         openSession("ws-1")
 
         val args = harness.createCalls.single().args
         assertEquals(
-            "default fallback shell + --login must be preserved",
-            listOf("/bin/sh", "--login"),
+            "default fallback shell + POSIX login flag must be used",
+            listOf("/bin/sh", "-l"),
             args.takeLast(2)
         )
         assertTrue("no config must add no binds", !args.contains("/mnt/foo:/mnt/foo"))
@@ -183,8 +221,8 @@ class PRootOpenSessionConfigOverridesTest {
 
         val args = harness.createCalls.single().args
         assertEquals(
-            "tampered config must degrade to the default shell",
-            listOf("/bin/sh", "--login"),
+            "tampered config must degrade to the default shell with POSIX login",
+            listOf("/bin/sh", "-l"),
             args.takeLast(2)
         )
     }

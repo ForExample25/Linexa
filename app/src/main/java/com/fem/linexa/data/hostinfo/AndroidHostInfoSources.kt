@@ -377,12 +377,9 @@ internal class AndroidHostInfoSources(
      */
     private fun thermalZoneMaxTemperatureC(typeSubstring: String): Float? {
         val base = File("/sys/class/thermal")
-        val zones = runCatching {
-            base.list { _, name -> name.startsWith("thermal_zone") }?.toList()
-        }.getOrNull() ?: return null
+        val zones = thermalZones(base)
         var best: Float? = null
-        for (zone in zones.sorted()) {
-            val type = readFileOrNull(File(base, "$zone/type"))?.trim()?.lowercase() ?: continue
+        for ((zone, type) in zones) {
             if (typeSubstring !in type) continue
             val milli = readFileOrNull(File(base, "$zone/temp"))?.trim()?.toFloatOrNull() ?: continue
             val celsius = milli / 1000f
@@ -390,6 +387,27 @@ internal class AndroidHostInfoSources(
             if (best == null || celsius > best) best = celsius
         }
         return best
+    }
+
+    /**
+     * LINEXA-PERF-010: zone names + `type` strings change only on a kernel
+     * driver reload, and the base listing is denied outright on the audited
+     * device. Both facts are cached for [THERMAL_INVENTORY_TTL_MS] so a tick
+     * neither re-lists `/sys/class/thermal` (twice: CPU and GPU pass) nor
+     * re-reads every `type` file. A denial is memoised too, so the two
+     * `avc: denied … name="thermal"` records per tick stop.
+     */
+    private fun thermalZones(base: File): List<Pair<String, String>> {
+        val cached = thermalZoneCache
+        val now = System.currentTimeMillis()
+        if (cached != null && now - cached.first < THERMAL_INVENTORY_TTL_MS) return cached.second
+        val names = listDirOrNull(base) { _, name -> name.startsWith("thermal_zone") } ?: return emptyList()
+        val zones = names.sorted().mapNotNull { zone ->
+            val type = readFileOrNull(File(base, "$zone/type"))?.trim()?.lowercase() ?: return@mapNotNull null
+            zone to type
+        }
+        thermalZoneCache = now to zones
+        return zones
     }
 
     // ── Memory / swap / zram ───────────────────────────────────────────────
@@ -497,6 +515,10 @@ internal class AndroidHostInfoSources(
         val all = mutableListOf<HostStorageVolume>()
         listOfNotNull(primary, externalAppVolume, sharedBindVolume).forEach { all.add(it) }
         storageManager?.storageVolumes?.forEach { volume ->
+            // StorageVolume.getDirectory() is API 30. Below R there is no
+            // public directory for a volume, and the primary/shared paths
+            // above already cover what the app can address there.
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return@forEach
             val dir = runCatching { volume.directory }.getOrNull() ?: return@forEach
             // Volumes already measured above would double-report the same
             // capacity under different ids; skip by path overlap.
@@ -599,11 +621,20 @@ internal class AndroidHostInfoSources(
      * hidden; reflection is how tools (and we) read it without privileged
      * APIs. Refusal (future SDK hardening) → null, the honest unknown.
      */
-    private fun selinuxEnforcing(): Boolean? = runCatching {
-        val cls = Class.forName("android.os.SELinux")
-        val method = cls.getMethod("isSELinuxEnforced")
-        method.invoke(null) as? Boolean
-    }.getOrNull()
+    private fun selinuxEnforcing(): Boolean? {
+        selinuxEnforcingCache?.let { return it }
+        val verdict = runCatching {
+            val cls = Class.forName("android.os.SELinux")
+            val method = cls.getMethod("isSELinuxEnforced")
+            method.invoke(null) as? Boolean
+        }.getOrNull()
+        // LINEXA-PERF-010: the platform implementation touches the `enforce`
+        // sysfs node, which `untrusted_app` cannot read; re-running this on
+        // every SYSTEM collection produced one audit denial per tick. A
+        // non-null verdict is constant for the process lifetime.
+        if (verdict != null) selinuxEnforcingCache = verdict
+        return verdict
+    }
 
     private inline fun buildField(crossinline supplier: () -> String?): String? =
         runCatching { supplier() }.getOrNull()?.takeIf { it.isNotBlank() }
@@ -628,8 +659,9 @@ internal class AndroidHostInfoSources(
         val pluggedCode = intent?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0)
 
         return HostBatteryInfo(
-            present = intent?.getIntExtra(BatteryManager.EXTRA_PRESENT, -1)
-                ?.takeIf { it >= 0 }?.let { it != 0 },
+            present = batteryPresentExtra(
+                intent?.extras?.get(BatteryManager.EXTRA_PRESENT)
+            ),
             percent = rawPercent ?: propertyCapacity,
             charging = when (statusCode) {
                 BatteryManager.BATTERY_STATUS_CHARGING -> HostBatteryInfo.ChargingState.CHARGING
@@ -682,20 +714,28 @@ internal class AndroidHostInfoSources(
 
     override fun collectThermal(batteryTemperatureC: Float?): HostThermalInfo {
         val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
-        val status: HostThermalInfo.Status? = pm?.let { manager ->
-            runCatching {
-                when (manager.currentThermalStatus) {
-                    PowerManager.THERMAL_STATUS_NONE -> HostThermalInfo.Status.NONE
-                    PowerManager.THERMAL_STATUS_LIGHT -> HostThermalInfo.Status.LIGHT
-                    PowerManager.THERMAL_STATUS_MODERATE -> HostThermalInfo.Status.MODERATE
-                    PowerManager.THERMAL_STATUS_SEVERE -> HostThermalInfo.Status.SEVERE
-                    PowerManager.THERMAL_STATUS_CRITICAL -> HostThermalInfo.Status.CRITICAL
-                    PowerManager.THERMAL_STATUS_EMERGENCY -> HostThermalInfo.Status.EMERGENCY
-                    PowerManager.THERMAL_STATUS_SHUTDOWN -> HostThermalInfo.Status.SHUTDOWN
-                    else -> null
+        // PowerManager.getCurrentThermalStatus() landed in API 29. On older
+        // releases the thermal status is genuinely unavailable (not "none"),
+        // so it stays null instead of being guessed from another sensor.
+        val status: HostThermalInfo.Status? =
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                null
+            } else {
+                pm?.let { manager ->
+                    runCatching {
+                        when (manager.currentThermalStatus) {
+                            PowerManager.THERMAL_STATUS_NONE -> HostThermalInfo.Status.NONE
+                            PowerManager.THERMAL_STATUS_LIGHT -> HostThermalInfo.Status.LIGHT
+                            PowerManager.THERMAL_STATUS_MODERATE -> HostThermalInfo.Status.MODERATE
+                            PowerManager.THERMAL_STATUS_SEVERE -> HostThermalInfo.Status.SEVERE
+                            PowerManager.THERMAL_STATUS_CRITICAL -> HostThermalInfo.Status.CRITICAL
+                            PowerManager.THERMAL_STATUS_EMERGENCY -> HostThermalInfo.Status.EMERGENCY
+                            PowerManager.THERMAL_STATUS_SHUTDOWN -> HostThermalInfo.Status.SHUTDOWN
+                            else -> null
+                        }
+                    }.getOrNull()
                 }
-            }.getOrNull()
-        }
+            }
         // getThermalHeadroom landed in API 30; below that the method does not
         // exist on the device's framework side, which surfaces as a
         // NoSuchMethodError — caught by runCatching, but guarded explicitly
@@ -752,7 +792,13 @@ internal class AndroidHostInfoSources(
                     name = name,
                     transport = primaryTransportLabel(caps),
                     isActive = isActiveHere,
-                    mtu = props.mtu.takeIf { it > 0 }
+                    // LinkProperties.getMtu() landed in API 29; below Q the
+                    // interface MTU is unknown rather than zero.
+                    mtu = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        props.mtu.takeIf { it > 0 }
+                    } else {
+                        null
+                    }
                 )
             } else if (isActiveHere) {
                 existing.isActive = true
@@ -861,13 +907,17 @@ internal class AndroidHostInfoSources(
     private fun attachTrafficCounters(accs: List<IfaceAcc>): Boolean {
         var anyValid = false
         for (acc in accs) {
-            // Per-interface counters need API 26; below that every cell stays
-            // null (unknown) rather than folding GLOBAL totals onto one row.
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) break
-            acc.rxBytes = counterValue { TrafficStats.getRxBytes(acc.name) }
-            acc.txBytes = counterValue { TrafficStats.getTxBytes(acc.name) }
-            acc.rxPackets = counterValue { TrafficStats.getRxPackets(acc.name) }
-            acc.txPackets = counterValue { TrafficStats.getTxPackets(acc.name) }
+            // Per-interface byte counters landed in API 31 (S) and packet
+            // counters in API 30 (R). Below each gate the cell stays null
+            // (unknown) rather than folding GLOBAL totals onto one row.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                acc.rxBytes = counterValue { TrafficStats.getRxBytes(acc.name) }
+                acc.txBytes = counterValue { TrafficStats.getTxBytes(acc.name) }
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                acc.rxPackets = counterValue { TrafficStats.getRxPackets(acc.name) }
+                acc.txPackets = counterValue { TrafficStats.getTxPackets(acc.name) }
+            }
             if (acc.rxBytes != null || acc.txBytes != null ||
                 acc.rxPackets != null || acc.txPackets != null
             ) anyValid = true
@@ -900,11 +950,73 @@ internal class AndroidHostInfoSources(
 
     // ── Shared helpers ─────────────────────────────────────────────────────
 
-    internal fun readFileOrNull(path: String): String? =
-        runCatching { File(path).readText() }.getOrNull()
+    /**
+     * LINEXA-PERF-010: paths whose most recent read/list failed, with the wall
+     * time of that failure. On the audited device, reading `/proc/loadavg`,
+     * `/sys/block/zram0/disksize`, the SELinux `enforce` node, and listing
+     * `/sys/class/thermal` are permanently denied to `untrusted_app`, yet the
+     * 2 s overlay ticker retried each of them every tick — 445 `avc: denied`
+     * audit lines per four minutes, each one a kernel audit record paid for
+     * by the app's own thread.
+     *
+     * A denial is treated as a property of the process lifetime *for a while*:
+     * the platform can change policy (an OTA, a re-grant), so a denied path is
+     * re-probed once per [UNAVAILABLE_RECHECK_MS] instead of never. Values are
+     * never fabricated in the meantime — the field stays null, exactly as an
+     * honest "unknown".
+     */
+    private val unavailablePaths = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
-    internal fun readFileOrNull(file: File): String? =
-        runCatching { file.readText() }.getOrNull()
+    private fun recentlyUnavailable(key: String, nowMs: Long = System.currentTimeMillis()): Boolean {
+        val at = unavailablePaths[key] ?: return false
+        return nowMs - at < UNAVAILABLE_RECHECK_MS
+    }
+
+    private fun markUnavailable(key: String) {
+        unavailablePaths[key] = System.currentTimeMillis()
+    }
+
+    internal fun readFileOrNull(path: String): String? = readFileOrNull(File(path))
+
+    internal fun readFileOrNull(file: File): String? {
+        if (!isMemoizableUnavailability(file.path)) {
+            return runCatching { file.readText() }.getOrNull()
+        }
+        val key = "read:${file.path}"
+        if (recentlyUnavailable(key)) return null
+        val content = runCatching { file.readText() }.getOrNull()
+        if (content == null) markUnavailable(key) else unavailablePaths.remove(key)
+        return content
+    }
+
+    /** Directory listing with the same denial memo as [readFileOrNull]. */
+    private fun listDirOrNull(dir: File, filter: (File, String) -> Boolean): List<String>? {
+        if (!isMemoizableUnavailability(dir.path)) {
+            return runCatching { dir.list(filter)?.toList() }.getOrNull()
+        }
+        val key = "list:${dir.path}"
+        if (recentlyUnavailable(key)) return null
+        val listing = runCatching { dir.list(filter)?.toList() }.getOrNull()
+        if (listing == null) markUnavailable(key) else unavailablePaths.remove(key)
+        return listing
+    }
+
+    /**
+     * Only the host nodes whose denial is a stable platform-policy fact are
+     * memoized. `/proc/self` and the other app-owned proc reads are always
+     * permitted and can fail transiently; caching those would turn a momentary
+     * hiccup into five minutes of "unknown".
+     */
+    private fun isMemoizableUnavailability(path: String): Boolean =
+        path.startsWith("/sys/") || path == "/proc/loadavg"
+
+    /** Cached SELinux verdict: `isSELinuxEnforced()` cannot change without a reboot. */
+    @Volatile
+    private var selinuxEnforcingCache: Boolean? = null
+
+    /** `temp`/`type` inventory; zone types are static for the process lifetime. */
+    @Volatile
+    private var thermalZoneCache: Pair<Long, List<Pair<String, String>>>? = null
 
     private fun String.lineValue(label: String): String? =
         lineSequence().firstOrNull { it.startsWith("$label:") }
@@ -950,6 +1062,17 @@ internal class AndroidHostInfoSources(
 
         private const val MAX_ENUMERATED_CORES = 64
         private const val MAX_ONLINE_RANGE_SPAN = 10_000
+
+        /**
+         * LINEXA-PERF-010: how long a failed host read/listing stays
+         * "known-unavailable". Long enough that a 2 s ticker stops producing
+         * kernel audit records, short enough that a policy change (OTA,
+         * re-grant) is picked up within minutes without a process restart.
+         */
+        private const val UNAVAILABLE_RECHECK_MS = 5 * 60_000L
+
+        /** Thermal zone inventory is driver-static; re-read at most every 5 min. */
+        private const val THERMAL_INVENTORY_TTL_MS = 5 * 60_000L
 
         // Volume ids keep stable across snapshots for correlation/logging.
         const val PRIMARY_VOLUME_ID = "primary_internal"

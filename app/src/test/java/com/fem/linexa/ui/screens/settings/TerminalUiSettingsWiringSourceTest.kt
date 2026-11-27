@@ -208,8 +208,8 @@ class TerminalUiSettingsWiringSourceTest {
             panel.contains(".background(h.term)")
         )
         assertTrue(
-            "the terminal column applies the IME inset",
-            panel.contains(".imePadding()")
+            "the terminal column applies the navigation-bar ∪ IME inset once",
+            panel.contains(".windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))")
         )
         assertFalse(
             "WorkspaceScreen no longer wraps the panel in an inset-padded surface",

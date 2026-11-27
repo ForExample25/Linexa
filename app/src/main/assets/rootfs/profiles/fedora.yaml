@@ -55,7 +55,10 @@ detection:
     - usr/bin/dnf
     - usr/bin/coreutils
 
-supported_architectures: [arm64, x86_64]
+# Linexa-hosted architectures only (this build packages arm64 PRoot); Fedora's
+# x86_64 images are detected and rejected by ArchitectureCompatibility rather
+# than advertised as runnable here (finding 029).
+supported_architectures: [arm64]
 
 layout:
   required_directories: [etc, usr, var]

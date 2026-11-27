@@ -9,6 +9,14 @@ public interface TerminalSessionClient {
 
     void onTextChanged(TerminalSession changedSession);
 
+    /**
+     * Phase M0-A: called once, on the reader thread, when the first bytes are
+     * read from the pty master. A default no-op keeps every existing client
+     * source-compatible; the app's PTY adapter overrides it for E6.
+     */
+    default void onFirstOutput(TerminalSession changedSession, int bytesRead) {
+    }
+
     void onTitleChanged(TerminalSession changedSession);
 
     void onSessionFinished(TerminalSession finishedSession);

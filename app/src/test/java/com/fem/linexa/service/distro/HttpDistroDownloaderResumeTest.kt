@@ -395,4 +395,60 @@ class HttpDistroDownloaderResumeTest {
             dir.deleteRecursively()
         }
     }
+
+    @Test
+    fun a206WithAStarTotalContentRangeResumesWithoutRestart() = runTest(timeout = 60.seconds) {
+        // 10E: the RFC-9110-legal omission — a server that cannot know (or
+        // refuses to compute) the resource total answers `bytes s-e/*`. The
+        // omitted total contradicts nothing, so the 206 must be CONSUMED:
+        // rejecting it would force a full restart on every such server. The
+        // matrix's other 206 shapes are covered above (no header at all,
+        // wrong start, wrong total, changed identity via the 200-fallback);
+        // this is the remaining legal shape.
+        val dir = newDir()
+        try {
+            val part1 = bytes(4096, 'A')
+            val part2 = bytes(8192, 'B')
+            val full = part1 + part2
+            val destination = File(dir, "rootfs.tar.gz")
+            destination.writeBytes(part1)
+            preWriteSidecar(
+                dir,
+                "rootfs.tar.gz",
+                Sidecar(etag = "\"v1\"", lastModified = "Wed, 12 Nov 2026 10:00:00 GMT", totalBytes = 12288)
+            )
+            val server = FakeHttpServer(
+                listOf(
+                    FakeHttpServer.FakeResponse(
+                        "206 Partial Content",
+                        mapOf(
+                            "ETag" to "\"v1\"",
+                            "Content-Range" to "bytes ${part1.size}-${full.size - 1}/*"
+                        ),
+                        body = part2
+                    )
+                )
+            )
+            try {
+                val result = HttpDistroDownloader().download(server.url, destination) { _, _ -> }
+                assertTrue("expected Success, was $result", result is DownloadResult.Success)
+                result as DownloadResult.Success
+                assertEquals(sha256(full), result.sha256)
+                assertTrue(full.contentEquals(destination.readBytes()))
+                awaitServed(server, 1)
+                val requests = server.requests
+                assertEquals(
+                    "the star-total 206 must be consumed in one request, not restarted from zero",
+                    1,
+                    requests.size
+                )
+                assertEquals("bytes=4096-", requests[0].headers["range"])
+                assertEquals("\"v1\"", requests[0].headers["if-range"])
+            } finally {
+                server.shutdown()
+            }
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
 }

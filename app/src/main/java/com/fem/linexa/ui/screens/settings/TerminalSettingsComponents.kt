@@ -70,8 +70,7 @@ internal fun TerminalSettingsPage(
                         text = title,
                         style = HavenType.h2.copy(fontSize = 20.sp),
                         color = h.text,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        maxLines = 2
                     )
                     Text(
                         text = subtitle,

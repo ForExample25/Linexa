@@ -4,11 +4,12 @@ import android.app.Application
 import android.os.Process
 import android.system.Os
 import android.system.OsConstants
-import com.fem.linexa.core.filesystem.ProcessContainment
 import com.fem.linexa.core.filesystem.ProcessIdentity
 import com.fem.linexa.core.filesystem.ProcessSignal
 import com.fem.linexa.core.filesystem.ProcessSignalSender
-import com.fem.linexa.core.filesystem.processHostPid
+import com.fem.linexa.core.filesystem.ProcessTreeTerminator
+import com.fem.linexa.core.filesystem.captureProcessIdentity
+import com.fem.linexa.core.logging.DebugCapture
 import com.fem.linexa.core.logging.DiagnosticLogManager
 import com.fem.linexa.core.logging.Logger
 import com.fem.linexa.service.runtime.bootstrap.BootstrapManager
@@ -16,6 +17,11 @@ import java.io.File
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 
 /**
  * Pass 2 of the staged installer (§1.26 native engine): the native
@@ -47,11 +53,18 @@ class RootfsExtractor @Inject constructor(
 ) {
 
     /**
-     * Phase 04 containment. Lazy so plain-JVM tests that never time out do not
-     * touch `android.os.Process`; production resolves the app UID once.
+     * Phase 04 / RootFS R1 containment. Lazy so plain-JVM tests that never
+     * time out do not touch `android.os.Process`; production resolves the app
+     * UID/PID once.
+     *
+     * This is a **tree** terminator, not the older single-PID/group helper:
+     * the extractor does not ship `setsid`, so the PRoot host is not a group
+     * leader. Snapshotting the host's descendants before signalling is the
+     * only way to reach tar/zstd workers that would otherwise survive a
+     * SIGKILLed host.
      */
-    private val containment: ProcessContainment by lazy {
-        ProcessContainment(
+    private val productionTerminator: ProcessTreeTerminator by lazy {
+        ProcessTreeTerminator(
             expectedUid = runCatching { Process.myUid() }.getOrNull(),
             sender = ProcessSignalSender { target, signal ->
                 try {
@@ -66,22 +79,57 @@ class RootfsExtractor @Inject constructor(
                     Logger.w(TAG, "containment signal $signal to $target failed: ${e.message}")
                     false
                 }
-            }
+            },
+            selfPid = runCatching { Process.myPid() }.getOrNull()
         )
     }
 
     /**
-     * Phase 04: TEST-ONLY timeout override. Production always uses
-     * [EXTRACTION_TIMEOUT_MINUTES]; a JVM test sets this to make
+     * TEST-ONLY seam: JVM tests cannot call `android.system.Os.kill`, so they
+     * inject a terminator whose sender shells out to the host `kill`.
+     * Production never assigns it.
+     */
+    internal var processTerminatorForTest: ProcessTreeTerminator? = null
+
+    private fun terminator(): ProcessTreeTerminator =
+        processTerminatorForTest ?: productionTerminator
+
+    /** TEST-ONLY: shortens containment windows for fail-closed tests. */
+    internal var containmentGraceOverrideMs: Long? = null
+
+    /** TEST-ONLY: shortens the post-SIGKILL verification window. */
+    internal var containmentHardLimitOverrideMs: Long? = null
+
+    /**
+     * Phase 04: TEST-ONLY absolute-timeout override. Production uses
+     * [EXTRACTION_ABSOLUTE_TIMEOUT_MINUTES]; a JVM test sets this to make
      * [FakeProot] scenarios (`SLOW_EXIT`) hit the timeout branch in
-     * milliseconds instead of half an hour. `internal` keeps it inside the
-     * module, so no external caller can shorten the real timeout; nothing in
+     * milliseconds instead of hours. `internal` keeps it inside the module,
+     * so no external caller can shorten the real timeout; nothing in
      * production code ever assigns it.
      */
     internal var extractionTimeoutOverrideMs: Long? = null
 
+    /**
+     * RF-012: TEST-ONLY stall-timeout override. Production uses
+     * [EXTRACTION_STALL_TIMEOUT_MINUTES]; tests use this to prove that a
+     * silent child is treated as stalled long before the absolute bound.
+     */
+    internal var extractionStallTimeoutOverrideMs: Long? = null
+
     private fun effectiveTimeoutMs(): Long =
-        extractionTimeoutOverrideMs ?: EXTRACTION_TIMEOUT_MINUTES * 60_000L
+        extractionTimeoutOverrideMs ?: EXTRACTION_ABSOLUTE_TIMEOUT_MINUTES * 60_000L
+
+    /**
+     * RF-012: how long extraction may go without ANY progress signal
+     * (a new tar checkpoint or a new member name) before it is considered
+     * stalled. When the explicit absolute override is in use, stall
+     * detection is disabled so the pre-existing timeout tests keep their
+     * exact semantics.
+     */
+    private fun effectiveStallTimeoutMs(): Long = extractionStallTimeoutOverrideMs
+        ?: if (extractionTimeoutOverrideMs != null) Long.MAX_VALUE
+        else EXTRACTION_STALL_TIMEOUT_MINUTES * 60_000L
 
     /**
      * Runs the native extraction of [tempArchive] into [staging] with the
@@ -117,6 +165,14 @@ class RootfsExtractor @Inject constructor(
         workspaceId: String,
         expectedExtractedBytes: Long = 0L,
         /**
+         * UX-003: non-directory entry count from the analysis pass. The tar
+         * stream carries a 512-byte header and padding per member, so the
+         * file-size sum alone makes the checkpoint fraction reach 1.0 before
+         * the process ends. Adding a per-entry overhead estimate keeps the
+         * running fraction honest; `0` keeps the old denominator.
+         */
+        expectedEntryCount: Long = 0L,
+        /**
          * §1.147: leading path components to drop while extracting. Non-zero
          * only when the archive wraps its rootfs in a single top-level
          * directory (`rootfs/etc/...`) — resolved by the analyzer from the
@@ -126,23 +182,34 @@ class RootfsExtractor @Inject constructor(
         onProgress: suspend (Float) -> Unit = {},
         onEntry: suspend (String) -> Unit = {}
     ): String? {
-        // ── §1.40/§1.43/§1.46 FORENSIC LOGGING ────────────────────────
-        Logger.i(TAG, "=== FORENSIC: bootstrap state ===")
-        Logger.i(TAG, bootstrapManager.diagnoseAll())
+        currentCoroutineContext().ensureActive()
+        // RF-013: the full argv and the complete process environment are
+        // diagnostic detail, not operational telemetry. They used to be
+        // written to logcat (and the workspace's diagnostic files) on every
+        // install, including in release builds. Gate every full dump on the
+        // user's "Enable debug info" switch, exactly like the runtime's
+        // launch forensics; keep only path/shape facts at INFO.
+        val verbose = DebugCapture.isEnabled()
 
-        // §1.46: Test execve for proot (static) and tar (dynamic) to
-        // pinpoint whether the failure is at the kernel execve level,
-        // the interpreter level, or the library resolution level.
-        Logger.i(TAG, "=== FORENSIC: execve tests (§1.46) ===")
-        Logger.i(TAG, "  testExecve(proot): ${bootstrapManager.testExecve(
-            File(application.applicationInfo.nativeLibraryDir, "libproot.so").absolutePath
-        )}")
-        Logger.i(TAG, "  testExecve(tar):   ${bootstrapManager.testExecve(
-            bootstrapManager.resolveBinary("tar").absolutePath
-        )}")
-        Logger.i(TAG, "  testExecve(busybox): ${bootstrapManager.testExecve(
-            bootstrapManager.resolveBinary("busybox").absolutePath
-        )}")
+        if (verbose) {
+            // ── §1.40/§1.43/§1.46 FORENSIC LOGGING ────────────────────
+            Logger.i(TAG, "=== FORENSIC: bootstrap state ===")
+            Logger.i(TAG, bootstrapManager.diagnoseAll())
+
+            // §1.46: Test execve for proot (static) and tar (dynamic) to
+            // pinpoint whether the failure is at the kernel execve level,
+            // the interpreter level, or the library resolution level.
+            Logger.i(TAG, "=== FORENSIC: execve tests (§1.46) ===")
+            Logger.i(TAG, "  testExecve(proot): ${bootstrapManager.testExecve(
+                File(application.applicationInfo.nativeLibraryDir, "libproot.so").absolutePath
+            )}")
+            Logger.i(TAG, "  testExecve(tar):   ${bootstrapManager.testExecve(
+                bootstrapManager.resolveBinary("tar").absolutePath
+            )}")
+            Logger.i(TAG, "  testExecve(busybox): ${bootstrapManager.testExecve(
+                bootstrapManager.resolveBinary("busybox").absolutePath
+            )}")
+        }
 
         // §1.43: PRoot itself executes from nativeLibraryDir (apk_data_file
         // SELinux label). But the command it executes (tar) must resolve
@@ -175,18 +242,23 @@ class RootfsExtractor @Inject constructor(
         val tmpDir = bootstrapManager.scopedProotTmpDir(tmpScope)
 
         // §1.44/§1.46: Log exact command and environment before execution.
-        // §1.52: the command now carries `-v 2` so proot prints every syscall
-        // path translation ("translate(\"/\" + \"...\")") to its stderr,
-        // merged into our capture via redirectErrorStream. When proot aborts
-        // on its internal assert (compare_paths2:547, §1.52 root cause: an
-        // empty readlinkat/readlink pathname, proot-me/proot#182), the LAST
-        // translate line before the abort names the exact empty path — proot
-        // writes these via unbuffered stderr, so they survive the abort.
-        // Phase 04: the argv now carries `--kill-on-exit` (the runtime already
-        // launches this way) and, when the bundled busybox provides the
-        // `setsid` applet, the whole child tree becomes its own session/process
-        // group — which is what the timeout path can kill as a group. The argv
-        // is built by one testable function; the former inline block is it.
+        // §1.52: with debug info enabled the command carries `-v 2`, so proot
+        // prints every syscall path translation ("translate(\"/\" + \"...\")")
+        // to its stderr, merged into our capture via redirectErrorStream.
+        // When proot aborts on its internal assert (compare_paths2:547, §1.52
+        // root cause: an empty readlinkat/readlink pathname,
+        // proot-me/proot#182), the LAST translate line before the abort names
+        // the exact empty path — proot writes these via unbuffered stderr, so
+        // they survive the abort. With debug info off (the default) proot
+        // runs at `-v 0`: fatal errors still reach stderr, but the per-syscall
+        // stream is not generated (F-004 / R-03).
+        // RootFS R1: the argv carries `--kill-on-exit` (the runtime already
+        // launches this way), and a `setsid` prefix is still applied when a
+        // future bootstrap ships that applet. The shipped busybox does NOT,
+        // so the host is normally not a group leader and the timeout path
+        // contains it by snapshotting its PPID descendants before signalling
+        // (see ProcessTreeTerminator). The argv is built by one testable
+        // function; the former inline block is it.
         val setsid = bootstrapManager.resolveBinary("setsid").takeIf {
             bootstrapManager.validateBinary("setsid") == null
         }
@@ -197,7 +269,13 @@ class RootfsExtractor @Inject constructor(
             setsid = setsid,
             tempArchive = tempArchive,
             staging = staging,
-            stripComponents = stripComponents
+            stripComponents = stripComponents,
+            // F-004 / R-03: proot's syscall trace is diagnostic detail. It used
+            // to be requested unconditionally, so every install paid for a
+            // stream the code only ever keeps a bounded tail of. The verbose
+            // level is now tied to the same user-visible "Enable debug info"
+            // switch that already gates the forensic dumps above.
+            verbose = verbose
         )
         // The exact env that will be passed to ProcessBuilder — captured once
         // so every §1.52 block below reports the same map that runs.
@@ -213,86 +291,105 @@ class RootfsExtractor @Inject constructor(
             prootRunEnv = prootRunEnv + BootstrapManager.NO_SECCOMP_ENV
         }
 
-        Logger.i(TAG, "PRoot extraction command: ${fullArgv.joinToString(" ")}")
-        Logger.i(TAG, "  proot: exists=${proot.exists()} canExec=${proot.canExecute()} path=${proot.absolutePath}")
-        Logger.i(TAG, "  tar:   exists=${tar.exists()} canExec=${tar.canExecute()} path=${tar.absolutePath} canonical=${try { tar.canonicalPath } catch (_: Exception) { "?" }}")
-        Logger.i(TAG, "  LD_LIBRARY_PATH = ${prootRunEnv["LD_LIBRARY_PATH"]}")
-        Logger.i(TAG, "  PATH = ${prootRunEnv["PATH"]}")
-        Logger.i(TAG, "  PROOT_TMP_DIR = ${tmpDir.absolutePath} (scoped, §1.48)")
-        Logger.i(TAG, "  PROOT_LOADER = ${prootRunEnv["PROOT_LOADER"]} (loader, §1.47)")
-        Logger.i(TAG, "  proot is static ELF: ${bootstrapManager.testExecve(proot.absolutePath).contains("execve_OK") || proot.absolutePath.let { p ->
-            try { java.io.RandomAccessFile(p, "r").use { raf -> raf.readByte().toInt() == 0x7f && raf.readByte().toInt() == 'E'.code && raf.readByte().toInt() == 'L'.code && raf.readByte().toInt() == 'F'.code && raf.readByte().toInt() == 2 } } catch (_: Exception) { false }
-        }}")
-
-        // ── §1.52 FORENSIC: full argv (argv[0]..argv[n]) + shell-copyable ──
-        Logger.i(TAG, "=== FORENSIC: full argv (§1.52) ===")
-        fullArgv.forEachIndexed { i, arg ->
-            val truncated = if (arg.length > 192) " (${arg.length} chars, truncated)" else ""
-            Logger.i(TAG, "  argv[$i] = ${arg.take(192)}$truncated")
-        }
-        val shellCopyable = (prootRunEnv.toSortedMap().map { (k, v) -> "$k=${shellQuote(v)}" } +
-            fullArgv.map { shellQuote(it) }).joinToString(" ")
-        Logger.i(TAG, "  shell-copyable: $shellCopyable")
-
-        // ── §1.52 FORENSIC: complete host env passed to proot (sorted) ────
-        Logger.i(TAG, "=== FORENSIC: complete host env passed to proot (§1.52, sorted) ===")
-        val highlightedKeys = setOf(
-            "PATH", "LD_LIBRARY_PATH", "PROOT_LOADER", "PROOT_TMP_DIR",
-            "TMPDIR", "HOME", "PWD", "LANG", "TERM", "USER"
+        // RF-013: operational facts that are useful for any failure, without
+        // the full argv/env. The verbosity level, `stripComponents` and the
+        // two paths are not secret and are needed to reproduce a failure.
+        Logger.i(
+            TAG,
+            "PRoot extraction: proot exists=${proot.exists()} canExec=${proot.canExecute()}, " +
+                "tar exists=${tar.exists()} canExec=${tar.canExecute()}, strip=$stripComponents, " +
+                "verbose=$verbose, " +
+                "archive=${tempArchive.name} (${tempArchive.length()} bytes), staging=${staging.name}"
         )
-        prootRunEnv.toSortedMap().forEach { (key, value) ->
-            val mark = if (key in highlightedKeys) "   <--" else ""
-            Logger.i(TAG, "  $key = ${value.orEmpty()}$mark")
-        }
-        Logger.i(TAG, "  keys=${prootRunEnv.size}; unset in env: TMPDIR=${prootRunEnv["TMPDIR"] ?: "<unset>"}, HOME=${prootRunEnv["HOME"] ?: "<unset>"}, PWD=${prootRunEnv["PWD"] ?: "<unset>"}, LANG=${prootRunEnv["LANG"] ?: "<unset>"}, TERM=${prootRunEnv["TERM"] ?: "<unset>"}, USER=${prootRunEnv["USER"] ?: "<unset>"}")
+        Logger.i(TAG, "  PROOT_TMP_DIR = ${tmpDir.absolutePath} (scoped, §1.48)")
 
-        // ── §1.65 TEMP DIAG (remove once the EPERM root cause is found) ─────
-        // The exact invocation, as proot will run it, plus the archive's
-        // on-disk state at launch time. Catches a file deleted/renamed
-        // between Pass 1 and Pass 2, and any path-shape mismatch (e.g.
-        // /data/user/0 vs /data/data) between Java and proot/tar.
-        Logger.i(TAG, "=== §1.65 TEMP DIAG: final PRoot + tar invocation ===")
-        val stripArg = if (stripComponents > 0) " --strip-components=$stripComponents" else ""
-        Logger.i(TAG, "  proot argv: ${proot.absolutePath} -v 2 --link2symlink ${tar.absolutePath}$stripArg -xf ${tempArchive.absolutePath} -C ${staging.absolutePath} --delay-directory-restore --preserve-permissions")
-        Logger.i(TAG, "  tar argv:   tar$stripArg -xf ${tempArchive.absolutePath} -C ${staging.absolutePath} --delay-directory-restore --preserve-permissions")
-        Logger.i(TAG, "  bind mounts: <none — extraction proot carries no -b args; runtime /dev /proc /sys binds are session-only (§1.20)>")
-        Logger.i(TAG, "  source-archive: abs=${tempArchive.absolutePath} canonical=${try { tempArchive.canonicalPath } catch (_: Exception) { "<error>" }} exists=${tempArchive.exists()} isFile=${tempArchive.isFile} canRead=${tempArchive.canRead()} length=${tempArchive.length()} bytes")
+        if (verbose) {
+            // §1.46: proot must be a static ELF (it runs before the linker
+            // exists in the guest). This probe is the second proot launch the
+            // FakeProot invocation-count contracts in the tests expect.
+            Logger.i(TAG, "  proot is static ELF: ${bootstrapManager.testExecve(proot.absolutePath).contains("execve_OK") || proot.absolutePath.let { p ->
+                try { java.io.RandomAccessFile(p, "r").use { raf -> raf.readByte().toInt() == 0x7f && raf.readByte().toInt() == 'E'.code && raf.readByte().toInt() == 'L'.code && raf.readByte().toInt() == 'F'.code && raf.readByte().toInt() == 2 } } catch (_: Exception) { false }
+            }}")
 
-        // ── §1.52 FORENSIC: pipeline path verification (file metadata) ─────
-        Logger.i(TAG, "=== FORENSIC: pipeline path verification (§1.52) ===")
-        listOf(
-            "proot" to proot,
-            "tar" to tar,
-            "loader" to File(bootstrapManager.resolveBinary("loader").absolutePath),
-            "archive(temp)" to tempArchive,
-            "staging" to staging,
-            "binDir" to bootstrapManager.binDir,
-            "libDir" to bootstrapManager.libDir,
-            "prootTmpDir" to tmpDir
-        ).forEach { (label, file) ->
-            Logger.i(TAG, fingerprintPath(label, file))
-        }
+            // ── §1.52 FORENSIC: full argv (argv[0]..argv[n]) + shell-copyable ──
+            Logger.i(TAG, "PRoot extraction command: ${fullArgv.joinToString(" ")}")
+            Logger.i(TAG, "=== FORENSIC: full argv (§1.52) ===")
+            fullArgv.forEachIndexed { i, arg ->
+                val truncated = if (arg.length > 192) " (${arg.length} chars, truncated)" else ""
+                Logger.i(TAG, "  argv[$i] = ${arg.take(192)}$truncated")
+            }
+            val shellCopyable = (prootRunEnv.toSortedMap().map { (k, v) -> "$k=${shellQuote(v)}" } +
+                fullArgv.map { shellQuote(it) }).joinToString(" ")
+            Logger.i(TAG, "  shell-copyable: $shellCopyable")
 
-        // §1.53: Persist extraction command and environment to workspace logs
-        try {
-            diagnosticLogManager.logExtractionCommand(
-                workspaceId = workspaceId,
-                fullArgv = fullArgv,
-                prootRunEnv = prootRunEnv,
-                shellCopyable = shellCopyable,
-                archivePath = tempArchive.absolutePath,
-                stagingPath = staging.absolutePath,
-                elapsedMs = 0L // Will be updated with actual elapsed time
+            // ── §1.52 FORENSIC: complete host env passed to proot (sorted) ────
+            Logger.i(TAG, "=== FORENSIC: complete host env passed to proot (§1.52, sorted) ===")
+            val highlightedKeys = setOf(
+                "PATH", "LD_LIBRARY_PATH", "PROOT_LOADER", "PROOT_TMP_DIR",
+                "TMPDIR", "HOME", "PWD", "LANG", "TERM", "USER"
             )
-            diagnosticLogManager.logEnvironment(workspaceId = workspaceId, label = "extraction", env = prootRunEnv)
-        } catch (_: Exception) {
-            // Best effort — don't fail extraction for logging
+            prootRunEnv.toSortedMap().forEach { (key, value) ->
+                val mark = if (key in highlightedKeys) "   <--" else ""
+                Logger.i(TAG, "  $key = ${value.orEmpty()}$mark")
+            }
+            Logger.i(TAG, "  keys=${prootRunEnv.size}; unset in env: TMPDIR=${prootRunEnv["TMPDIR"] ?: "<unset>"}, HOME=${prootRunEnv["HOME"] ?: "<unset>"}, PWD=${prootRunEnv["PWD"] ?: "<unset>"}, LANG=${prootRunEnv["LANG"] ?: "<unset>"}, TERM=${prootRunEnv["TERM"] ?: "<unset>"}, USER=${prootRunEnv["USER"] ?: "<unset>"}")
+
+            // ── §1.65 TEMP DIAG (remove once the EPERM root cause is found) ─────
+            // The exact invocation, as proot will run it, plus the archive's
+            // on-disk state at launch time. Catches a file deleted/renamed
+            // between Pass 1 and Pass 2, and any path-shape mismatch (e.g.
+            // /data/user/0 vs /data/data) between Java and proot/tar.
+            Logger.i(TAG, "=== §1.65 TEMP DIAG: final PRoot + tar invocation ===")
+            val stripArg = if (stripComponents > 0) " --strip-components=$stripComponents" else ""
+            val verbosity = if (verbose) "2" else "0"
+            Logger.i(TAG, "  proot argv: ${proot.absolutePath} -v $verbosity --link2symlink ${tar.absolutePath}$stripArg -xf ${tempArchive.absolutePath} -C ${staging.absolutePath} --delay-directory-restore --preserve-permissions")
+            Logger.i(TAG, "  tar argv:   tar$stripArg -xf ${tempArchive.absolutePath} -C ${staging.absolutePath} --delay-directory-restore --preserve-permissions")
+            Logger.i(TAG, "  bind mounts: <none — extraction proot carries no -b args; runtime /dev /proc /sys binds are session-only (§1.20)>")
+            Logger.i(TAG, "  source-archive: abs=${tempArchive.absolutePath} canonical=${try { tempArchive.canonicalPath } catch (_: Exception) { "<error>" }} exists=${tempArchive.exists()} isFile=${tempArchive.isFile} canRead=${tempArchive.canRead()} length=${tempArchive.length()} bytes")
+
+            // ── §1.52 FORENSIC: pipeline path verification (file metadata) ─────
+            Logger.i(TAG, "=== FORENSIC: pipeline path verification (§1.52) ===")
+            listOf(
+                "proot" to proot,
+                "tar" to tar,
+                "loader" to File(bootstrapManager.resolveBinary("loader").absolutePath),
+                "archive(temp)" to tempArchive,
+                "staging" to staging,
+                "binDir" to bootstrapManager.binDir,
+                "libDir" to bootstrapManager.libDir,
+                "prootTmpDir" to tmpDir
+            ).forEach { (label, file) ->
+                Logger.i(TAG, fingerprintPath(label, file))
+            }
+
+            // §1.53: persist the full command and environment to the
+            // workspace's diagnostic files only when debug capture is on.
+            try {
+                val shellCopyable = (prootRunEnv.toSortedMap().map { (k, v) -> "$k=${shellQuote(v)}" } +
+                    fullArgv.map { shellQuote(it) }).joinToString(" ")
+                diagnosticLogManager.logExtractionCommand(
+                    workspaceId = workspaceId,
+                    fullArgv = fullArgv,
+                    prootRunEnv = prootRunEnv,
+                    shellCopyable = shellCopyable,
+                    archivePath = tempArchive.absolutePath,
+                    stagingPath = staging.absolutePath,
+                    elapsedMs = 0L // Will be updated with actual elapsed time
+                )
+                diagnosticLogManager.logEnvironment(workspaceId = workspaceId, label = "extraction", env = prootRunEnv)
+            } catch (_: Exception) {
+                // Best effort — don't fail extraction for logging
+            }
+        } else {
+            // Even with capture off, a support report still needs to know
+            // WHICH variables were set — without their values.
+            Logger.i(TAG, "  env keys=${prootRunEnv.keys.sorted()}")
         }
 
         // ── Run, with the §1.50 seccomp/kernel-incompatibility fallback ─────
         var attempt = runOneExtractionAttempt(
             fullArgv, prootRunEnv, workspaceId, tmpScope, proot, tar, staging,
-            expectedExtractedBytes, onProgress, onEntry
+            expectedExtractedBytes, expectedEntryCount, onProgress, onEntry
         )
         val exit = attempt.exitCode
         if (exit != null && exit != 0 && bootstrapManager.isSeccompKernelBugFailure(attempt.output) && !BootstrapManager.needsNoSeccomp) {
@@ -320,6 +417,7 @@ class RootfsExtractor @Inject constructor(
                 tar,
                 staging,
                 expectedExtractedBytes,
+                expectedEntryCount,
                 onProgress,
                 onEntry
             )
@@ -363,9 +461,11 @@ class RootfsExtractor @Inject constructor(
         tar: File,
         staging: File,
         expectedExtractedBytes: Long,
+        expectedEntryCount: Long,
         onProgress: suspend (Float) -> Unit,
         onEntry: suspend (String) -> Unit
     ): ExtractionAttempt {
+        currentCoroutineContext().ensureActive()
         return try {
             val process = ProcessBuilder(fullArgv)
                 // 2026-09-02: NO redirectErrorStream — stdout (tar -v member
@@ -390,15 +490,14 @@ class RootfsExtractor @Inject constructor(
             // the old readBytes() semantics (full-stream capture) in result
             // and error reporting while bounding memory.
             val outputTail = BoundedOutputTail()
-            // Phase 04: capture the child's process identity immediately —
+            // RootFS R1: capture the child's process identity immediately.
             // `/proc/<pid>/stat` field 22 is the only safe handle for the
-            // timeout path; a bare PID can be recycled. `processHostPid`
-            // centralizes the reflective `pid()` access the Android stubs
-            // require (see ProcessContainment).
-            val hostPid = processHostPid(process)
-            val childIdentity: ProcessIdentity? = hostPid?.let { containment.identityOf(it) }
+            // timeout path; a bare PID can be recycled. The tree terminator
+            // needs this identity to snapshot descendants while the host is
+            // still alive.
+            val childIdentity: ProcessIdentity? = captureProcessIdentity(process)
             if (childIdentity == null) {
-                Logger.w(TAG, "containment: could not read /proc/${hostPid ?: "?"}/stat — timeout will quarantine staging")
+                Logger.w(TAG, "containment: could not capture /proc identity — timeout will quarantine staging")
             } else {
                 Logger.i(
                     TAG,
@@ -472,54 +571,107 @@ class RootfsExtractor @Inject constructor(
                 // real extraction fraction (bytes read / known uncompressed
                 // size), so the UI never freezes at a fake phase value.
                 // onProgress/onEntry run on THIS (caller) coroutine thread.
-                val timeoutMs = effectiveTimeoutMs()
-                val timeoutLabel = if (extractionTimeoutOverrideMs != null) {
-                    "${timeoutMs}ms"
+                //
+                // RF-012: the old single 30-minute wall clock failed a large
+                // rootfs on slow storage even while tar was making progress,
+                // and let a genuinely wedged child burn the full limit. The
+                // limit is now "no progress for [EXTRACTION_STALL_TIMEOUT_MINUTES]"
+                // plus a much larger absolute ceiling that only bounds a
+                // runaway process. A tar checkpoint or a new member name is
+                // progress; either one resets the stall clock.
+                val absoluteTimeoutMs = effectiveTimeoutMs()
+                val stallTimeoutMs = effectiveStallTimeoutMs()
+                val absoluteLabel = if (extractionTimeoutOverrideMs != null) {
+                    "${absoluteTimeoutMs}ms"
                 } else {
-                    "$EXTRACTION_TIMEOUT_MINUTES minutes"
+                    "$EXTRACTION_ABSOLUTE_TIMEOUT_MINUTES minutes"
                 }
-                val deadline = System.currentTimeMillis() + timeoutMs
+                val stallLabel = if (extractionStallTimeoutOverrideMs != null) {
+                    "${stallTimeoutMs}ms"
+                } else {
+                    "$EXTRACTION_STALL_TIMEOUT_MINUTES minutes"
+                }
+                val startedAt = System.currentTimeMillis()
+                var lastProgressAt = startedAt
+                var lastCheckpoint = 0L
                 var completed = false
+                var timedOutLabel: String? = null
                 var lastReportedEntry: String? = null
-                while (System.currentTimeMillis() < deadline) {
+                var lastFraction = 0f
+                while (true) {
+                    // RF-010: cancellation must reach the child promptly. The
+                    // poll interval is one second, so a user-visible cancel
+                    // stops the extraction within that window instead of
+                    // waiting for the process to finish on its own.
+                    currentCoroutineContext().ensureActive()
                     if (process.waitFor(1, TimeUnit.SECONDS)) {
                         completed = true
                         break
                     }
+                    val now = System.currentTimeMillis()
                     val records = checkpoint.get()
+                    if (records != lastCheckpoint) {
+                        lastCheckpoint = records
+                        lastProgressAt = now
+                    }
                     if (records > 0 && expectedExtractedBytes > 0) {
-                        val fraction = (records * CHECKPOINT_RECORD_BYTES.toDouble() / expectedExtractedBytes)
-                            .toFloat()
-                            .coerceIn(0f, 1f)
-                        onProgress(fraction)
+                        // UX-003: the denominator includes tar's per-member
+                        // overhead, and a running extraction never reports
+                        // 100% — the checkpoint stream can reach the file-size
+                        // sum before tar has finished the tail. Completion is
+                        // signalled explicitly below, after the child exits.
+                        val fraction = extractionProgressFraction(
+                            records = records,
+                            expectedExtractedBytes = expectedExtractedBytes,
+                            expectedEntryCount = expectedEntryCount,
+                            previous = lastFraction
+                        )
+                        if (fraction > lastFraction) {
+                            lastFraction = fraction
+                            onProgress(fraction)
+                        }
                     }
                     val entry = entryName.get()
                     if (entry != null && entry != lastReportedEntry) {
                         lastReportedEntry = entry
+                        lastProgressAt = now
                         onEntry(entry)
                     }
+                    timedOutLabel = extractionTimeoutReason(
+                        nowMs = now,
+                        startedAtMs = startedAt,
+                        lastProgressAtMs = lastProgressAt,
+                        absoluteTimeoutMs = absoluteTimeoutMs,
+                        stallTimeoutMs = stallTimeoutMs,
+                        absoluteLabel = absoluteLabel,
+                        stallLabel = stallLabel
+                    )
+                    if (timedOutLabel != null) break
+                }
+                if (completed && expectedExtractedBytes > 0) {
+                    // The process has actually exited; only now is 100% true.
+                    onProgress(1f)
                 }
                 if (!completed) {
+                    val timeoutLabel = timedOutLabel ?: absoluteLabel
+                    val elapsedMs = System.currentTimeMillis() - startedAt
                     Logger.e(TAG, "Native extraction timed out after $timeoutLabel")
-                    // Phase 04: containment BEFORE any cleanup. killTree walks
-                    // the session group the child became a leader of and only
-                    // reports true when every member is confirmed gone; it
-                    // escalates TERM → KILL internally. A bare destroyForcibly
-                    // only reached the PRoot host, and `--kill-on-exit` is an
-                    // exit handler that a SIGKILLed host never runs — that is
-                    // why the group, not the flag, is the primary mechanism.
-                    val contained = childIdentity?.let { containment.killTree(it) } ?: false
-                    if (!contained) {
+                    // RootFS R1: containment BEFORE any cleanup. The extractor
+                    // ships no `setsid`, so this host is not a group leader;
+                    // the tree terminator snapshots the host's descendants
+                    // (tar/zstd workers) while it is still alive, escalates
+                    // TERM → KILL, and verifies every target by PID + start
+                    // time. A bare destroyForcibly only reached the PRoot
+                    // host, and `--kill-on-exit` is an exit handler that a
+                    // SIGKILLed host never runs — the snapshot is the primary
+                    // mechanism. A missing identity stays fail-closed.
+                    val outcome = containExtraction(process, childIdentity, staging)
+                    if (!outcome.confirmed) {
                         // Last resort against the host itself; this cannot
                         // prove the tracees are gone, so staging must NOT be
                         // deleted underneath anything still extracting.
-                        process.destroyForcibly()
-                        val quarantined = quarantineStaging(staging)
-                        val note = if (quarantined != null) {
-                            "staging quarantined at ${quarantined.absolutePath}"
-                        } else {
-                            "staging quarantine FAILED — staging left in place"
-                        }
+                        val note = outcome.note
+                            ?: "staging quarantine FAILED — staging left in place"
                         Logger.e(TAG, "extraction containment NOT confirmed; $note")
                         try { drainedErr.get(5, TimeUnit.SECONDS) } catch (_: Exception) {}
                         try { drainedOut.get(5, TimeUnit.SECONDS) } catch (_: Exception) {}
@@ -531,7 +683,7 @@ class RootfsExtractor @Inject constructor(
                                 success = false,
                                 exitCode = null,
                                 outputTail = "Timed out after $timeoutLabel; $note",
-                                elapsedMs = timeoutMs
+                                elapsedMs = elapsedMs
                             )
                         } catch (_: Exception) {}
                         ExtractionAttempt(
@@ -548,7 +700,7 @@ class RootfsExtractor @Inject constructor(
                                 success = false,
                                 exitCode = null,
                                 outputTail = "Timed out after $timeoutLabel",
-                                elapsedMs = timeoutMs
+                                elapsedMs = elapsedMs
                             )
                         } catch (_: Exception) {}
                         ExtractionAttempt(
@@ -613,9 +765,31 @@ class RootfsExtractor @Inject constructor(
                         ExtractionAttempt(failure = null, exitCode = 0, output = outputTail.tailText())
                     }
                 }
+            } catch (e: CancellationException) {
+                // RF-010: the coroutine was cancelled (the user pressed
+                // Cancel, or the coordinator is shutting the flow down).
+                // Stopping the coroutine alone would leave `proot tar` writing
+                // into staging until it finished or the timeout fired, so the
+                // child gets the same containment treatment as a timeout —
+                // inside NonCancellable so a second cancellation cannot skip
+                // the cleanup half-way through.
+                withContext(NonCancellable) {
+                    val outcome = containExtraction(process, childIdentity, staging)
+                    Logger.i(
+                        TAG,
+                        "extraction cancelled; containment=" +
+                            if (outcome.confirmed) "confirmed"
+                            else "NOT confirmed (${outcome.note ?: "unknown"})"
+                    )
+                }
+                throw e
             } finally {
                 drain.shutdownNow()
             }
+        } catch (e: CancellationException) {
+            // Cancellation is not an extraction failure: never convert it into
+            // an ExtractionAttempt the caller might retry or report as Broken.
+            throw e
         } catch (e: Exception) {
             Logger.e(TAG, "Native extraction threw", e)
             try {
@@ -650,6 +824,68 @@ class RootfsExtractor @Inject constructor(
     )
 
     /**
+     * RF-010/RF-012: contains the extraction process tree and, when
+     * containment cannot be proven, quarantines staging so no later cleanup
+     * can delete a tree that may still be written to. Shared by the timeout
+     * and cancellation paths so both apply the same fail-closed rule.
+     */
+    private fun containExtraction(
+        process: java.lang.Process,
+        childIdentity: ProcessIdentity?,
+        staging: File
+    ): ContainmentOutcome {
+        val report = childIdentity?.let { identity ->
+            terminator().terminate(
+                roots = listOf(identity),
+                graceMs = containmentGraceOverrideMs
+                    ?: ProcessTreeTerminator.DEFAULT_GRACE_MS,
+                hardLimitMs = containmentHardLimitOverrideMs
+                    ?: ProcessTreeTerminator.DEFAULT_HARD_LIMIT_MS
+            )
+        }
+        val survivorsLabel = report?.survivors
+            ?.joinToString(prefix = "[", postfix = "]")
+            ?: "<identity-unavailable>"
+        Logger.i(
+            TAG,
+            "containment report: targets=${report?.targets ?: 0} " +
+                "signalled=${report?.signalled ?: 0} " +
+                "escalated=${report?.escalated ?: 0} survivors=$survivorsLabel"
+        )
+        if (report?.confirmed == true) return ContainmentOutcome(confirmed = true, note = null)
+
+        // Last resort against the host itself; this cannot prove the tracees
+        // are gone, so staging must NOT be deleted underneath anything still
+        // extracting. Wait (bounded) for the host to actually exit: a bare
+        // destroyForcibly() returns before the kernel has torn the process
+        // down, and the caller may otherwise delete the tree while it is
+        // still being written.
+        process.destroyForcibly()
+        try {
+            if (!process.waitFor(HOST_KILL_WAIT_SECONDS, TimeUnit.SECONDS)) {
+                Logger.w(
+                    TAG,
+                    "containment: host still alive ${HOST_KILL_WAIT_SECONDS}s after destroyForcibly"
+                )
+            }
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+        val quarantined = quarantineStaging(staging)
+        val note = if (quarantined != null) {
+            "staging quarantined at ${quarantined.absolutePath}"
+        } else {
+            "staging quarantine FAILED — staging left in place"
+        }
+        return ContainmentOutcome(confirmed = false, note = note)
+    }
+
+    private class ContainmentOutcome(
+        val confirmed: Boolean,
+        val note: String?
+    )
+
+    /**
      * Phase 04: move [staging] out of the installer's path so the caller's
      * normal cleanup (`failAndCleanUp` deletes staging) cannot delete a tree
      * that something still has open. Returns the quarantine path, or null when
@@ -671,8 +907,18 @@ class RootfsExtractor @Inject constructor(
          */
         private const val TAG = "StagedRootFsInstaller"
 
-        /** Maximum time in minutes to wait for native tar extraction before force-killing. */
-        private const val EXTRACTION_TIMEOUT_MINUTES = 30L
+        /** Maximum wall-clock time in minutes; only bounds a runaway process (RF-012). */
+        private const val EXTRACTION_ABSOLUTE_TIMEOUT_MINUTES = 360L
+
+        /** Bounded wait for the host to die after the last-resort SIGKILL. */
+        private const val HOST_KILL_WAIT_SECONDS = 5L
+
+        /**
+         * RF-012: extraction is considered stalled after this many minutes
+         * without a new tar checkpoint or member name. Slow storage that is
+         * still making progress therefore never trips it.
+         */
+        private const val EXTRACTION_STALL_TIMEOUT_MINUTES = 15L
 
         /**
          * §1.88: GNU tar's default blocking factor is 20 records of 512 bytes
@@ -681,18 +927,74 @@ class RootfsExtractor @Inject constructor(
          * the checkpoint counter into a real extraction fraction.
          */
         private const val CHECKPOINT_RECORD_BYTES = 20L * 512L
+
+        /**
+         * UX-003: average tar member overhead in the uncompressed stream —
+         * a 512-byte header plus padding of the member data to a 512-byte
+         * boundary. Padding is at most 511 bytes; half that is used as an
+         * estimate, which is enough to stop the checkpoint fraction from
+         * hitting 1.0 long before `tar -x` finishes a many-small-files rootfs.
+         */
+        private const val TAR_MEMBER_OVERHEAD_BYTES = 512L + 256L
+
+        /**
+         * UX-003: monotonic, honest extraction fraction. The checkpoint
+         * estimate is scaled against data bytes plus a per-member overhead
+         * estimate, and is capped just below 1.0 while tar is still running:
+         * completion is reported by the caller only after the process exits.
+         */
+        internal fun extractionProgressFraction(
+            records: Long,
+            expectedExtractedBytes: Long,
+            expectedEntryCount: Long,
+            previous: Float
+        ): Float {
+            if (records <= 0 || expectedExtractedBytes <= 0) return previous
+            val overhead = expectedEntryCount.coerceAtLeast(0L) * TAR_MEMBER_OVERHEAD_BYTES
+            val expectedStreamBytes = expectedExtractedBytes + overhead
+            if (expectedStreamBytes <= 0) return previous
+            val raw = (records * CHECKPOINT_RECORD_BYTES.toDouble() / expectedStreamBytes).toFloat()
+            return maxOf(previous, raw.coerceIn(0f, RUNNING_PROGRESS_CEILING))
+        }
+
+        /** UX-003: never report 100% from an estimate while the child runs. */
+        private const val RUNNING_PROGRESS_CEILING = 0.99f
+
+        /**
+         * RF-012: the timeout decision, extracted so "a slow but progressing
+         * extraction is not killed" is unit-testable without a device.
+         *
+         * Returns the label to report, or null while the extraction may
+         * continue. Stall wins over the absolute ceiling when both are due,
+         * because "no progress for N minutes" is the actionable diagnosis.
+         */
+        internal fun extractionTimeoutReason(
+            nowMs: Long,
+            startedAtMs: Long,
+            lastProgressAtMs: Long,
+            absoluteTimeoutMs: Long,
+            stallTimeoutMs: Long,
+            absoluteLabel: String,
+            stallLabel: String
+        ): String? {
+            if (nowMs - lastProgressAtMs >= stallTimeoutMs) return "$stallLabel without progress"
+            if (nowMs - startedAtMs >= absoluteTimeoutMs) return absoluteLabel
+            return null
+        }
     }
 }
 
 /**
  * The extraction argv, built once so the containment contract is testable.
  *
- * - The bundled `setsid` (when the bootstrap ships it) is the FIRST argv so
- *   the child becomes a session/process-group leader: `pgid == pid`, which is
- *   exactly what [ProcessContainment.killTree] can then address as a group.
+ * - A `setsid` binary (when the bootstrap ships one) is the FIRST argv so the
+ *   child becomes a session/process-group leader: `pgid == pid`, which
+ *   [ProcessTreeTerminator] treats as a hardening layer. The shipped busybox
+ *   has no `setsid` applet, so the timeout path relies on the PPID tree it
+ *   snapshots before signalling.
  * - `--kill-on-exit` is a proot option and must precede the traced `tar`
  *   command. On a graceful proot exit it reaps the tracee tree; it does NOT
- *   run after a SIGKILLed host, which is why the group kill is the primary
+ *   run after a SIGKILLed host, which is why tree containment is the primary
  *   mechanism, not this flag.
  */
 internal fun buildExtractionArgv(
@@ -701,11 +1003,20 @@ internal fun buildExtractionArgv(
     setsid: File?,
     tempArchive: File,
     staging: File,
-    stripComponents: Int
+    stripComponents: Int,
+    /**
+     * F-004 / R-03: request proot's syscall translation trace (`-v 2`) only
+     * when the user enabled debug info. At the default (`-v 0`) proot still
+     * reports fatal errors on stderr — including the assert/trace line a
+     * failed extraction needs — but does not emit the per-syscall stream that
+     * made a full rootfs install write hundreds of MB that were then drained
+     * and discarded.
+     */
+    verbose: Boolean = false
 ): List<String> = buildList {
     setsid?.let { add(it.absolutePath) }
     add(proot.absolutePath)
-    add("-v"); add("2")
+    add("-v"); add(if (verbose) "2" else "0")
     add("--link2symlink")
     add("--kill-on-exit")
     add(tar.absolutePath)

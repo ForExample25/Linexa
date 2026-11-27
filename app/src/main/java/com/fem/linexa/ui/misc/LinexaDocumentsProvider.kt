@@ -11,12 +11,13 @@ import android.provider.DocumentsContract.Document
 import android.provider.DocumentsContract.Root
 import android.provider.DocumentsProvider
 import android.webkit.MimeTypeMap
+import androidx.annotation.StringRes
+import com.fem.linexa.R
 import com.fem.linexa.core.filesystem.deleteRecursivelyAllowingReadOnly
+import com.fem.linexa.core.i18n.linexaString
 import com.fem.linexa.core.logging.Logger
 import com.fem.linexa.domain.runtime.RuntimeState
 import com.fem.linexa.domain.workspace.WorkspaceLaunchValidator
-import com.fem.linexa.domain.workspace.WorkspaceMetadata
-import com.fem.linexa.domain.workspace.WorkspaceReadiness
 import com.fem.linexa.domain.workspace.WorkspaceRepository
 import com.fem.linexa.service.runtime.SessionManager
 import com.fem.linexa.service.runtime.WorkspaceFileManager
@@ -28,13 +29,36 @@ import dagger.hilt.components.SingletonComponent
 import java.io.File
 import java.io.FileNotFoundException
 import java.io.IOException
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.runBlocking
 
 /** openDocument read mode — SDK 34 exposes no public constant for it. */
 private const val MODE_READ_ONLY = "r"
 /** Write modes SAF clients actually pass (issue #8 copy/move-into support). */
 private val MODES_WRITE = setOf("w", "wt", "wa", "rw", "rwt")
+
+/**
+ * P0-4 (2026-11-23): one child's sort inputs, captured **once**.
+ *
+ * The old comparator called `File.isDirectory` for every sort comparison —
+ * O(n log n) `stat`s for a listing that needs n. This holder is filled by
+ * [orderChildRows] before sorting, so each child is statted exactly once and
+ * the ordering rule (directories first, then name) is unchanged. Sorting is
+ * stable (`sortedWith`), so equal keys keep `listFiles()` order.
+ */
+internal data class ChildRow(
+    val file: File,
+    val isDirectory: Boolean,
+    val name: String
+)
+
+/**
+ * P0-4: precompute each child's `(isDirectory, name)` then sort directories
+ * first, by name — the same order the provider always produced, without
+ * statting inside the comparator.
+ */
+internal fun orderChildRows(children: Array<File>): List<ChildRow> =
+    children
+        .map { child -> ChildRow(file = child, isDirectory = child.isDirectory, name = child.name) }
+        .sortedWith(compareBy({ !it.isDirectory }, { it.name }))
 
 /**
  * SAF [DocumentsProvider] exposing Linexa's on-disk state to the system
@@ -134,6 +158,13 @@ class LinexaDocumentsProvider : DocumentsProvider() {
 
     override fun onCreate(): Boolean {
         appContext = context?.applicationContext
+        // LINEXA-PERF-008: warm the SAF workspace index before the first Binder
+        // query so `queryChildDocuments` never has to wait on Room. `warm()` is
+        // non-blocking by contract — it starts the cache's own IO collector —
+        // and stays fail-open: Hilt may not be ready here, and the first query
+        // retries the same (cheap) construction.
+        runCatching { browsableCache().warm() }
+            .onFailure { e -> Logger.w(tag, "SAF index warm-up skipped: ${e.message}") }
         return true
     }
 
@@ -145,14 +176,17 @@ class LinexaDocumentsProvider : DocumentsProvider() {
                 c,
                 LinexaDocumentsMapping.ROOT_CONTAINERS,
                 ROOT_TITLE_LINEXA,
-                "Workspace root filesystems",
+                localized(R.string.documents_provider_workspaces_summary, "Workspace root filesystems"),
                 bytesAvailable(workspacesBaseDir())
             )
             addRootRow(
                 c,
                 LinexaDocumentsMapping.ROOT_PUBLIC,
-                "Public",
-                "Host folder bound to /mnt/shared inside every workspace",
+                localized(R.string.documents_provider_public_title, "Public"),
+                localized(
+                    R.string.documents_provider_public_summary,
+                    "Host folder bound to /mnt/shared inside every workspace"
+                ),
                 bytesAvailable(publicSharedDir())
             )
         }
@@ -167,11 +201,9 @@ class LinexaDocumentsProvider : DocumentsProvider() {
         return cursor(projection, documentColumns) { c ->
             when (decoded) {
                 is Decoded.ContainersRoot -> {
-                    val browsable = listBrowsableWorkspaces()
-                    val names = LinexaDocumentsMapping.assignDisplayNames(browsable.map { it.id to it.displayName })
-                    browsable.forEach { meta ->
-                        val rootfs = resolveRootfs(meta.id)
-                        addDirRow(c, LinexaDocumentsMapping.workspaceDocumentId(meta.id), names[meta.id] ?: meta.id, rootfs)
+                    browsableWorkspacesOrEmpty().forEach { row ->
+                        val rootfs = resolveRootfs(row.id)
+                        addDirRow(c, LinexaDocumentsMapping.workspaceDocumentId(row.id), row.displayName, rootfs)
                     }
                 }
                 is Decoded.Workspace -> addChildRows(c, resolveRootfs(decoded.workspaceId), parentDocumentId)
@@ -195,12 +227,16 @@ class LinexaDocumentsProvider : DocumentsProvider() {
         return cursor(projection, documentColumns) { c ->
             when (decoded) {
                 is Decoded.ContainersRoot -> addDirRow(c, documentId, ROOT_TITLE_LINEXA, workspacesBaseDir())
-                is Decoded.PublicRoot -> addDirRow(c, documentId, "Public", publicSharedDir())
+                is Decoded.PublicRoot -> addDirRow(
+                    c,
+                    documentId,
+                    localized(R.string.documents_provider_public_title, "Public"),
+                    publicSharedDir()
+                )
                 is Decoded.Workspace -> {
-                    val names = LinexaDocumentsMapping.assignDisplayNames(
-                        listBrowsableWorkspaces().map { it.id to it.displayName }
-                    )
-                    addDirRow(c, documentId, names[decoded.workspaceId] ?: decoded.workspaceId, resolveRootfs(decoded.workspaceId))
+                    val displayName = findBrowsableOrNull(decoded.workspaceId)?.displayName
+                        ?: decoded.workspaceId
+                    addDirRow(c, documentId, displayName, resolveRootfs(decoded.workspaceId))
                 }
                 is Decoded.ContainersFile -> addFileRow(c, documentId, resolveFile(documentId))
                 is Decoded.PublicFile -> addFileRow(c, documentId, resolveFile(documentId))
@@ -230,11 +266,11 @@ class LinexaDocumentsProvider : DocumentsProvider() {
     ): ParcelFileDescriptor {
         val isWrite = mode in MODES_WRITE
         if (mode != MODE_READ_ONLY && !isWrite) {
-            throw FileNotFoundException("Unsupported open mode '$mode' for $documentId")
+            throw notFound(R.string.saf_error_unsupported_open_mode, mode, documentId)
         }
         if (isWrite) requireMutable(documentId, WorkspaceMutationPolicy.Mutation.WRITE)
         val file = resolveFile(documentId)
-        if (file.isDirectory) throw FileNotFoundException("$documentId is a directory")
+        if (file.isDirectory) throw notFound(R.string.saf_error_is_directory, documentId)
         // Pre-release audit fix (2026-09-02, security S9): [resolveFile]
         // validates containment on the CANONICAL path; opening the canonical
         // file keeps that TOCTOU window closed for reads and writes alike.
@@ -253,7 +289,7 @@ class LinexaDocumentsProvider : DocumentsProvider() {
             if (isWrite) notifyChanged(documentId)
             opened
         } catch (e: IOException) {
-            throw FileNotFoundException("Cannot open $documentId: ${e.message}")
+            throw notFound(R.string.saf_error_cannot_open, documentId, e.detail())
         }
     }
 
@@ -273,7 +309,7 @@ class LinexaDocumentsProvider : DocumentsProvider() {
         // also refuses to create through a symlinked parent's escape.
         checkContained(target, rootOf(parentDocumentId), parentDocumentId)
         if (target.exists()) {
-            throw FileNotFoundException("$name already exists in $parentDocumentId")
+            throw notFound(R.string.saf_error_already_exists_in, name, parentDocumentId)
         }
         val created = if (mimeType == Document.MIME_TYPE_DIR) {
             target.mkdir()
@@ -281,10 +317,10 @@ class LinexaDocumentsProvider : DocumentsProvider() {
             try {
                 target.createNewFile()
             } catch (e: IOException) {
-                throw FileNotFoundException("Cannot create $name: ${e.message}")
+                throw notFound(R.string.saf_error_cannot_create, name, e.detail())
             }
         }
-        if (!created) throw FileNotFoundException("Cannot create $name in $parentDocumentId")
+        if (!created) throw notFound(R.string.saf_error_cannot_create_in, name, parentDocumentId)
         val documentId = LinexaDocumentsMapping.childDocumentId(parentDocumentId, name)
         notifyChanged(documentId)
         notifyChanged(parentDocumentId)
@@ -303,7 +339,7 @@ class LinexaDocumentsProvider : DocumentsProvider() {
         if (!deleted) {
             // FilesContract: clients handle a delete failure via the thrown
             // exception; a partial recursive delete surfaces honestly.
-            throw FileNotFoundException("Could not delete $documentId")
+            throw notFound(R.string.saf_error_cannot_delete, documentId)
         }
         notifyChanged(documentId)
         parentId?.let { notifyChanged(it) }
@@ -314,14 +350,14 @@ class LinexaDocumentsProvider : DocumentsProvider() {
         val file = resolveFile(documentId)
         val name = validateDisplayName(displayName)
         val parent = file.parentFile
-            ?: throw FileNotFoundException("$documentId has no parent directory")
+            ?: throw notFound(R.string.saf_error_no_parent, documentId)
         val target = File(parent, name)
         checkContained(target, rootOf(documentId), documentId)
         if (target.exists()) {
-            throw FileNotFoundException("$name already exists")
+            throw notFound(R.string.saf_error_already_exists, name)
         }
         if (!file.renameTo(target)) {
-            throw FileNotFoundException("Could not rename $documentId to $name")
+            throw notFound(R.string.saf_error_cannot_rename, documentId, name)
         }
         val renamedId = rebaseDocumentId(documentId, file.name, name)
         notifyChanged(documentId)
@@ -355,7 +391,7 @@ class LinexaDocumentsProvider : DocumentsProvider() {
 
     private fun decodeOrThrow(documentId: String): Decoded =
         LinexaDocumentsMapping.decode(documentId)
-            ?: throw FileNotFoundException("Unknown document ID: $documentId")
+            ?: throw notFound(R.string.saf_refused_unknown_document, documentId)
 
     /**
      * Resolves a file (or directory) document ID to a [File], enforcing
@@ -368,12 +404,12 @@ class LinexaDocumentsProvider : DocumentsProvider() {
         val (root, segments) = when (decoded) {
             is Decoded.ContainersFile -> resolveRootfs(decoded.workspaceId) to decoded.relativeSegments
             is Decoded.PublicFile -> publicSharedDir() to decoded.relativeSegments
-            else -> throw FileNotFoundException("$documentId is not a file or directory under a root")
+            else -> throw notFound(R.string.saf_error_not_under_root, documentId)
         }
         val candidate = segments.fold(root) { acc, segment -> File(acc, segment) }
         checkContained(candidate, root, documentId)
         if (!candidate.exists()) {
-            throw FileNotFoundException("$documentId does not exist")
+            throw notFound(R.string.saf_error_does_not_exist, documentId)
         }
         return candidate
     }
@@ -384,12 +420,12 @@ class LinexaDocumentsProvider : DocumentsProvider() {
         val candidateCanonical = try {
             candidate.canonicalFile
         } catch (e: IOException) {
-            throw FileNotFoundException("Cannot resolve $documentId: ${e.message}")
+            throw notFound(R.string.saf_error_cannot_resolve, documentId, e.detail())
         }
         if (!candidateCanonical.path.startsWith(rootCanonical.path + File.separator) &&
             candidateCanonical.path != rootCanonical.path
         ) {
-            throw FileNotFoundException("$documentId escapes its root")
+            throw notFound(R.string.saf_error_escapes_root, documentId)
         }
     }
 
@@ -418,7 +454,9 @@ class LinexaDocumentsProvider : DocumentsProvider() {
     private fun requireMutable(documentId: String, mutation: WorkspaceMutationPolicy.Mutation) {
         val decision = WorkspaceMutationPolicy.check(documentId, mutation, ::isWorkspaceActive)
         if (decision is WorkspaceMutationPolicy.Decision.Refused) {
-            throw FileNotFoundException(decision.reason)
+            throw FileNotFoundException(
+                appContext?.let(decision::localizedReason) ?: decision.reason
+            )
         }
     }
 
@@ -482,22 +520,22 @@ class LinexaDocumentsProvider : DocumentsProvider() {
         if (name.isEmpty() || name == "." || name == ".." ||
             name.contains('/') || name.contains('\\') || name.any { it.isISOControl() }
         ) {
-            throw FileNotFoundException("Invalid name: $raw")
+            throw notFound(R.string.saf_error_invalid_name, raw)
         }
         return name
     }
 
     private fun resolveRootfs(workspaceId: String): File {
-        if (workspaceId.isBlank()) throw FileNotFoundException("Empty workspace id")
+        if (workspaceId.isBlank()) throw notFound(R.string.saf_error_empty_workspace_id)
         val fileManager = dependencies().workspaceFileManager()
         val rootfs = fileManager.getRootfsPath(workspaceId)
         val baseCanonical = canonicalOrThrow(fileManager.getWorkspaceBasePath(workspaceId))
         val rootfsCanonical = canonicalOrThrow(rootfs)
         if (!rootfsCanonical.path.startsWith(baseCanonical.path + File.separator)) {
-            throw FileNotFoundException("Workspace $workspaceId rootfs escapes its workspace directory")
+            throw notFound(R.string.saf_error_workspace_escapes, workspaceId)
         }
         if (!rootfs.isDirectory) {
-            throw FileNotFoundException("Workspace $workspaceId rootfs is not present on disk")
+            throw notFound(R.string.saf_error_workspace_missing, workspaceId)
         }
         return rootfs
     }
@@ -505,12 +543,19 @@ class LinexaDocumentsProvider : DocumentsProvider() {
     private fun canonicalOrThrow(file: File): File = try {
         file.canonicalFile
     } catch (e: IOException) {
-        throw FileNotFoundException("Cannot resolve path for ${file.path}: ${e.message}")
+        throw notFound(R.string.saf_error_cannot_resolve_path, file.path, e.detail())
     }
 
     private fun checkIsDirectory(file: File, documentId: String) {
-        if (!file.isDirectory) throw FileNotFoundException("$documentId is not a directory")
+        if (!file.isDirectory) throw notFound(R.string.saf_error_not_directory, documentId)
     }
+
+    /** Localized [FileNotFoundException] for SAF clients; [args] fill the resource. */
+    private fun notFound(@StringRes messageRes: Int, vararg args: Any): FileNotFoundException =
+        FileNotFoundException(requireAppContext().linexaString(messageRes, *args))
+
+    /** IOException detail without smuggling a literal "null" into a UI message. */
+    private fun IOException.detail(): String = message ?: javaClass.simpleName
 
     /** {externalFilesDir}/shared — same location PRootLauncher binds as /mnt/shared. */
     private fun publicSharedDir(): File =
@@ -526,24 +571,52 @@ class LinexaDocumentsProvider : DocumentsProvider() {
     // ── Workspace listing (DB + disk truth, like RuntimeService) ────────
 
     /**
-     * Fail-open on purpose (issue #8): the Files app caches roots; a
-     * transient failure here used to be able to blank the workspace list
-     * (and, in destination-picking mode, the whole entry). A hiccup now
-     * yields an empty-but-valid listing instead of a broken query.
+     * P0-4: the provider-owned workspace index. Constructed lazily because
+     * ContentProvider queries may precede Hilt readiness; every failure
+     * inside the cache stays fail-open (empty-but-valid listing, issue #8).
      */
-    private fun listBrowsableWorkspaces(): List<WorkspaceMetadata> {
-        return try {
+    @Volatile
+    private var browsableWorkspaceCache: BrowsableWorkspaceCache? = null
+
+    private fun browsableCache(): BrowsableWorkspaceCache {
+        browsableWorkspaceCache?.let { return it }
+        synchronized(this) {
+            browsableWorkspaceCache?.let { return it }
             val deps = dependencies()
-            val all = runBlocking { deps.workspaceRepository().observeAll().first() }
-            val validator = deps.workspaceLaunchValidator()
-            all.filter { meta ->
-                LinexaDocumentsMapping.isBrowsable(meta.status, validator.evaluate(meta) is WorkspaceReadiness.Ready)
-            }
+            return BrowsableWorkspaceCache(
+                repository = deps.workspaceRepository(),
+                validator = deps.workspaceLaunchValidator(),
+                // LINEXA-PERF-008: a client that queried before the collector's
+                // first emission gets an empty listing for that one call; this
+                // tells the resolver to re-query the Containers directory
+                // instead of leaving the view empty until the user navigates.
+                onFirstRowsPublished = { notifyChanged(LinexaDocumentsMapping.ROOT_CONTAINERS) }
+            ).also { browsableWorkspaceCache = it }
+        }
+    }
+
+    /**
+     * P0-4: the cache itself is fail-open for repository/disk failures, but
+     * resolving the Hilt entry point can still throw (a query before Hilt is
+     * ready, or a construction failure). The pre-cache listing helper caught
+     * every such failure and returned an empty-but-valid listing (issue #8);
+     * these two wrappers keep exactly that contract at the query boundary.
+     */
+    private fun browsableWorkspacesOrEmpty(): List<BrowsableWorkspaceCache.BrowsableWorkspace> =
+        try {
+            browsableCache().browsableWorkspaces()
         } catch (e: Exception) {
             Logger.w(tag, "workspace listing failed — returning empty: ${e.message}")
             emptyList()
         }
-    }
+
+    private fun findBrowsableOrNull(workspaceId: String): BrowsableWorkspaceCache.BrowsableWorkspace? =
+        try {
+            browsableCache().find(workspaceId)
+        } catch (e: Exception) {
+            Logger.w(tag, "workspace lookup failed — using the id fallback: ${e.message}")
+            null
+        }
 
     // ── Cursor helpers ─────────────────────────────────────────────────
 
@@ -555,6 +628,14 @@ class LinexaDocumentsProvider : DocumentsProvider() {
         val filtered = projection?.filter { it in columns }?.toTypedArray() ?: columns
         return MatrixCursor(filtered).also(fill)
     }
+
+    /**
+     * Resolve provider-visible text in the app-selected language. The English
+     * fallback keeps the provider usable in framework harnesses where
+     * [onCreate] has not run (appContext is null).
+     */
+    private fun localized(@StringRes resId: Int, fallback: String, vararg args: Any): String =
+        appContext?.linexaString(resId, *args) ?: fallback
 
     private fun addRootRow(c: MatrixCursor, rootId: String, title: String, summary: String, availableBytes: Long) {
         c.newRow()
@@ -613,12 +694,12 @@ class LinexaDocumentsProvider : DocumentsProvider() {
 
     private fun addChildRows(c: MatrixCursor, dir: File, parentDocumentId: String) {
         val children = dir.listFiles() ?: return
-        children.sortedWith(compareBy({ !it.isDirectory }, { it.name })).forEach { child ->
-            val childId = LinexaDocumentsMapping.childDocumentId(parentDocumentId, child.name)
-            if (child.isDirectory) {
-                addDirRow(c, childId, child.name, child)
+        orderChildRows(children).forEach { row ->
+            val childId = LinexaDocumentsMapping.childDocumentId(parentDocumentId, row.name)
+            if (row.isDirectory) {
+                addDirRow(c, childId, row.name, row.file)
             } else {
-                addFileRow(c, childId, child)
+                addFileRow(c, childId, row.file)
             }
         }
     }

@@ -6,6 +6,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -16,13 +17,16 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.relocation.BringIntoViewRequester
 import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.shape.CircleShape
@@ -38,8 +42,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.fem.linexa.R
 import com.fem.linexa.domain.settings.TerminalShortcut
 import com.fem.linexa.domain.settings.TerminalShortcutModifier
 import com.fem.linexa.domain.settings.TerminalToolbarConfig
@@ -128,7 +134,7 @@ fun HavenTerminalBar(
         if (onAllSessions != null) {
             HIconGhost(
                 iconRes = com.fem.linexa.R.drawable.ic_haven_grid,
-                contentDescription = "All Sessions",
+                contentDescription = stringResource(R.string.haven_terminal_all_sessions),
                 onClick = onAllSessions,
                 tint = h.text2
             )
@@ -175,14 +181,14 @@ fun HavenTerminalBar(
         }
         HIconGhost(
             iconRes = com.fem.linexa.R.drawable.ic_custom_more_vert,
-            contentDescription = "Terminal menu",
+            contentDescription = stringResource(R.string.haven_terminal_menu),
             onClick = onMore,
             tint = h.text2
         )
         if (onKeyboard != null) {
             HIconGhost(
                 iconRes = com.fem.linexa.R.drawable.ic_haven_keyboard,
-                contentDescription = "Keyboard",
+                contentDescription = stringResource(R.string.haven_terminal_keyboard),
                 onClick = onKeyboard,
                 tint = h.text2
             )
@@ -337,12 +343,32 @@ class HavenTerminalModifiers {
 }
 
 /**
+ * 10D (Phase 10) — the shortcut-bar key label's armed style, extracted from
+ * [HavenExtraKeys]'s inline `if (active)` pair so the armed→accent mapping is
+ * asserted behaviourally in [HavenShortcutLabelStyleTest] against both Haven
+ * palettes, instead of being pinned as source text.
+ *
+ * Contract (2026-08-30, Issues 2+3): an ARMED modifier's label takes the theme
+ * accent `primary` and goes Bold; an unarmed key takes the shortcut foreground
+ * `keyFg` at SemiBold. Only the LABEL changes — never a key background (that
+ * half stays pinned in ShortcutBarAppThemeSourceTest).
+ */
+object HavenShortcutLabel {
+
+    /** Armed keys take the theme's accent; resting keys the shortcut foreground. */
+    fun color(h: HavenColors, active: Boolean): Color = if (active) h.primary else h.keyFg
+
+    /** Armed labels go Bold so the arming state stays legible without color alone. */
+    fun weight(active: Boolean): FontWeight = if (active) FontWeight.Bold else FontWeight.SemiBold
+}
+
+/**
  * `.xkeys` — the terminal shortcut bar. 2026-08-29 (UI optimization Phase 1):
  * this is a **layout row, not a floating overlay** — the caller composes it as
  * the LAST child of the terminal column (below the terminal surface, above the
  * soft keyboard), so it can never cover terminal text. The terminal area takes
  * the remaining height, and keyboard appearance/disappearance re-flows the
- * column through the surface's `imePadding()`; the bar's own
+ * column through the surface's `navigationBars ∪ ime` inset; the bar's own
  * `navigationBarsPadding()` keeps it clear of the gesture strip while the
  * keyboard is closed (Compose inset consumption zeroes it while the IME is up,
  * so the bar sits directly on the keyboard with no gap).
@@ -400,7 +426,7 @@ fun HavenExtraKeys(
                 ) {
                     row.forEach { key ->
                         val active = key.modifier?.let { modifiers.isArmed(it) } ?: false
-                        val fg = if (active) h.primary else h.keyFg
+                        val fg = HavenShortcutLabel.color(h, active)
                         Box(
                             modifier = Modifier
                                 .width(itemWidth)
@@ -418,7 +444,7 @@ fun HavenExtraKeys(
                                 text = key.label,
                                 style = HavenType.small.copy(
                                     fontFamily = HavenType.mono,
-                                    fontWeight = if (active) FontWeight.Bold else FontWeight.SemiBold,
+                                    fontWeight = HavenShortcutLabel.weight(active),
                                     fontSize = androidx.compose.ui.unit.TextUnit(13.5f, androidx.compose.ui.unit.TextUnitType.Sp)
                                 ),
                                 color = fg,
@@ -440,12 +466,14 @@ fun HavenExtraKeys(
  * with the Haven palette; the three load-bearing rules are unchanged:
  *
  *  - **opaque** — the content underneath stays composed without re-layout;
- *  - **imePadding()** — the surface shrinks above the soft keyboard, which is
- *    what keeps the extra-keys pill visible;
- *  - **no top/bottom insets padding on the surface itself** — the background
- *    paints edge-to-edge; the bar carries its own `statusBarsPadding()` and
- *    the floating keys clear the gesture area, so the terminal reads as a
- *    full-bleed page exactly like the concept frame.
+ *  - **bottom-inset aware** — the surface consumes the navigation-bar ∪ IME
+ *    union once, which shrinks its content above the soft keyboard and keeps
+ *    the extra-keys row visible without double-padding when the keyboard is up;
+ *  - **edge-to-edge paint** — the background is applied before that inset
+ *    modifier, so it still reaches behind the status bar and the gesture nav
+ *    bar; the bar carries its own `statusBarsPadding()` and the extra-keys row
+ *    clears the gesture area, so the terminal reads as a full-bleed page
+ *    exactly like the concept frame.
  */
 @Composable
 fun HavenTerminalSurface(
@@ -457,7 +485,11 @@ fun HavenTerminalSurface(
         modifier = modifier
             .fillMaxSize()
             .background(h.term)
-            .imePadding(),
+            // Consume navigation bars and IME as ONE inset. When the keyboard
+            // is up the IME band already covers the navigation bar, and the
+            // extra-keys row below applies navigationBarsPadding itself; two
+            // separate paddings here plus that row would stack twice.
+            .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime)),
         content = content
     )
 }
@@ -485,20 +517,20 @@ fun HavenTerminalSheet(
     val h = HavenTheme.colors
     HSheet(
         onDismiss = onDismiss,
-        title = "Terminal",
+        title = stringResource(R.string.haven_terminal_sheet_title),
         subtitle = sessionLabel,
         modifier = modifier
     ) {
         Column {
             HRow(
-                title = "Copy",
-                description = "Copy the selection or last output",
+                title = stringResource(R.string.haven_terminal_copy),
+                description = stringResource(R.string.haven_terminal_copy_desc),
                 onClick = if (canCopy) onCopy else null,
                 leading = { HRic(com.fem.linexa.R.drawable.ic_haven_copy) }
             )
             HRow(
-                title = "Paste",
-                description = "Insert host clipboard into the PTY",
+                title = stringResource(R.string.haven_terminal_paste),
+                description = stringResource(R.string.haven_terminal_paste_desc),
                 onClick = onPaste,
                 leading = { HRic(com.fem.linexa.R.drawable.ic_custom_clipboard) }
             )
@@ -513,12 +545,12 @@ fun HavenTerminalSheet(
                 HRic(com.fem.linexa.R.drawable.ic_haven_keyboard)
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Font size",
+                        text = stringResource(R.string.haven_terminal_font_size),
                         style = HavenType.rowTitle,
                         color = h.text
                     )
                     Text(
-                        text = "Applies to every terminal. Pinch to zoom works too.",
+                        text = stringResource(R.string.haven_terminal_font_size_desc),
                         style = HavenType.desc,
                         color = h.text2,
                         modifier = Modifier.padding(top = 3.dp)
@@ -535,7 +567,7 @@ fun HavenTerminalSheet(
             }
             if (onNewTerminal != null) {
                 HRow(
-                    title = "New terminal",
+                    title = stringResource(R.string.haven_terminal_new),
                     onClick = onNewTerminal,
                     leading = { HRic(com.fem.linexa.R.drawable.ic_custom_add, tinted = true) }
                 )
@@ -554,7 +586,7 @@ fun HavenTerminalSheet(
             }
             if (onCloseSession != null) {
                 HRow(
-                    title = "Close session",
+                    title = stringResource(R.string.haven_terminal_close),
                     onClick = onCloseSession,
                     titleColor = h.red,
                     leading = { HRic(com.fem.linexa.R.drawable.ic_haven_close, danger = true) }

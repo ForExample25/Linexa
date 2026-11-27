@@ -3,6 +3,7 @@ package com.fem.linexa.ui.screens.taskmanager
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.fem.linexa.core.i18n.linexaString
 import com.fem.linexa.data.resource.AppThreadCpuSnapshot
 import com.fem.linexa.data.resource.HostResourceSampler
 import com.fem.linexa.data.resource.ProcessSignals
@@ -157,7 +158,7 @@ class TaskManagerViewModel @Inject constructor(
      */
     fun terminate(sample: WorkspaceProcessSample, onResult: (Boolean, String?) -> Unit) {
         if (sample.isRoot) {
-            onResult(false, getApplication<Application>().getString(com.fem.linexa.R.string.tm_root_protected))
+            onResult(false, getApplication<Application>().linexaString(com.fem.linexa.R.string.tm_root_protected))
             return
         }
         viewModelScope.launch {

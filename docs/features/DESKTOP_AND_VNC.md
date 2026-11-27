@@ -1,18 +1,21 @@
 # Desktop and VNC
 
-**Status:** Current — describes the implemented desktop/VNC feature, verified against source.
-
-**Project:** Linexa Linux Workspace (`com.fem.linexa`)
-
-**Source locations:** `app/src/main/java/com/fem/linexa/ui/screens/desktop/`, `app/src/main/java/com/fem/linexa/service/runtime/features/DesktopRunMode.kt`, `GuiBackend.kt`, `XvncProvisioner.kt`, `DesktopViewModel.kt`, `DesktopGeometry.kt`
+**Source locations:** `app/src/main/java/com/fem/linexa/ui/screens/desktop/`,
+`app/src/main/java/com/fem/linexa/service/runtime/desktop/`,
+`app/src/main/java/com/fem/linexa/service/runtime/features/DesktopRunMode.kt`,
+`app/src/main/java/com/fem/linexa/service/runtime/features/GuiBackend.kt`
 
 ---
 
 ## 1. Purpose
 
-This document is the feature-level reference for Linexa's desktop/VNC feature: run modes (VNC, WebView), backends (X11, VNC), presets (XFCE/LXQt/Openbox), the hand-written RFB client, VNC authentication, geometry, and input handling.
+A workspace can present a graphical session in two ways: an embedded VNC
+viewer connected to a guest X server, or an in-app WebView pointed at a guest
+web server. This document describes those run modes, the transport backends
+behind VNC mode, desktop presets, authentication, geometry, and input.
 
-Deep PRoot daemon launching is covered in [`architecture/RUNTIME_ARCHITECTURE.md`](../architecture/RUNTIME_ARCHITECTURE.md).
+PRoot daemon launching is covered in
+[`architecture/RUNTIME_ARCHITECTURE.md`](../architecture/RUNTIME_ARCHITECTURE.md).
 
 ---
 
@@ -20,111 +23,239 @@ Deep PRoot daemon launching is covered in [`architecture/RUNTIME_ARCHITECTURE.md
 
 In scope:
 
-- Desktop run modes (VNC, WebView) and backends (X11, VNC)
-- Desktop presets (XFCE, LXQt, Openbox)
-- VNC client (RFB 3.8, CopyRect + Raw, optional ZRLE, VNC-Auth)
-- VNC authentication (`-rfbauth`, passwd file, loopback binding)
-- Desktop geometry and input (touch, gestures, wheel)
-- Web mode (guest web server + WebView, loopback-only cleartext)
-- Known regressions/contributors (receive loop on Main dispatcher, dirty-region acknowledge degradation)
+- Run modes: VNC and WebView
+- Backends for VNC mode: X11 and VNC
+- Desktop presets: XFCE, LXQt, Openbox
+- Embedded RFB 3.8 client: CopyRect, Raw, optional ZRLE, DesktopSize, VNC-Auth
+- VNC password provisioning and loopback binding
+- Geometry, DPI, input, and text entry
+- Known limitations
 
 Out of scope:
 
-- PRoot daemon startup (`startDaemon`): [`architecture/RUNTIME_ARCHITECTURE.md`](../architecture/RUNTIME_ARCHITECTURE.md)
-- VNC password security model: [`features/SECURITY_AND_PERMISSIONS.md`](./SECURITY_AND_PERMISSIONS.md)
+- PRoot daemon startup: [`architecture/RUNTIME_ARCHITECTURE.md`](../architecture/RUNTIME_ARCHITECTURE.md)
+- Password storage and backup rules: [`features/SECURITY_AND_PERMISSIONS.md`](./SECURITY_AND_PERMISSIONS.md)
 
 ---
 
-## 3. Current implementation status
+## 3. Run modes
 
-| Area | Status | Evidence |
-|---|---|---|
-| DesktopRunMode enum (VNC, WEBVIEW) | Implemented | `service/runtime/features/DesktopRunMode.kt` |
-| GuiBackend enum (X11, VNC) | Implemented | `service/runtime/features/GuiBackend.kt` |
-| VNC mode with hand-written RFB client | Implemented | `ui/screens/desktop/VncClient.kt`, `VncZrle.kt`, `VncZlibStream.kt` |
-| WebView mode (guest web server + WebView) | Implemented | `ui/screens/desktop/DesktopWebPanel.kt` |
-| Desktop presets (XFCE/LXQt/Openbox) | Implemented | `DesktopPreset.kt` |
-| Xvnc provisioning via PackageManagerDetector | Implemented | `XvncProvisioner.kt` |
-| VNC auth (`-rfbauth`, `vncpasswd -f`, passwd file chmod 600) | Implemented | `DesktopVncAuthProvisioner.kt` |
-| Loopback binding `-localhost yes` (TigerVNC ≥ 1.11) | Implemented, conditional | `DesktopGeometry.kt` |
-| `DesktopSize` pseudo-encoding / resize | Not implemented (fixed for session) | verified absence in source |
-| Cursor pseudo-encoding (239) | Not implemented | verified absence in source |
+The run mode is a per-workspace setting (`feature.desktop.mode`, persisted in
+workspace attributes) selected in **Features → Desktop**. It is resolved
+fail-open: an unknown or absent value becomes `VNC`.
 
----
+### 3.1 VNC mode
 
-## 4. Technical overview
+1. The workspace runtime must be running; the desktop runs inside the
+   workspace's PRoot container.
+2. A display number is allocated per workspace (`X11SessionManager`), and a
+   loopback RFB port is allocated per workspace (`DesktopPortRegistry`,
+   preferring 5901 and scanning forward).
+3. The desktop enable flow generates a VNC password if none exists, unless
+   the user has explicitly allowed an unauthenticated desktop. A password is
+   provisioned inside the guest with `vncpasswd -f` before the server starts;
+   a provisioning failure prevents an unauthenticated start. The secret is
+   written to the guest process's stdin, never into the command line, so it is
+   not readable from `/proc/<pid>/cmdline` while provisioning runs.
+4. A start with no password fails closed unless the user enabled
+   **Allow desktop without a VNC password** in the Desktop settings. Loopback
+   is not treated as an authentication boundary: Android does not isolate
+   apps on `127.0.0.1`.
+5. The app waits for the real X socket or RFB port to answer before reporting
+   the desktop as running.
+6. The framebuffer is streamed by the in-app RFB 3.8 client.
 
-### 4.1 Run modes
+### 3.2 WebView mode
 
-Each workspace selects its desktop run mode in **Features → Desktop**. The mode is a per-workspace setting, persisted with the workspace.
+WebView mode runs a user-configured guest command (webtop, noVNC,
+code-server, a static HTTP server, or any other web service) as a supervised
+daemon, waits for its TCP port, and renders the result in a fullscreen in-app
+`WebView`.
 
-**VNC mode:**
-1. The workspace session must be Running (the desktop runs inside the workspace's PRoot container).
-2. A loopback port is allocated per workspace (preferring 5901, scanning forward) by `DesktopPortRegistry`, and a display number by `X11SessionManager`.
-3. If the user configured a VNC password, it is provisioned inside the guest via `vncpasswd -f` before the server starts. If provisioning fails, the desktop is **not** started unauthenticated — the start fails with an explanatory message (fail-closed). Xvnc always binds `-localhost yes` (when supported), so the server is reachable only from the device itself.
-4. The app waits for the real VNC port to answer before claiming `Running`.
-5. The framebuffer is streamed by the in-app RFB 3.8 client (`VncClient`/`VncSurfaceView`): CopyRect + Raw encodings, optional ZRLE, optional VNC-Auth. Wire-controlled allocations (framebuffer size, desktop name, ZRLE inflate output) are bounded; a mid-session guest resolution change is handled via the DesktopSize pseudo-encoding.
+- Cleartext HTTP is permitted only for `127.0.0.1` and `localhost`
+  (`network_security_config.xml`).
+- The WebView pins navigation to the loopback origin it was opened with.
+  File and content access are disabled, and the WebView is destroyed when the
+  panel leaves the composition.
+- "Share to LAN" copies the URL string; the guest server itself decides what
+  interface it binds.
+- The server is **user-supplied**. Linexa pins the WebView to its loopback
+  origin, but adds no authentication, TLS, or access-control layer of its own:
+  anything that can reach the chosen port can use whatever the server exposes.
+  Prefer a server with its own authentication, keep it on loopback unless you
+  intentionally use Share to LAN, and only expose it on networks you trust.
 
-**Web mode:**
-Runs a user-configured guest web server (webtop, noVNC, code-server, …) and renders it in a fullscreen in-app WebView:
-- Cleartext HTTP is allowed for loopback origins only (`network_security_config.xml`).
-- The WebView pins navigation to the exact loopback origin it was opened with; file/content access and file-URL access are explicitly disabled; the WebView is destroyed when the panel goes away.
-- Share-to-LAN exposes the URL string (not the service) to other devices on the network — the guest server itself decides what it binds.
-
-Web mode needs no X client inside the guest; VNC mode requires an `Xvnc` binary in the guest rootfs (the desktop presets install TigerVNC).
-
-### 4.2 Backends
-
-The desktop screen supports two transport backends, selected per workspace:
-
-- **X11 (preferred)** — the guest session runs against an X server made reachable to the Android-side viewer (Termux:X11 helper app when installed, or an in-workspace Xvnc provider). The backend is probed at start; a probe failure falls back explicitly.
-- **VNC (fallback)** — the RFB streaming path described above.
-
-Both backends share the per-workspace port/display allocation (`DesktopPortRegistry`, `X11SessionManager`), stop their daemons with a SIGTERM→SIGKILL escalation plus a guest-tree sweep, and clear stale sockets before allocation.
-
-### 4.3 Presets
-
-Installable desktop presets — **XFCE**, **LXQt**, **Openbox** — are provisioned through the guest's own package manager (the same command the Package Manager screen would run, executed via the streaming exec path with the 1800 s operation budget). Preset presence is detected before install; an already-present preset is skipped. After installation the workspace's declared session launcher is probed and used for subsequent starts.
-
-### 4.4 VNC client architecture
-
-`VncClient` is constructed in `DesktopScreen.kt` with `rememberCoroutineScope()`, whose dispatcher is `AndroidUiDispatcher.Main`. The RFB receive loop runs in that scope; each message body reads on `Dispatchers.IO` via `withContext`. Every RFB message therefore costs two dispatches and one Main-thread turn. Pointer/key/wheel writes also `scope.launch { withContext(Dispatchers.IO) { … } }`.
-
-The Raw decode path allocates three arrays per rectangle (`ByteArray(w*h*4)`, `IntArray(w*h)`, blit into framebuffer) and copies each pixel twice before it reaches a bitmap. ZRLE decoder is kept but deliberately unadvertised on loopback (`SetEncodings` advertises only COPY_RECT + RAW).
-
-The dirty-region acknowledge/publish handshake degrades to full-frame uploads under sustained load: `VncDirtyRegion.acknowledge` clears the union only when the acknowledged generation is still the most recently published one; under a sustained update stream the union grows toward full-screen.
-
-No cursor pseudo-encoding is negotiated; cursor latency equals framebuffer latency.
-
-### 4.5 Geometry
-
-`xServerCommand()` reads `Application.resources.displayMetrics` at `startDesktop` time — before the Desktop requests landscape and hides the system bars. Any discrepancy between the metrics observed then and the fullscreen landscape window becomes a permanent letterbox via the viewer's contain-scale. The framebuffer geometry is fixed for the session; no client-driven resize path exists.
-
-### 4.6 Known regression findings
-
-| Finding | Class | Summary |
-|---|---|---|
-| RFB receive loop driven by Compose UI dispatcher | HIGH-CONFIDENCE CONTRIBUTOR | Two dispatches + one Main turn per message; rate coupled to Main-thread availability |
-| Dirty-region acknowledge degrades to full-frame uploads | HIGH-CONFIDENCE CONTRIBUTOR | Union grows under sustained load; ghosting |
-| Frame geometry measured before fullscreen-landscape | POSSIBLE CONTRIBUTOR | Letterbox if metrics differ from final window |
-| `tcpNoDelay = true` | Harmless, near-irrelevant | Delay is before the socket, not in it |
-| Choreographer hop removed | Correct | Removes up to one display frame per update |
+WebView mode needs no X client in the guest. VNC mode requires an X server and
+a session; the desktop presets install them.
 
 ---
 
-## 5. Limitations and known issues
+## 4. Backends for VNC mode
 
-- No cursor pseudo-encoding; cursor cannot be separated from frame latency.
-- Framebuffer geometry immutable after Xvnc start; no resize support.
-- VNC password encrypted at rest (AES-GCM/Keystore, legacy rows migrated at startup), but plaintext in guest `~/.vnc/linexa-vnc-passwd` while running and in a RootFS export; loopback-only on Xvnc versions supporting `-localhost`, and on older Xvnc the loopback restriction may be omitted — security exposure.
-- `pacman -Sy <pkg>` (partial upgrade, unsupported on Arch) issued in five provisioning paths (Xvnc install, sshd, XFCE/LXQt/Openbox presets).
-- desktop run modes still needs on-device verification; see [`engineering/TESTING_STRATEGY.md`](../engineering/TESTING_STRATEGY.md).
+VNC mode selects a backend with `GuiBackend` (`feature.desktop.backend`),
+defaulting to `X11`.
+
+### 4.1 X11 backend
+
+Two providers implement X11:
+
+1. **Termux:X11** (preferred when available). The guest runs the
+   `termux-x11` helper as a supervised daemon. The helper connects to the
+   Termux:X11 Android app and creates the display socket inside the rootfs.
+   Linexa watches that socket host-side and launches the viewer app.
+   Availability is probed: both the Android app and the guest helper must be
+   present.
+2. **Xvnc** (compatibility path). The guest's own `Xvnc` serves the display,
+   and Linexa's embedded RFB viewer renders it. This path is used when the
+   Termux:X11 app or helper is unavailable.
+
+X11 readiness is detected from the Unix socket at
+`{rootfs}/tmp/.X11-unix/X<n>`, so polling costs one host-side `stat` rather
+than a PRoot launch. A failure produces an explicit `X11Failed` state; the
+screen offers the VNC backend as a fallback rather than switching silently.
+
+### 4.2 VNC backend
+
+The VNC backend is the direct RFB path: start Xvnc, wait for the RFB port,
+and stream the framebuffer. It shares display/port allocation and daemon
+teardown with the X11 path.
+
+Both backends stop daemons by their own `(workspace, name)` key. No
+host-global `pkill` is used, because PRoot does not isolate PIDs between
+workspaces.
 
 ---
 
-## 6. Related documentation
+## 5. Presets
 
-- [`architecture/RUNTIME_ARCHITECTURE.md`](../architecture/RUNTIME_ARCHITECTURE.md) — PRoot daemon launching (`startDaemon`)
-- [`features/SECURITY_AND_PERMISSIONS.md`](./SECURITY_AND_PERMISSIONS.md) — VNC password, backup rules, security model
-- [`features/NETWORKING.md`](./NETWORKING.md) — network configuration relevant to VNC loopback
-- [`engineering/TESTING_STRATEGY.md`](../engineering/TESTING_STRATEGY.md) — verification status
+Installable presets — **XFCE**, **LXQt**, and **Openbox** — are provisioned
+through the guest's package manager. Presence is detected before install, so
+an existing preset is skipped. After installation, the declared session
+launcher is probed and used for subsequent starts.
+
+Preset installation runs through the streaming exec path with the package
+operation budget and the per-workspace package queue.
+
+---
+
+## 6. RFB client
+
+`VncClient` implements RFB 3.8 with:
+
+- **Encodings:** CopyRect and Raw by default; ZRLE is available and offered
+  when the workspace opts in (`feature.desktop.vnc.zrle`). A server that sends
+  ZRLE unasked is still decoded, because the decoder is present.
+- **DesktopSize pseudo-encoding:** a guest resolution change updates the
+  client framebuffer and viewer geometry for the rest of the session.
+- **VNC authentication:** when a password is configured, the client performs
+  the RFB challenge/response handshake.
+- **Bounded allocations:** framebuffer dimensions, desktop names, and ZRLE
+  inflate output are bounded so a malicious or broken server cannot exhaust
+  memory.
+
+The receive loop and pointer/key writes run on `Dispatchers.IO` from the
+start. `connect()` performs one explicit hop from the composition's Main
+scope. `disconnect()` is the only thing that stops the client's coroutines;
+`DesktopScreen` calls it from a `DisposableEffect`.
+
+Dirty-region uploads are tracked per published generation. An acknowledgement
+retires every generation it covers, so a late acknowledgement cannot leave a
+stale box to grow into a full-screen upload. Over-reporting is deliberate:
+uploading a superset of changed pixels is safe, uploading a subset is not.
+
+No cursor pseudo-encoding is negotiated. The remote cursor is part of the
+framebuffer, so cursor latency follows frame latency. A relative-cursor input
+mode exists for pointer capture in the viewer.
+
+---
+
+## 7. Authentication and binding
+
+- Passwords are stored as an AES-GCM envelope in the workspace attributes,
+  with an `unreadable` marker if the Keystore cannot decrypt. An unreadable
+  password blocks desktop start rather than silently running without
+  authentication.
+- Enabling the desktop generates a password when none is stored and no
+  no-authentication consent exists (`passwordToGenerateOnEnable`). The
+  settings panel shows the generated value and the Generate button.
+- The guest passwd file is `~/.vnc/linexa-vnc-passwd`, mode 600.
+- `-SecurityTypes VncAuth -rfbauth <file>` is used when a password exists.
+  Otherwise the server runs with `-SecurityTypes None` **only** when
+  `feature.desktop.vnc.allowUnauthenticated` is explicitly `true`; the
+  default is a fail-closed refusal before any process starts.
+- `-localhost yes` is added when the guest's Xvnc supports it (TigerVNC 1.11
+  and later). On older Xvnc the flag is omitted, and the server's default
+  binding applies. Loopback is defence in depth, never authentication.
+- The capability is re-probed with the full combined discovery command after an
+  Xvnc auto-install, so the `-localhost` decision describes the installed
+  server rather than the pre-install absence. If the optional capability
+  section is missing or empty, the start path spends one bounded retry
+  (`timeout 5 Xvnc -help`); a probe whose framing is missing is reported as a
+  retryable error and installs nothing.
+- After the listener exists, the guest's socket table is classified as
+  `Verified` (a loopback listener was actually seen), `Violation` (a routable
+  listener; the server is stopped), or `Unverified` (blank output or no
+  listener for the port). `Unverified` never counts as proof: without a
+  password and without the consent flag the server is stopped. The tool set
+  is feature-detected (`ss`, `netstat`, BusyBox `netstat`).
+
+The full security model, including storage and export exposure, is in
+[`features/SECURITY_AND_PERMISSIONS.md`](./SECURITY_AND_PERMISSIONS.md).
+
+---
+
+## 8. Geometry and input
+
+`DesktopGeometry` derives a landscape framebuffer from the device display at
+the panel's own resolution, with a 4K (3840×2160) degenerate-display guard,
+aspect preservation, and even-dimension rounding. A fixed preset (720p, 900p,
+or 1080p) can be selected for performance or legibility. DPI is scaled from the
+device density and framebuffer size so guest fonts render at a sensible
+physical size.
+
+The framebuffer geometry is fixed when Xvnc starts. A guest-side resolution
+change announced through DesktopSize is followed by the client, but there is
+no client-driven resize request.
+
+Input handling supports:
+
+- Direct touch as pointer movement and clicks
+- Touchpad-style relative movement
+- Gestures for scroll/wheel
+- Hardware and on-screen keyboard input, including composed text
+- Pinch-to-zoom of the viewer
+
+---
+
+## 9. Limitations
+
+- **No cursor pseudo-encoding.** The cursor cannot be separated from frame
+  latency.
+- **No client-driven resize.** Geometry is chosen at start; a guest resize is
+  followed only when the server announces it.
+- **Loopback-only is conditional.** On Xvnc versions without `-localhost`, the
+  server's default bind behavior applies. An unauthenticated server is refused
+  by default for exactly this reason; the user must explicitly accept that any
+  app on the device can reach the desktop.
+- **Bind verification needs a tool.** The post-start check depends on `ss`,
+  `netstat`, or BusyBox `netstat` inside the guest. When none exists the bind
+  is `Unverified`, and an unauthenticated start is stopped (rather than
+  assumed safe).
+- **Plaintext password in the guest.** While the desktop runs, the password
+  exists in `~/.vnc/linexa-vnc-passwd` and in memory. A RootFS export asks the
+  user first and removes that file by default (together with SSH private keys
+  and GnuPG); choosing "export as-is" packs it verbatim.
+- **Termux:X11 depends on an external app.** If the app or helper is missing,
+  the X11 backend falls back to the Xvnc provider; neither is bundled.
+- **WebView content is user-supplied.** The app restricts the origin and
+  disables file access, but the guest web server's own authentication and
+  behavior are outside Linexa's control.
+
+---
+
+## 10. Related documentation
+
+- [`architecture/RUNTIME_ARCHITECTURE.md`](../architecture/RUNTIME_ARCHITECTURE.md) — PRoot daemon launching
+- [`features/SECURITY_AND_PERMISSIONS.md`](./SECURITY_AND_PERMISSIONS.md) — VNC password and backup rules
+- [`features/NETWORKING.md`](./NETWORKING.md) — loopback and guest networking
+- [`engineering/PERFORMANCE.md`](../engineering/PERFORMANCE.md) — rendering and input cost

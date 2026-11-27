@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -135,7 +136,7 @@ private fun InsightsHeader(
             .fillMaxWidth()
             .padding(start = HavenDim.hdrH, end = HavenDim.hdrH, top = HavenDim.hdrV, bottom = 6.dp),
         verticalAlignment = Alignment.Top,
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
+        horizontalArrangement = Arrangement.spacedBy(HavenDim.headerActionGap)
     ) {
         HIconCircle(
             iconRes = R.drawable.ic_haven_arrow_back,
@@ -152,9 +153,7 @@ private fun InsightsHeader(
             Text(
                 text = stringResource(R.string.device_info_title),
                 style = HavenType.h1,
-                color = h.text,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                color = h.text
             )
             Text(
                 text = stamp,
@@ -736,17 +735,18 @@ private fun CapabilityEntry(capability: CapabilityRow) {
 private fun LegendChip(label: String, container: Color, content: Color) {
     Box(
         modifier = Modifier
-            .height(HavenDim.chipH)
+            .heightIn(min = HavenDim.chipH)
             .clip(RoundedCornerShape(50))
             .background(container)
-            .padding(horizontal = 14.dp),
+            .padding(horizontal = 14.dp, vertical = 6.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
             text = label,
             style = HavenType.desc.copy(fontWeight = FontWeight.SemiBold),
             color = content,
-            maxLines = 1
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            maxLines = 2
         )
     }
 }

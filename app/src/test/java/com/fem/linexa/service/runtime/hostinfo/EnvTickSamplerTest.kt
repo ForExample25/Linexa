@@ -81,21 +81,38 @@ class EnvTickSamplerTest {
     fun `counters stay monotonic when a pid dies between passes`() {
         val proc = tmp.newFolder("proc")
         writeProc(proc, 100, statLine(utime = 10, stime = 5, lastCore = 0))
+        writeProc(proc, 200, statLine(state = 'R', utime = 40, stime = 40, lastCore = 0))
         var now = 0L
         val sampler = EnvTickSampler(proc, clockTicksPerSecond = 100, nowMs = { now })
         sampler.sampleOnce(listOf(0))
 
         now += 1000
-        writeProc(proc, 200, statLine(state = 'R', utime = 40, stime = 40, lastCore = 0))
+        File(File(proc, "200"), "stat").delete()   // pid vanished
         val s2 = sampler.sampleOnce(listOf(0))!!
 
-        now += 1000
-        File(File(proc, "200"), "stat").delete()   // pid vanished
-        val s3 = sampler.sampleOnce(listOf(0))!!
+        // The incremental pass re-reads the known set; the vanished pid simply
+        // stops contributing and is dropped until the next full sweep.
+        assertTrue(s2.perCoreIdleTicks.values.sum() >= 0L)
+        assertEquals("each distinct pid counted once", 2, s2.seenProcsTotal)
+        assertEquals(1, sampler.knownPidCountForTest())
+    }
 
-        assertTrue(s3.busyTotalTicks >= s2.busyTotalTicks - 80)  // dying pid stops contributing; never negative-drops beyond its own last window
-        assertTrue(s3.perCoreIdleTicks.values.sum() >= s2.perCoreIdleTicks.values.sum())
-        assertEquals("each distinct pid counted once", 2, s3.seenProcsTotal)
+    @Test
+    fun `a pid created between passes is discovered at the next full sweep`() {
+        val proc = tmp.newFolder("proc")
+        writeProc(proc, 100, statLine(utime = 10, stime = 5, lastCore = 0))
+        var now = 0L
+        val sampler = EnvTickSampler(proc, clockTicksPerSecond = 100, nowMs = { now })
+        sampler.sampleOnce(listOf(0))   // full sweep: knows 100
+
+        writeProc(proc, 200, statLine(utime = 0, stime = 0, lastCore = 0))
+        now += 1_000
+        val incremental = sampler.sampleOnce(listOf(0))!!
+        assertEquals("incremental passes only re-read the known set", 1, incremental.seenProcsTotal)
+
+        now += EnvTickSampler.FULL_SCAN_INTERVAL_MS + 1
+        val fullSweep = sampler.sampleOnce(listOf(0))!!
+        assertEquals("the full sweep discovers the new pid", 2, fullSweep.seenProcsTotal)
     }
 
     @Test

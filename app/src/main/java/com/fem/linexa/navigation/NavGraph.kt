@@ -1,6 +1,5 @@
 package com.fem.linexa.navigation
 
-import android.net.Uri
 import androidx.activity.ComponentActivity
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.EnterTransition
@@ -13,6 +12,8 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -30,6 +31,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.navArgument
 import androidx.navigation.navDeepLink
 import com.fem.linexa.R
+import com.fem.linexa.core.i18n.findActivity
 import com.fem.linexa.service.runtime.RuntimeNotificationContent
 import com.fem.linexa.ui.components.haven.HavenDestination
 import com.fem.linexa.ui.components.haven.HavenSidebar
@@ -77,10 +79,27 @@ object Routes {
     const val TERMINAL_LAYOUT = "settings/terminal/recent-sessions"
     const val TERMINAL_TOOLBAR = "settings/terminal/toolbar"
 
-    fun workspace(id: String) = "workspace/$id"
-    fun installDistro(distroId: String) = "install?distroId=$distroId"
+    fun workspace(id: String, terminalId: String? = null): String {
+        val base = "workspace/${encodeArgument(id)}"
+        return if (terminalId == null) base else "$base?terminalId=${encodeArgument(terminalId)}"
+    }
+
+    fun installDistro(distroId: String) = "install?distroId=${encodeArgument(distroId)}"
     fun installFile(uri: String, name: String, version: String) =
-        "install?uri=${Uri.encode(uri)}&name=${Uri.encode(name)}&version=${Uri.encode(version)}"
+        "install?uri=${encodeArgument(uri)}&name=${encodeArgument(name)}&version=${encodeArgument(version)}"
+
+    /**
+     * F-030: one encoder for every route argument. It used to be `Uri.encode`
+     * in some builders and raw interpolation in others (`workspace/$id`), so
+     * an id containing `/`, `?`, `&` or a space could change the route shape.
+     *
+     * `URLEncoder` is JVM-testable (the route builders are pure functions and
+     * their round-trip is pinned by `RoutesTest`); its only quirk is encoding
+     * a space as `+`, which is not what a URI path/query expects, so it is
+     * normalised to `%20`.
+     */
+    private fun encodeArgument(value: String): String =
+        java.net.URLEncoder.encode(value, "UTF-8").replace("+", "%20")
 }
 
 /**
@@ -150,22 +169,46 @@ private val tabExit: AnimatedContentTransitionScope<NavBackStackEntry>.() -> Exi
 fun AppNavGraph(
     navController: NavHostController
 ) {
-    val backStackEntry by navController.currentBackStackEntryAsState()
-    val currentRoute = backStackEntry?.destination?.route
     val config = LocalConfiguration.current
     val isTablet = config.screenWidthDp >= 840
 
-    // One shell-scoped HomeViewModel for the tablet sidebar's workspace list
-    // (activity scope so it survives tab switches and pushed destinations).
-    val activity = LocalContext.current as ComponentActivity
-    val shellHomeViewModel: com.fem.linexa.ui.screens.home.HomeViewModel =
-        hiltViewModel(activity)
-
-    val selectedDestination = HavenDestination.entries.firstOrNull { it.route == currentRoute }
-    val workspaces by shellHomeViewModel.workspacesUi.collectAsState()
+    // The root composition swaps in a locale-configured ContextWrapper, which is
+    // not itself an Activity; unwrap it instead of casting the CompositionLocal
+    // directly (that cast used to be safe only while LocalContext was the raw
+    // activity).
+    val activity = requireNotNull(LocalContext.current.findActivity() as? ComponentActivity) {
+        "AppNavGraph requires a ComponentActivity host"
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         if (isTablet) {
+            // PERF-010 (2026-11-24 continuation): the selected route exists
+            // only to drive the tablet sidebar. Collecting it at the root made
+            // every phone back-stack change recompose this shell and the
+            // NavHost for a value no phone UI renders; the collection now
+            // lives in the one branch that consumes it.
+            val backStackEntry by navController.currentBackStackEntryAsState()
+            val currentRoute = backStackEntry?.destination?.route
+            val selectedDestination =
+                HavenDestination.entries.firstOrNull { it.route == currentRoute }
+
+            // One shell-scoped HomeViewModel for the tablet sidebar's workspace
+            // list (activity scope so it survives tab switches and pushed
+            // destinations).
+            //
+            // PERF-002 (performance audit 2026-11-23): created ONLY on tablets.
+            // It used to be created and collected unconditionally, so on a
+            // phone — where the sidebar does not exist and nothing read it —
+            // every activity ran a second Room collector, a second enrichment
+            // pipeline and a second `declaredPreview` filesystem pass for its
+            // whole lifetime. Its `collectAsState` also made the ROOT
+            // composition read workspace state, so every workspace emission
+            // recomposed the shell and the NavHost. Neither had a consumer on
+            // phones; both are gone now.
+            val shellHomeViewModel: com.fem.linexa.ui.screens.home.HomeViewModel =
+                hiltViewModel(activity)
+            val workspaces by shellHomeViewModel.workspacesUi.collectAsState()
+
             Row(modifier = Modifier.fillMaxSize()) {
                 HavenSidebar(
                     selected = selectedDestination,
@@ -224,11 +267,7 @@ private fun HavenNavHost(navController: NavHostController) {
         ) {
             ActivityScreen(
                 onOpenWorkspace = { workspaceId, terminalId ->
-                    if (terminalId != null) {
-                        navController.navigate("workspace/$workspaceId?terminalId=$terminalId")
-                    } else {
-                        navController.navigate(Routes.workspace(workspaceId))
-                    }
+                    navController.navigate(Routes.workspace(workspaceId, terminalId))
                 },
                 onSelectTab = { navController.navigateHavenTab(it) }
             )
@@ -267,10 +306,16 @@ private fun HavenNavHost(navController: NavHostController) {
 
         // 2026-08-27 (device-info UI track): visible-lifetime sampling
         // starts/stops with the destination; back returns to Settings.
+        // P0-5 (2026-11-23): "visible" now means lifecycle-visible, not merely
+        // composed — nav destinations stay composed while the app is
+        // backgrounded, so the /proc poller used to keep running off-screen.
         composable(Routes.DEVICE_INFO) {
             val viewModel: com.fem.linexa.ui.screens.device.DeviceInfoViewModel = hiltViewModel()
-            androidx.compose.runtime.DisposableEffect(viewModel) {
-                viewModel.start()
+            val foreground by com.fem.linexa.ui.components.rememberIsForeground()
+            LaunchedEffect(viewModel, foreground) {
+                if (foreground) viewModel.start() else viewModel.pause()
+            }
+            DisposableEffect(viewModel) {
                 onDispose { viewModel.pause() }
             }
             com.fem.linexa.ui.screens.device.DeviceInfoScreen(

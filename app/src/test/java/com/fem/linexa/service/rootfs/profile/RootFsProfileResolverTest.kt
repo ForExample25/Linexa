@@ -276,9 +276,11 @@ class RootFsProfileResolverTest {
     }
 
     @Test
-    fun anUnpublishedArchitectureIsNotedButNeverRejected() {
-        // A self-built rootfs for an unlisted architecture is legitimate; the
-        // profile's list documents what the distribution publishes.
+    fun anArchitectureThisBuildCannotRunIsNotedButNeverRejected() {
+        // A self-built rootfs for an architecture this build has no packaged
+        // PRoot for is legitimate; the profile's list documents what THIS BUILD
+        // can run, and the hard rejection happens before extraction
+        // (ArchitectureCompatibility), not here.
         val resolution = RootFsProfileResolver.resolve(
             ArchiveSignals(
                 markerTexts = mapOf(ArchiveSignals.OS_RELEASE_USR to "ID=fedora\nVERSION_ID=42\n"),
@@ -289,7 +291,11 @@ class RootFsProfileResolverTest {
         assertEquals("fedora", resolution.profile.id)
         assertEquals(RootFsProbe.RootFsArch.ARMEABI_V7A, resolution.identity.arch)
         assertTrue(resolution.detected)
-        assertTrue(resolution.notes.any { it.contains("published architectures") })
+        assertTrue(
+            resolution.notes.any {
+                it.contains("not among the architectures this build runs for")
+            }
+        )
     }
 
     // ── watched-path derivation ──────────────────────────────────────────

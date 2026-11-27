@@ -25,6 +25,7 @@ import com.fem.linexa.service.workspace.WorkspaceDeleter
 import com.fem.linexa.ui.theme.LinexaColors
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -56,6 +57,29 @@ class HomeViewModel @Inject constructor(
     private val _workspaces = MutableStateFlow<List<WorkspaceMetadata>>(emptyList())
     val workspaces: StateFlow<List<WorkspaceMetadata>> = _workspaces.asStateFlow()
 
+    /**
+     * The single Room upstream for this ViewModel.
+     *
+     * Both [workspacesUi] (the enriched cards) and [observeWorkspaces] (the raw
+     * count / empty state) used to call `repository.observeAll()` separately, so
+     * every HomeViewModel ran **two** Room observers over the same table. Room's
+     * Flow re-queries on every write, so the duplicate observer doubled the
+     * query and emission work for every install-progress tick and status flip.
+     * The Room collector in [observeWorkspaces] now publishes here and
+     * [workspacesUi] derives from this in-memory flow, leaving exactly one Room
+     * observer per ViewModel.
+     */
+    private val workspaceRows = MutableStateFlow<List<WorkspaceMetadata>>(emptyList())
+
+    /**
+     * True until the first non-empty Room list has passed [workspacesUi]'s
+     * debounce. The 150 ms debounce exists to coalesce the burst of whole-table
+     * re-emissions Room produces during an install; it must not delay the first
+     * paint of an already-populated list on a cold start. An empty list is still
+     * debounced — it carries no cards to paint.
+     */
+    private var firstNonEmptyEmission = true
+
     private val _uiState = MutableStateFlow<HomeUiState>(HomeUiState.Loading)
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
 
@@ -72,8 +96,15 @@ class HomeViewModel @Inject constructor(
     private val enrichmentCache = mutableMapOf<String, Pair<WorkspaceMetadata, Workspace>>()
 
     /**
+     * LINEXA-PERF-007: the cold-start size walk is deferred once per
+     * ViewModel (see the enrichment pass). Ambient data must not race the
+     * first frames.
+     */
+    private var coldStartEnrichmentDeferred = false
+
+    /**
      * Presentation-ready workspace cards (metadata + cached disk usage +
-     * declared preview).
+     * declaration).
      *
      * Room re-emits the whole list on *every* DB write — including each
      * Importing progress tick and status flip during an install — so this
@@ -82,13 +113,19 @@ class HomeViewModel @Inject constructor(
      * size lookups hit [WorkspaceFileManager]'s cache after the first read,
      * and the whole mapping runs off the main thread.
      *
-     * §1.124: the declared preview is resolved here, on the same IO dispatcher,
-     * because [WorkspaceRootFsMetadata.previewImage] canonicalizes a path
-     * against the live filesystem (§1.121(b) — it is intentionally not
-     * memoized, so it must never run on the main thread). Re-resolving it on
-     * every emission is the point of that decision, not a cost to avoid: a
-     * preview that has since been replaced with a symlink out of the rootfs
-     * stops resolving, and the card falls back to the glyph.
+     * The upstream is [workspaceRows], not a second `repository.observeAll()`:
+     * [observeWorkspaces] owns the one Room collector. The first *non-empty*
+     * list bypasses the debounce so a cold start with existing workspaces
+     * paints immediately instead of waiting 150 ms for a timer whose purpose
+     * is only to coalesce install-progress bursts.
+     *
+     * **PERF-005 (performance remediation 2026-11-23):** the card no longer
+     * resolves a declared preview image. `Workspace.previewImage` had no UI
+     * consumer — `HavenWorkspaceCard` renders [DistroGlyph] only — so every
+     * Home emission was paying one `RootFsPreviewImage.resolveInside`
+     * canonicalization per workspace for a value nothing read. The
+     * `WorkspaceRootFsMetadata.previewImage` store API stays (it is tested and
+     * may be used by a future card), but this pipeline must not call it.
      *
      * **Staged emission (Phase 6b bug-fix):** the cold-cache cost of
      * [WorkspaceFileManager.getWorkspaceSize] — a `Files.walkFileTree` over
@@ -100,19 +137,17 @@ class HomeViewModel @Inject constructor(
      * `transformLatest` lets the flow emit twice:
      *
      * 1. **Fast emit.** A list of [Workspace] objects with `storageUsedLabel`
-     *    = null, `storageUsedFraction` = 0f, `previewImage` = null and
-     *    `declaration` = [RootFsDescriptor.UNDECLARED] — i.e. the Room row's
-     *    own distro facts only. `HavenWorkspaceCard` already handles every one of
-     *    these nulls (omits the size line, falls back to the letter avatar,
-     *    derives distro facts from the Room `distro` field) so the list paints
-     *    immediately.
+     *    = null, `storageUsedFraction` = 0f and `declaration` =
+     *    [RootFsDescriptor.UNDECLARED] — i.e. the Room row's own distro facts
+     *    only. `HavenWorkspaceCard` already handles every one of these nulls
+     *    (omits the size line, falls back to the letter avatar, derives distro
+     *    facts from the Room `distro` field) so the list paints immediately.
      *
-     * 2. **Per-item enrichment.** Each workspace's `getDiskUsage`,
-     *    `declaredPreview` and `declaration` is then computed in list order,
-     *    re-emitting the list after each completion so the corresponding card
-     *    snaps from the fast-fallback to its real fields. `LazyColumn` keys
-     *    by `Workspace.id`, so only the one card whose `Workspace` changed
-     *    recomposes; the rest stay still.
+     * 2. **Per-pass enrichment.** Each workspace's `getDiskUsage` and
+     *    `declaration` is then computed in list order, and the enriched list is
+     *    emitted once when the pass completes (PERF-011 — it used to re-emit
+     *    the whole list after every workspace). `LazyColumn` keys by
+     *    `Workspace.id`, so only the cards whose `Workspace` changed recompose.
      *
      * Re-entrancy-safe: `transformLatest` cancels the previous collector on
      * every upstream emission, so a Room tick that lands while enrichment is
@@ -122,11 +157,11 @@ class HomeViewModel @Inject constructor(
      * **Enrichment reuse (tab-switch jank fix):** `WhileSubscribed(5_000)`
      * stops this pipeline whenever Home has been off-screen for a while, and a
      * restart used to re-run Stage 1 from scratch — re-emitting the *stripped*
-     * shape and stripping the size lines and preview images off cards the user
-     * had fully painted a moment earlier, then re-enriching them one by one.
-     * That regression was exactly the visible flash/jump on every return to
-     * Home from a workspace (or another tab), and it also re-ran the per-card
-     * preview/declaration file IO. [enrichmentCache] now remembers each row's
+     * shape and stripping the size lines off cards the user had fully painted a
+     * moment earlier, then re-enriching them one by one. That regression was
+     * exactly the visible flash/jump on every return to Home from a workspace
+     * (or another tab), and it also re-ran the per-card declaration file IO.
+     * [enrichmentCache] now remembers each row's
      * last enriched rendering keyed by the source `WorkspaceMetadata`'s
      * structural equality: Stage 1 re-emits the *cached enriched* card for an
      * unchanged row (identical content — no visual change at all) and Stage 2
@@ -134,9 +169,15 @@ class HomeViewModel @Inject constructor(
      * install progress tick) misses the cache and re-enriches, unchanged.
      */
     @OptIn(ExperimentalCoroutinesApi::class)
-    val workspacesUi: StateFlow<List<Workspace>> = repository.observeAll()
-        .distinctUntilChanged()
-        .debounce(150)
+    val workspacesUi: StateFlow<List<Workspace>> = workspaceRows
+        .debounce { list ->
+            if (firstNonEmptyEmission && list.isNotEmpty()) {
+                firstNonEmptyEmission = false
+                0L
+            } else {
+                ROW_DEBOUNCE_MS
+            }
+        }
         .transformLatest { list ->
             // Stage 1 — fast emit: paint every card from the Room row alone.
             // toUiWorkspace() with its default args produces the "no enrichment"
@@ -163,36 +204,51 @@ class HomeViewModel @Inject constructor(
             val currentIds = list.mapTo(HashSet()) { it.id }
             enrichmentCache.keys.retainAll(currentIds)
 
-            // Stage 2 — per-item enrichment, re-emitting after each completion
-            // so a card snaps from the fast-fallback to its real fields the
-            // moment its data is ready. Serial on purpose: parallelising with
-            // `async` would still cap the parallelism at the IO dispatcher's
-            // default of 64, but would emit in completion order rather than list
-            // order — visually noisier, and the dominant cost (the rootfs walk
-            // for the workspace size) is bound by the same IO subsystem either
-            // way. Re-emitting the entire list per completion is cheap:
-            // LazyColumn diffs by `Workspace.id`, so only the one changed card
-            // recomposes. Rows whose cache entry is still fresh (source row
-            // unchanged) skip the IO entirely.
+            // Stage 2 — per-pass enrichment. Serial on purpose: parallelising
+            // with `async` would emit in completion order rather than list
+            // order and the dominant cost (the rootfs walk for the workspace
+            // size) is bound by the same IO subsystem either way.
+            //
+            // PERF-011: the enriched list is emitted ONCE after the pass, not
+            // after every workspace. The old per-item emit re-ran the whole
+            // downstream search/filter/sort N times per pass for a list whose
+            // only changed row was the one just enriched. Rows whose cache
+            // entry is still fresh (source row unchanged) skip the IO entirely,
+            // so a warm return performs no filesystem work and emits nothing
+            // beyond Stage 1.
             val enriched = fast.toMutableList()
+            var changed = false
+            val needsEnrichment = list.indices.any {
+                enrichmentCache[list[it].id]?.first != list[it]
+            }
+            // LINEXA-PERF-007: the size figure needs a recursive walk of a
+            // multi-GB rootfs. Starting it in the same breath as the first
+            // composition made it compete with the cold-start measure/layout/
+            // draw stalls for both CPU and the shared storage queue. Sizes are
+            // ambient data — the card already painted without them — so the
+            // first pass after process start waits one short, bounded interval;
+            // later passes only reach this point when a row actually changed.
+            if (needsEnrichment && !coldStartEnrichmentDeferred) {
+                coldStartEnrichmentDeferred = true
+                delay(ROW_ENRICH_DEFER_MS)
+            }
             for (i in list.indices) {
                 val metadata = list[i]
                 if (enrichmentCache[metadata.id]?.first == metadata) continue
                 val (storageLabel, storageFraction) = withContext(Dispatchers.IO) {
                     getDiskUsage(metadata.id)
                 }
-                val preview = withContext(Dispatchers.IO) { declaredPreview(metadata.id) }
                 val declaration = withContext(Dispatchers.IO) { declaration(metadata.id) }
                 val enrichedWorkspace = metadata.toUiWorkspace(
                     storageUsedLabel = storageLabel,
                     storageUsedFraction = storageFraction,
-                    previewImage = preview,
                     declaration = declaration
                 )
                 enrichmentCache[metadata.id] = metadata to enrichedWorkspace
                 enriched[i] = enrichedWorkspace
-                emit(enriched.toList())
+                changed = true
             }
+            if (changed) emit(enriched.toList())
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
@@ -271,6 +327,7 @@ class HomeViewModel @Inject constructor(
         collectJob = viewModelScope.launch {
             try {
                 repository.observeAll().collect { workspaces ->
+                    workspaceRows.value = workspaces
                     _workspaces.value = workspaces
                     // P3: the toolbar disappears below the threshold, so a leftover query
                     // or filter would be invisible and un-clearable — and would reappear
@@ -443,27 +500,6 @@ class HomeViewModel @Inject constructor(
     }
 
     /**
-     * §1.124 — this workspace's declared preview image, or null.
-     *
-     * Fail-open around the store as well as inside it: `previewImage` is already
-     * contract-bound to return null rather than throw, but it touches the
-     * filesystem, and a workspace whose directory is being deleted concurrently
-     * (Home can delete a running workspace, §1.117) must not turn an avatar
-     * lookup into a broken list.
-     *
-     * Per-workspace by construction — the id is threaded through to
-     * [WorkspaceFileManager.getRootfsPath] inside the store, so a preview can
-     * only ever resolve inside the rootfs of the workspace it belongs to. There
-     * is no shared or app-wide preview path anywhere on this route.
-     */
-    private fun declaredPreview(workspaceId: String): java.io.File? =
-        try {
-            rootFsMetadata.previewImage(workspaceId)
-        } catch (e: Exception) {
-            null
-        }
-
-    /**
      * UI Phase 2 — this workspace's declaration, in whichever format the image
      * used, or [RootFsDescriptor.UNDECLARED].
      *
@@ -473,10 +509,10 @@ class HomeViewModel @Inject constructor(
      * description — which is precisely the text §1.119 went to the trouble of
      * salvaging.
      *
-     * Fail-open around the store as well as inside it, for the same reason as
-     * [declaredPreview]: this runs for every card on every Room emission, and
-     * Home can delete a running workspace (§1.117), so a directory disappearing
-     * mid-read must degrade one card's subtitle rather than break the list.
+     * Fail-open around the store as well as inside it: this runs for every
+     * card on every Room emission, and Home can delete a running workspace
+     * (§1.117), so a directory disappearing mid-read must degrade one card's
+     * subtitle rather than break the list.
      */
     private fun declaration(workspaceId: String): RootFsDescriptor =
         try {
@@ -484,6 +520,24 @@ class HomeViewModel @Inject constructor(
         } catch (e: Exception) {
             RootFsDescriptor.UNDECLARED
         }
+
+    private companion object {
+        /**
+         * Coalesces Room's install-progress burst. The first non-empty list
+         * bypasses it (see [workspacesUi]); this value is therefore the
+         * steady-state debounce, not a first-paint delay.
+         */
+        const val ROW_DEBOUNCE_MS = 150L
+
+        /**
+         * LINEXA-PERF-007: one-shot grace period before the first disk-size
+         * walk. Long enough to clear the cold-start composition stalls,
+         * short enough that the size line still appears while the user is
+         * looking at the card. Not a cache and not a correctness gate — the
+         * walk that follows is unchanged.
+         */
+        const val ROW_ENRICH_DEFER_MS = 700L
+    }
 }
 
 sealed interface HomeUiState {
@@ -515,7 +569,6 @@ private fun WorkspaceMetadata.toUiWorkspace(
     // themselves were missing, which broke compilation.
     storageUsedLabel: String? = null,
     storageUsedFraction: Float = 0f,
-    previewImage: java.io.File? = null,
     declaration: RootFsDescriptor = RootFsDescriptor.UNDECLARED
 ): Workspace {
     val color = try {
@@ -562,9 +615,6 @@ private fun WorkspaceMetadata.toUiWorkspace(
         // catalog attribute was the sole source. Unknown ids still map to null
         // (no generic "Linux" glyph — that would be fake branding).
         distroId = catalogId ?: declared?.distro?.id,
-        // §1.124: the image's own artwork, when it declared some and it still
-        // resolves inside this workspace's rootfs. Outranks the glyph above.
-        previewImage = previewImage,
         distroName = declared?.distro?.name?.takeIf { it.isNotBlank() }
             ?: distro.name.takeIf { it.isNotBlank() },
         // The short code is an identifier, so a catalog id is as good a source

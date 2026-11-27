@@ -2,6 +2,7 @@ package com.fem.linexa.service.runtime
 
 import com.fem.linexa.core.logging.Logger
 import com.fem.linexa.domain.runtime.DEFAULT_TERMINAL_ID
+import com.fem.linexa.domain.runtime.TerminalExitDescription
 import com.fem.linexa.domain.runtime.TerminalState
 import com.fem.linexa.service.runtime.container.ContainerRuntime
 import com.fem.linexa.service.runtime.container.RecoverySweepReport
@@ -11,6 +12,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -18,6 +20,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -112,6 +115,19 @@ class WorkspaceTerminalManager @Inject constructor(
      * deliberate omission rather than the only possibility.
      */
     private val rootfsPaths = mutableMapOf<String, String>()
+
+    /**
+     * Finding 011 — terminal ids opened with `asRoot = true` in the current
+     * workspace session, so a restart keeps the elevation the user asked for.
+     *
+     * The elevation cannot be re-derived from the pty: a dead session has no
+     * inspectable credentials, and the error state carries no privilege bit.
+     * It is tracked from the moment the open is attempted (not just on success)
+     * so a root shell that failed to open can still be restarted as root.
+     * Cleared with the rest of the session state on [closeWorkspace]; a normal
+     * open of the same id clears a stale entry. Under [mutex].
+     */
+    private val rootTerminals = mutableMapOf<String, MutableSet<String>>()
 
     /**
      * §1.106 — workspaces whose session is currently live (at least one
@@ -259,6 +275,14 @@ class WorkspaceTerminalManager @Inject constructor(
         mutex.withLock {
             // A fresh open supersedes a prior close of this id.
             closedDuringStart.remove(workspaceId to terminalId)
+            // Finding 011: remember elevation from the attempt itself, so a
+            // root shell that fails before registration can be restarted as
+            // root. A later non-root open of the same id clears it.
+            if (asRoot) {
+                rootTerminals.getOrPut(workspaceId) { mutableSetOf() } += terminalId
+            } else {
+                rootTerminals[workspaceId]?.remove(terminalId)
+            }
             // Replacing an existing terminal: drop its record + cancel its
             // observer so the old pty's exit can't transition state after the
             // replacement. ContainerRuntime.openTerminal destroys the old pty.
@@ -271,6 +295,17 @@ class WorkspaceTerminalManager @Inject constructor(
 
         val pty = try {
             containerRuntime.openTerminal(workspaceId, rootfsPath, terminalId, asRoot = asRoot)
+        } catch (e: CancellationException) {
+            // CC-001: the opener was cancelled before the runtime handed back a
+            // pty (the runtime destroys anything it created on that path). This
+            // is not an error the user should see: drop the transient Starting
+            // record instead of leaving a phantom terminal behind.
+            mutex.withLock {
+                if (!closedDuringStart.contains(workspaceId to terminalId)) {
+                    removeStateLocked(workspaceId, terminalId)
+                }
+            }
+            throw e
         } catch (e: Exception) {
             mutex.withLock {
                 if (!closedDuringStart.contains(workspaceId to terminalId)) {
@@ -281,7 +316,14 @@ class WorkspaceTerminalManager @Inject constructor(
         }
 
         var abort = false
-        mutex.withLock {
+        // CC-001: once the runtime has returned a live pty, registration is
+        // the ownership handoff and must not be interrupted. If the caller's
+        // job was cancelled in the gap, a suspending `mutex.withLock` would
+        // throw before recording the session and strand the pty. The block is
+        // short and non-suspending apart from the lock, so making it
+        // NonCancellable preserves cancellation semantics everywhere else.
+        withContext(NonCancellable) {
+            mutex.withLock {
             if (closedDuringStart.contains(workspaceId to terminalId)) {
                 // The terminal was closed while this open was in flight: destroy
                 // the pty we just created and leave the terminal closed rather
@@ -332,6 +374,7 @@ class WorkspaceTerminalManager @Inject constructor(
                 Logger.i(TAG, "openTerminal $workspaceId/$terminalId → Running pid=${pty.pid}")
                 runtimeTrace.record(workspaceId, "WorkspaceTerminalManager.openTerminal EXIT terminalId=$terminalId pid=${pty.pid}")
             }
+        }
         }
 
         if (abort) {
@@ -389,6 +432,8 @@ class WorkspaceTerminalManager @Inject constructor(
             val hadRecord = _terminalSessions.value[workspaceId]?.containsKey(terminalId) == true
             ptyToDestroy = _terminalSessions.value[workspaceId]?.get(terminalId)?.ptySession
             removeSessionLocked(workspaceId, terminalId)
+            // Finding 011: the id is spent; its elevation record goes with it.
+            rootTerminals[workspaceId]?.remove(terminalId)
             // §1.103: if the closed terminal was the last-active one, the
             // notification target falls back to the most recently opened
             // remaining terminal (or is dropped when none remain).
@@ -503,6 +548,8 @@ class WorkspaceTerminalManager @Inject constructor(
             // §1.106: forget the workspace's launch rootfs with the rest of its
             // session state — a fresh session records its own on open.
             rootfsPaths.remove(workspaceId)
+            // Finding 011: elevation is session state too.
+            rootTerminals.remove(workspaceId)
             liveWorkspaces -= workspaceId
             Logger.i(TAG, "closeWorkspace $workspaceId complete")
             runtimeTrace.record(workspaceId, "WorkspaceTerminalManager.closeWorkspace complete")
@@ -520,6 +567,85 @@ class WorkspaceTerminalManager @Inject constructor(
             is TerminalState.Starting, is TerminalState.Running -> session.ptySession
             else -> null
         }
+    }
+
+    /**
+     * Finding 011 — the pty record retained for a terminal, including one that
+     * is no longer live (Error/Stopped), or null when there is none.
+     *
+     * [getPtySession] is deliberately live-only: an errored terminal must not
+     * resolve a session for rendering or input. Diagnostics still need the dead
+     * emulator's screen, which the record keeps until the terminal is closed or
+     * replaced, so this is a separate reach. Callers must treat the result as
+     * evidence, never as a session they may write to or restart.
+     */
+    fun getRetainedPtySession(workspaceId: String, terminalId: String): PtySession? =
+        _terminalSessions.value[workspaceId]?.get(terminalId)?.ptySession
+
+    /**
+     * Finding 011 — restart a terminal that is in [TerminalState.Error] under
+     * the **same id**, preserving its window/tab identity.
+     *
+     * The replacement is the normal [openTerminal] path, so it is
+     * indistinguishable from a user-created terminal: the old pty is destroyed
+     * by the container's replace-on-open, the old exit observer is cancelled,
+     * and the terminal transitions Starting → Running. Because the id does not
+     * change, the UI's window list keeps its position and title, and no
+     * `createdTerminal` navigation is needed.
+     *
+     * Deliberately narrow:
+     *  - by default only an **Error** terminal can be restarted. Restarting a
+     *    Running shell would be a remote kill with no confirmation, and a
+     *    Stopped or closed terminal has no recovery card to act from.
+     *  - [allowRunning] is the one explicit opt-in: Finding 019's no-output
+     *    banner restarts a live-but-silent pty after the user presses its
+     *    Restart button. The button *is* the confirmation, so the default
+     *    refusal below still protects every other caller.
+     *  - it does not auto-retry. The audit's "do not auto-restart" is honoured
+     *    at the only two callers (both explicit buttons).
+     *  - elevation is preserved via [rootTerminals], so a Root Shell restarts
+     *    as root and a normal shell never gains privilege.
+     *
+     * @param allowRunning when true, a live [TerminalState.Running] terminal may
+     *   be replaced. Only the no-output banner passes this; all other callers
+     *   keep the strict Error-only behaviour.
+     * @throws IllegalStateException when the terminal is not in Error (or
+     *   Running with [allowRunning]) or the workspace has no recorded launch
+     *   rootfs (nothing to restart into).
+     */
+    suspend fun restartTerminal(
+        workspaceId: String,
+        terminalId: String,
+        rootfsPathOverride: String? = null,
+        allowRunning: Boolean = false
+    ): PtySession {
+        val rootfsPath: String
+        val asRoot: Boolean
+        mutex.withLock {
+            val state = _terminalStates.value[workspaceId]?.get(terminalId)
+            check(state is TerminalState.Error || (allowRunning && state is TerminalState.Running)) {
+                // UX-002: this text is shown verbatim in the restart-failure
+                // dialog, so it must read as an explanation, not an internal
+                // diagnostic. The state itself is logged by the caller.
+                if (state is TerminalState.Running) {
+                    "This terminal is still running."
+                } else {
+                    "This terminal cannot be restarted right now."
+                }
+            }
+            // The override lets a first terminal that failed before any
+            // successful open (so no launch path was ever recorded) still be
+            // restarted; the binder resolves it from the workspace layout.
+            rootfsPath = rootfsPathOverride ?: rootfsPaths[workspaceId]
+                ?: error("This workspace has no installed root filesystem to open.")
+            asRoot = rootTerminals[workspaceId]?.contains(terminalId) == true
+        }
+        Logger.i(TAG, "restartTerminal $workspaceId/$terminalId allowRunning=$allowRunning asRoot=$asRoot")
+        runtimeTrace.record(
+            workspaceId,
+            "WorkspaceTerminalManager.restartTerminal terminalId=$terminalId allowRunning=$allowRunning asRoot=$asRoot"
+        )
+        return openTerminal(workspaceId, rootfsPath, terminalId, asRoot = asRoot)
     }
 
     /**
@@ -634,12 +760,17 @@ class WorkspaceTerminalManager @Inject constructor(
      * `exitCode == 0` only.
      */
     private suspend fun observeExit(workspaceId: String, terminalId: String, pty: PtySession) {
-        val exitCode = try {
+        // Finding 027: null means "no status was obtained". The previous `-1`
+        // sentinel was indistinguishable from a genuine SIGHUP (waitpid reports
+        // signal deaths as -N), so it would have been rendered as a signal death
+        // by TerminalExitDescription. An unobserved exit is reported as exactly
+        // that, below.
+        val exitCode: Int? = try {
             pty.awaitExit()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            -1
+            null
         }
         var wasCleanExit = false
         mutex.withLock {
@@ -671,11 +802,12 @@ class WorkspaceTerminalManager @Inject constructor(
                 Logger.i(TAG, "terminal $workspaceId/$terminalId pruned after clean exit — UI sibling-fallback will take over")
                 runtimeTrace.record(workspaceId, "Terminal $terminalId pruned after clean exit — sibling-fallback takes over")
             } else {
-                val reason = if (exitCode < 0) {
-                    "Terminal $terminalId exited unexpectedly"
-                } else {
-                    "Terminal $terminalId exited unexpectedly (code $exitCode)"
-                }
+                // Finding 027: one pure table owns the vocabulary. The raw
+                // status stays on the state and in the reason; the hint adds the
+                // next step without asserting a cause the status cannot prove.
+                val description = exitCode?.let(TerminalExitDescription::of)
+                val reason = description?.reason(terminalId)
+                    ?: "Terminal $terminalId exited unexpectedly (exit status unavailable)"
                 // §1.191: carry the raw exit status alongside the reason so the
                 // UI can tell a SIGKILL (-9, almost always the OS reclaiming
                 // memory) apart from an ordinary crash. This is additive
@@ -690,11 +822,12 @@ class WorkspaceTerminalManager @Inject constructor(
                 // message (and, for SIGKILL, the §1.191 TerminalKilledNotice
                 // footer) stays visible until the user explicitly moves away
                 // from or closes it.
-                val error = TerminalState.Error(reason, exitCode)
+                val error = TerminalState.Error(reason, exitCode, description?.hint)
                 setStateLocked(workspaceId, terminalId, error)
                 setSessionStateLocked(workspaceId, terminalId, error)
-                Logger.w(TAG, "terminal $workspaceId/$terminalId exited code=$exitCode → Error (kept visible, not pruned)")
-                runtimeTrace.record(workspaceId, "Terminal $terminalId exited code=$exitCode → Error (kept visible, not pruned)")
+                val status = exitCode?.toString() ?: "unavailable"
+                Logger.w(TAG, "terminal $workspaceId/$terminalId exited code=$status → Error (kept visible, not pruned)")
+                runtimeTrace.record(workspaceId, "Terminal $terminalId exited code=$status → Error (kept visible, not pruned)")
             }
             // §P0: terminal lifecycle ≠ workspace lifecycle. A terminal's
             // natural exit transitions ONLY that terminal's state — it never
@@ -704,8 +837,8 @@ class WorkspaceTerminalManager @Inject constructor(
             // stay observable here — the Error state above is surfaced through
             // terminalStates and logged/traced — just without destroying the
             // workspace.
-            Logger.i(TAG, "workspace $workspaceId terminal $terminalId exited code=$exitCode → workspace session continues (terminal/workspace independence)")
-            runtimeTrace.record(workspaceId, "Terminal $terminalId exited code=$exitCode; workspace session continues")
+            Logger.i(TAG, "workspace $workspaceId terminal $terminalId exited code=${exitCode ?: "unavailable"} → workspace session continues (terminal/workspace independence)")
+            runtimeTrace.record(workspaceId, "Terminal $terminalId exited code=${exitCode ?: "unavailable"}; workspace session continues")
         }
         if (wasCleanExit) {
             // Newly found while fixing the above: a clean exit reaching this

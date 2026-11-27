@@ -1,6 +1,7 @@
 package com.fem.linexa.data
 
 import androidx.annotation.DrawableRes
+import androidx.annotation.StringRes
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.fem.linexa.domain.workspace.WorkspaceStatus
@@ -27,19 +28,6 @@ data class Workspace(
     val status: WorkspaceStatus = WorkspaceStatus.Ready,
     /** Distro catalog id (e.g. "ubuntu") used to pick a branded icon; null → letter avatar fallback. */
     val distroId: String? = null,
-    /**
-     * §1.124 — the image's own declared preview (§1.121), already resolved
-     * inside *this* workspace's rootfs, or null when it declared none or the
-     * declaration cannot be trusted right now.
-     *
-     * A resolved [java.io.File] rather than the declared path, deliberately:
-     * resolution re-verifies containment against the live filesystem on every
-     * read (§1.121(b)) and belongs on the ViewModel's IO dispatcher, not in
-     * composition. Carrying the `File` also makes it structurally impossible for
-     * the UI to render an author-supplied string that never passed
-     * [com.fem.linexa.service.rootfs.RootFsPreviewImage].
-     */
-    val previewImage: java.io.File? = null,
     /**
      * UI Phase 2 — the distribution's own identity, split out of the single
      * `description` string the card used to render.
@@ -155,8 +143,8 @@ data class Shortcut(
 
 data class Feature(
     val id: String,
-    val title: String,
-    val description: String,
+    @StringRes val titleRes: Int,
+    @StringRes val descriptionRes: Int,
     @DrawableRes val iconRes: Int,
     val enabledByDefault: Boolean
 )

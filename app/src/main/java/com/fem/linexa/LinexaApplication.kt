@@ -2,6 +2,7 @@ package com.fem.linexa
 
 import android.app.Application
 import com.fem.linexa.core.logging.DebugCaptureGate
+import com.fem.linexa.core.perf.PerfTrace
 import com.fem.linexa.service.installer.InstallRecoveryManager
 import com.fem.linexa.service.installer.WorkspaceMetadataBackfillManager
 import dagger.hilt.android.HiltAndroidApp
@@ -44,6 +45,11 @@ class LinexaApplication : Application() {
     override fun onCreate() {
         super.onCreate()
 
+        // Phase M0-A: startup instrumentation uses the Android monotonic clock
+        // (elapsedRealtimeNanos), not wall time. Installing here only selects
+        // the clock; capture remains gated on DebugCapture below.
+        PerfTrace.installAndroidClock()
+
         // UI/UX Phase 7: FIRST, before anything else here can log. The gate only
         // starts a collector (the first value arrives on the application scope), but
         // starting it before the recovery/backfill work below is what makes a
@@ -57,6 +63,15 @@ class LinexaApplication : Application() {
         // §1.20: clean up/mark-Broken any workspace whose staged install was
         // interrupted by the app or process dying — see InstallRecoveryManager.
         applicationScope.launch {
+            // LINEXA-PERF-006: this sweep probes every workspace's rootfs
+            // (recoverInterruptedInstalls → backfillReadyWorkspaces →
+            // capability stats) on IO. It used to begin in the same breath as
+            // the first composition, adding storage-queue and CPU contention to
+            // exactly the three frames the cold-start audit measured at
+            // 250–350 ms. None of it is needed for the first usable frame; the
+            // markers it consumes are durable and the next launch retries, so
+            // one short grace period is safe.
+            kotlinx.coroutines.delay(STARTUP_SWEEP_GRACE_MS)
             installRecoveryManager.recoverInterruptedInstalls()
             // After recovery, backfill metadata attributes for Ready
             // workspaces that predate attribute persistence (distroId for
@@ -66,5 +81,10 @@ class LinexaApplication : Application() {
             // P11: after the backfill so both see a settled row; idempotent, every start.
             vncPasswordMigrationManager.migrate()
         }
+    }
+
+    private companion object {
+        /** LINEXA-PERF-006: see the sweep comment in [onCreate]. */
+        const val STARTUP_SWEEP_GRACE_MS = 1_200L
     }
 }

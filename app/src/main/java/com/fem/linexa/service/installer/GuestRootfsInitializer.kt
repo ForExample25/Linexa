@@ -81,6 +81,26 @@ class GuestRootfsInitializer @Inject constructor(
 ) {
 
     /**
+     * P0-1 (2026-11-23): the host's supplementary group set, read once per
+     * process.
+     *
+     * Android fixes a process's kernel supplementary groups when the process
+     * starts; a storage/permission grant that changes them also restarts the
+     * app (the zygote must re-fork with the new credential set). Within one
+     * process the `id -G` answer is therefore constant, and spawning the
+     * bundled `id` applet before every one-shot exec was pure overhead
+     * (PERF-005 / IND-01). The guest `/etc/group` reconciliation still runs
+     * on every battery pass; only the host-side read is memoized.
+     *
+     * A *failed* read is never cached: the next pass retries. An empty
+     * successful read is cached too — "this process has no supplementary
+     * groups" is just as constant as a non-empty set.
+     */
+    @Volatile
+    private var hostSupplementaryGidCache: List<String>? = null
+    private val hostSupplementaryGidLock = Any()
+
+    /**
      * Ensures the app (the host owner of every rootfs entry) may create
      * entries directly under the guest's `/`.
      *
@@ -615,6 +635,11 @@ class GuestRootfsInitializer @Inject constructor(
                 for ((name, content) in PROC_SNAPSHOT_CONTENTS) {
                     val snap = File(procDir, ".$name")
                     try {
+                        // P0-1: the static content is constant for the life of
+                        // the process. A byte-equal file (and a non-symlink
+                        // target) needs no write at all — this is what keeps a
+                        // converged workspace's snapshot pass write-free.
+                        if (isSnapshotCurrent(snap, content)) continue
                         // Atomic-ish: write to a temp file in the same directory,
                         // then rename. Avoids a half-written file being read by
                         // PRoot mid-launch.
@@ -651,6 +676,23 @@ class GuestRootfsInitializer @Inject constructor(
             logDebugEvent(workspaceId, "guest /proc bind-over snapshots ready (${PROC_SNAPSHOT_CONTENTS.size} files)")
         }
         return failure
+    }
+
+    /**
+     * P0-1: true when [snap] already carries exactly [content] and is a real
+     * file (never a symlink). Reading a few small snapshots is far cheaper
+     * than the write+rename pair and its permission-window bookkeeping, and
+     * it keeps an already-converged pass write-free.
+     */
+    private fun isSnapshotCurrent(snap: File, content: String): Boolean = try {
+        if (!snap.isFile || Files.isSymbolicLink(snap.toPath())) {
+            false
+        } else {
+            val expected = content.toByteArray(Charsets.UTF_8)
+            snap.length() == expected.size.toLong() && snap.readBytes().contentEquals(expected)
+        }
+    } catch (_: Exception) {
+        false
     }
 
     /**
@@ -769,8 +811,10 @@ class GuestRootfsInitializer @Inject constructor(
      * ## Idempotence and write discipline
      *
      * Called before every `openTerminal`, one-shot `exec` and daemon start,
-     * so the common path (already converged) is a single `id -G` read and
-     * NO write. When entries are missing, both files are rewritten
+     * so the common path (already converged) is NO write and — after the
+     * first successful host read of the process — no `id -G` spawn either
+     * (P0-1: the host group set is process-constant). When entries are
+     * missing, both files are rewritten
      * atomically (temp file in the same directory + rename), never appended
      * in place, so a guest process reading the database concurrently always
      * sees one complete, well-formed file. Callers also serialize this
@@ -801,15 +845,16 @@ class GuestRootfsInitializer @Inject constructor(
 
         // Live supplementary group set — the same host-process `id -G` the
         // installer fixup used, so the mirror source never changes meaning.
-        val liveRaw = runIdApplet(idBin, listOf("-G"), workspaceId)
-        if (liveRaw == null) {
+        // P0-1: read once per process (see [hostSupplementaryGidCache]);
+        // callers still reconcile this workspace's /etc/group on every pass.
+        val liveGids = liveHostSupplementaryGids(idBin, workspaceId)
+        if (liveGids == null) {
             val msg = "guest group reconciliation skipped: 'id -G' failed — guest group db left untouched"
             Logger.w(TAG, msg)
             logEvent(workspaceId, msg)
             return null
         }
         // §1.65 whitelist reuse: digits-only tokens only reach /etc/group.
-        val liveGids = parseIdOutput(liveRaw, numericOnly = true).first.distinct()
         if (liveGids.isEmpty()) {
             logDebugEvent(workspaceId, "guest group reconciliation: host reported no supplementary groups")
             return null
@@ -1828,6 +1873,28 @@ class GuestRootfsInitializer @Inject constructor(
     }
 
     /**
+     * P0-1: returns the memoized host supplementary GID set, spawning the
+     * bundled `id -G` applet only on the first successful read of this
+     * process. A failed read returns null and is NOT cached, preserving the
+     * fail-open retry contract.
+     */
+    private fun liveHostSupplementaryGids(idBin: File, workspaceId: String): List<String>? {
+        hostSupplementaryGidCache?.let { return it }
+        synchronized(hostSupplementaryGidLock) {
+            hostSupplementaryGidCache?.let { return it }
+            val liveRaw = runIdApplet(idBin, listOf("-G"), workspaceId) ?: return null
+            val gids = parseIdOutput(liveRaw, numericOnly = true).first.distinct()
+            hostSupplementaryGidCache = gids
+            return gids
+        }
+    }
+
+    /** Test seam: forgets the memoized host GID set (production never calls it). */
+    internal fun clearHostSupplementaryGroupCacheForTesting() {
+        synchronized(hostSupplementaryGidLock) { hostSupplementaryGidCache = null }
+    }
+
+    /**
      * LX-1: run one host-side bundled-busybox applet (closed env, bounded
      * timeout, output drained off-thread — same shape as [runChmod]) and
      * return its trimmed stdout on exit 0, or null on any failure.
@@ -2795,6 +2862,15 @@ if ! head -n 1 "«MARKER" 2>/dev/null | grep -q '^linexa-root-bridge v1«'; then
   say_err "update Linexa, restart the workspace and retry"
   exit 1
 fi
+# F-035: the bridge regenerates this token on every start. Echoing it in the
+# request rejects directories left over from an earlier session (or written
+# without reading the marker) instead of executing them.
+bridge_token=«(sed -n 's/^token=//p' "«MARKER" 2>/dev/null | head -n 1)
+if [ -z "«bridge_token" ]; then
+  say_err "the root bridge marker has no session token"
+  say_err "restart the workspace and retry"
+  exit 1
+fi
 
 umask 077
 reqdir=«(mktemp -d "«TMPROOT/.linexa-root-req.XXXXXX" 2>/dev/null) || {
@@ -2804,6 +2880,10 @@ reqdir=«(mktemp -d "«TMPROOT/.linexa-root-req.XXXXXX" 2>/dev/null) || {
 cleanup() { rm -rf "«reqdir"; }
 trap cleanup 0 1 2 15
 
+printf '%s\n' "«bridge_token" > "«reqdir/token" || {
+  say_err "could not write the root request token under «TMPROOT"
+  exit 1
+}
 printf '%s\n' "«cmd" > "«reqdir/cmd" || {
   say_err "could not write the root request under «TMPROOT"
   exit 1

@@ -1,5 +1,6 @@
 package com.fem.linexa.service.runtime
 
+import com.fem.linexa.core.logging.DebugCapture
 import com.fem.linexa.domain.runtime.DEFAULT_TERMINAL_ID
 import com.fem.linexa.domain.runtime.TerminalState
 import com.fem.linexa.test.support.ControllableStubPtySession
@@ -90,6 +91,31 @@ class WorkspaceTerminalManagerTest {
         }
     }
 
+    /**
+     * CC-001: a cancelled open is not an error and must not leave a phantom
+     * terminal. The runtime destroys any pty it created before propagating the
+     * cancellation; the manager's job is to drop the transient Starting record
+     * instead of marking Error (which the old `catch (Exception)` did).
+     */
+    @Test
+    fun cancellationDuringOpenLeavesNoPhantomTerminalOrError() = runBlocking {
+        harness.ptyFactory.beforeCreate = {
+            throw kotlinx.coroutines.CancellationException("screen left during open")
+        }
+
+        val thrown = runCatching {
+            manager.openTerminal("ws-1", harness.fakeRootfs().absolutePath, "T1", asRoot = false)
+        }.exceptionOrNull()
+
+        assertTrue("cancellation must propagate unchanged", thrown is kotlinx.coroutines.CancellationException)
+        assertNull(
+            "a cancelled open must not keep a Starting/Error record",
+            manager.terminalStates.value["ws-1"]?.get("T1")
+        )
+        assertNull("no pty may remain registered", harness.runtime.getTerminal("ws-1", "T1"))
+        assertFalse(harness.runtime.isTerminalAlive("ws-1", "T1"))
+    }
+
     @Test
     fun openTerminalRegistersRunningSession() = runBlocking {
         val pty = open("ws-1", "T1")
@@ -126,6 +152,52 @@ class WorkspaceTerminalManagerTest {
         assertEquals(TerminalState.Running, manager.terminalStates.value["ws-1"]?.get("T1"))
         assertTrue(harness.runtime.isTerminalAlive("ws-1", "T0"))
         assertTrue(harness.runtime.isTerminalAlive("ws-1", "T1"))
+    }
+
+    /**
+     * RN-003: the full host-side repair pipeline runs once per workspace
+     * SESSION. A second terminal of the same live session reuses the
+     * converged rootfs; when the last terminal closes, the replacement
+     * session open runs the pass again (the per-session self-heal guarantee).
+     */
+    @Test
+    fun secondTerminalSkipsRepairsButANewSessionRunsThemAgain() = runBlocking {
+        // One rootfs for both terminals: the `open()` helper would create a
+        // distinct fake rootfs per call, which correctly forces a repair pass
+        // for each path and would not exercise per-session convergence.
+        val rootfs = harness.fakeRootfs().absolutePath
+        val previousCapture = DebugCapture.isEnabled()
+        DebugCapture.setEnabled(true)
+        try {
+            manager.openTerminal("ws-1", rootfs, "T0", asRoot = false)
+            manager.openTerminal("ws-1", rootfs, "T1", asRoot = false)
+            val trace = harness.runtimeTrace.render("ws-1")
+            assertEquals(
+                "the second terminal must reuse the first terminal's converged repair pass\n$trace",
+                1,
+                Regex("guest repair pipeline SKIP").findAll(trace).count()
+            )
+
+            // closeWorkspace ends the session and clears the converged stamp;
+            // a new session over the SAME rootfs must run the full pass again,
+            // then converge its own second terminal.
+            manager.closeWorkspace("ws-1")
+            manager.openTerminal("ws-1", rootfs, "T0", asRoot = false)
+            manager.openTerminal("ws-1", rootfs, "T1", asRoot = false)
+            val afterNewSession = harness.runtimeTrace.render("ws-1")
+            assertEquals(
+                "a new workspace session must repair again and skip only for its second terminal\n$afterNewSession",
+                2,
+                Regex("guest repair pipeline SKIP").findAll(afterNewSession).count()
+            )
+            assertEquals(
+                "both terminals of the new session must be live",
+                setOf(TerminalState.Running, TerminalState.Running),
+                manager.terminalStates.value["ws-1"]?.values?.toSet()
+            )
+        } finally {
+            DebugCapture.setEnabled(previousCapture)
+        }
     }
 
     @Test
@@ -203,6 +275,91 @@ class WorkspaceTerminalManagerTest {
         // The replacement's own exit does transition the terminal.
         second.completeExit(2)
         awaitTerminalState("ws-1", "T1") { it is TerminalState.Error }
+    }
+
+    // ── finding 011: restart, not a dead end ────────────────────────────────
+
+    /**
+     * The audit's runtime row: restart closes the old session and creates a new
+     * PTY under the same id. Same id is what preserves the tab index/title in
+     * the UI; a fresh pty is what proves the dead one was replaced, not revived.
+     */
+    @Test
+    fun restartReplacesTheDeadSessionUnderTheSameId() = runBlocking {
+        val first = open("ws-1", "T1")
+        first.completeExit(127)
+        awaitTerminalState("ws-1", "T1") { it is TerminalState.Error }
+
+        val restarted = manager.restartTerminal("ws-1", "T1") as ControllableStubPtySession
+
+        assertNotEquals("restart must fork a fresh pty", first.pid, restarted.pid)
+        assertEquals(TerminalState.Running, manager.terminalStates.value["ws-1"]?.get("T1"))
+        assertEquals(restarted.pid, manager.getPtySession("ws-1", "T1")?.pid)
+        assertEquals(restarted.pid, harness.runtime.getTerminal("ws-1", "T1")?.pid)
+        assertTrue(harness.runtime.isTerminalAlive("ws-1", "T1"))
+        assertEquals("the terminal id is unchanged", "T1", manager.terminalSessions.value["ws-1"]?.get("T1")?.terminalId)
+
+        // The old session cannot be resurrected by its already-completed exit.
+        first.completeExit(1)
+        awaitTerminalState("ws-1", "T1") { it == TerminalState.Running }
+        assertEquals(restarted.pid, manager.getPtySession("ws-1", "T1")?.pid)
+    }
+
+    /**
+     * A live shell must not be killed by a stray/duplicate restart. Only the
+     * Error state has a recovery card; the manager enforces that below the UI.
+     */
+    @Test
+    fun restartRefusesALiveTerminalInsteadOfKillingIt() = runBlocking {
+        val live = open("ws-1", "T1")
+
+        val refused = runCatching { manager.restartTerminal("ws-1", "T1") }
+
+        assertTrue("a Running terminal must be refused", refused.isFailure)
+        assertTrue(refused.exceptionOrNull() is IllegalStateException)
+        assertTrue("the live pty must be untouched", live.isAlive)
+        assertTrue(harness.runtime.isTerminalAlive("ws-1", "T1"))
+        assertEquals(live.pid, manager.getPtySession("ws-1", "T1")?.pid)
+    }
+
+    /**
+     * Closing removes the error card's subject; a later restart must not
+     * resurrect an id the user explicitly closed (§9.1 never-reuse).
+     */
+    /**
+     * Finding 019: the no-output banner may replace a live-but-silent pty when
+     * the user explicitly presses Restart. The opt-in must fork a fresh session
+     * under the same id, kill the silent one, and leave the terminal Running.
+     */
+    @Test
+    fun restartWithAllowRunningReplacesALiveSilentSessionUnderTheSameId() = runBlocking {
+        val silent = open("ws-1", "T1")
+
+        val restarted = manager.restartTerminal("ws-1", "T1", allowRunning = true) as ControllableStubPtySession
+
+        assertNotEquals("the silent pty must be replaced", silent.pid, restarted.pid)
+        assertFalse("the replaced silent pty must be dead", silent.isAlive)
+        assertTrue("the replacement must be live", harness.runtime.isTerminalAlive("ws-1", "T1"))
+        assertEquals(restarted.pid, manager.getPtySession("ws-1", "T1")?.pid)
+        assertEquals(TerminalState.Running, manager.terminalStates.value["ws-1"]?.get("T1"))
+        assertEquals(
+            "the terminal id is unchanged",
+            "T1",
+            manager.terminalSessions.value["ws-1"]?.get("T1")?.terminalId
+        )
+    }
+
+    @Test
+    fun restartOfAClosedTerminalIsRefused() = runBlocking {
+        open("ws-1", "T1")
+        manager.closeTerminal("ws-1", "T1")
+
+        val refused = runCatching { manager.restartTerminal("ws-1", "T1") }
+
+        assertTrue("a closed terminal has no error state to restart", refused.isFailure)
+        assertTrue(refused.exceptionOrNull() is IllegalStateException)
+        assertNull(manager.getPtySession("ws-1", "T1"))
+        assertNull(manager.terminalStates.value["ws-1"]?.get("T1"))
     }
 
     @Test
@@ -698,6 +855,80 @@ class WorkspaceTerminalManagerTest {
         assertFalse("an ordinary crash must not be attributed to Android's memory manager", error.killedBySigkill)
     }
 
+    // ── finding 027: actionable exit descriptions ────────────────────────────
+
+    /**
+     * 127 is the status terminal-audit finding 005 investigates. The state must
+     * carry the conventional meaning, the concrete place to look, and the raw
+     * status — the hint names the two declared shells, because a 127 from the
+     * PTY child is more likely a launcher/exec failure than a user typo.
+     */
+    @Test
+    fun exit127CarriesTheCommandOrShellNotFoundDiagnosis() = runBlocking {
+        val t0 = open("ws-1", DEFAULT_TERMINAL_ID)
+
+        t0.completeExit(127)
+        awaitTerminalState("ws-1", DEFAULT_TERMINAL_ID) { it is TerminalState.Error }
+
+        val error = manager.terminalStates.value["ws-1"]?.get(DEFAULT_TERMINAL_ID) as TerminalState.Error
+        assertEquals(127, error.exitCode)
+        assertEquals("Terminal T0 exited: command or shell not found (code 127)", error.reason)
+        val hint = error.hint.orEmpty()
+        assertTrue("the hint must name launch.shell: $hint", hint.contains("launch.shell"))
+        assertTrue("the hint must name environment.shell: $hint", hint.contains("environment.shell"))
+        assertFalse("127 is an exit status, not kernel evidence of a signal death", error.killedBySigkill)
+    }
+
+    /**
+     * 137 is the conventional shell spelling of 128 + SIGKILL. It gets the
+     * SIGKILL *meaning* and the memory hint, but not `killedBySigkill`: only
+     * waitpid's negated `-9` is kernel evidence, and borrowing the battery
+     * notice for a guest's own `exit 137` would assert a cause the app cannot
+     * prove.
+     */
+    @Test
+    fun exit137KeepsTheConventionalMeaningWithoutClaimingTheBatteryNotice() = runBlocking {
+        val t0 = open("ws-1", DEFAULT_TERMINAL_ID)
+
+        t0.completeExit(137)
+        awaitTerminalState("ws-1", DEFAULT_TERMINAL_ID) { it is TerminalState.Error }
+
+        val error = manager.terminalStates.value["ws-1"]?.get(DEFAULT_TERMINAL_ID) as TerminalState.Error
+        assertEquals(137, error.exitCode)
+        assertTrue(
+            "the conventional SIGKILL meaning must be visible: ${error.reason}",
+            error.reason.contains("SIGKILL")
+        )
+        assertTrue("the raw code must stay visible: ${error.reason}", error.reason.contains("(code 137)"))
+        assertTrue("137 must carry the memory hint", error.hint.orEmpty().contains("Android"))
+        assertFalse(
+            "137 is an ordinary exit status; only waitpid's -9 may drive the SIGKILL notice",
+            error.killedBySigkill
+        )
+    }
+
+    /**
+     * The observer's defensive catch used to substitute `-1`, which the new
+     * description table would read as SIGHUP. "No status" must stay distinct
+     * from a real signal, so the state carries null and says so in the reason.
+     */
+    @Test
+    fun anUnobtainableExitStatusIsReportedAsUnknownNotAsSignalOne() = runBlocking {
+        val t0 = open("ws-1", DEFAULT_TERMINAL_ID)
+
+        t0.failExit(IllegalStateException("status unavailable"))
+        awaitTerminalState("ws-1", DEFAULT_TERMINAL_ID) { it is TerminalState.Error }
+
+        val error = manager.terminalStates.value["ws-1"]?.get(DEFAULT_TERMINAL_ID) as TerminalState.Error
+        assertNull("an unobserved exit has no status to report", error.exitCode)
+        assertNull("and therefore no exit-code hint", error.hint)
+        assertTrue(
+            "the reason must state the absence instead of inventing a signal: ${error.reason}",
+            error.reason.contains("exit status unavailable")
+        )
+        assertFalse("must not fabricate code -1", error.reason.contains("(code -1)"))
+    }
+
     /**
      * §P0 guard, restated for §1.191: adding SIGKILL *diagnosis* must not turn a
      * killed terminal into a workspace-level event. The workspace session, its
@@ -706,6 +937,7 @@ class WorkspaceTerminalManagerTest {
      */
     @Test
     fun sigkillStaysAPerTerminalEventAndNeverEndsTheWorkspace() = runBlocking {
+
         val t0 = open("ws-1", DEFAULT_TERMINAL_ID)
         open("ws-1", "T1")
         val ended = async { manager.awaitSessionEnd("ws-1") }

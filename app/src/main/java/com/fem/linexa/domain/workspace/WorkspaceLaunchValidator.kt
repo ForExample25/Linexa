@@ -49,22 +49,26 @@ class WorkspaceLaunchValidator @Inject constructor(
     }
 
     /**
-     * The actual "RootFS exists / extraction completed / required
-     * directories exist" checks the audit asked for. Runs regardless of
-     * what [WorkspaceStatus] claims.
+     * The actual "RootFS exists / extraction completed / shell is launchable"
+     * checks the audit asked for. Runs regardless of what [WorkspaceStatus]
+     * claims.
      */
     private fun checkDisk(workspaceId: String): WorkspaceReadiness {
-        if (!rootfsInspector.hasValidRootfs(workspaceId)) {
-            return WorkspaceReadiness.Blocked(
-                reason = "The rootfs is missing or incomplete (required directories not found). " +
-                    "This can happen if storage was cleared, or if the install was interrupted " +
-                    "without being caught at startup.",
+        when (val check = rootfsInspector.checkRootfs(workspaceId)) {
+            RootfsCheck.Ready -> Unit
+            is RootfsCheck.Missing -> return WorkspaceReadiness.Blocked(
+                reason = "${check.reason} This can happen if storage was cleared, or if the " +
+                    "install was interrupted without being caught at startup.",
+                canRetry = true
+            )
+            is RootfsCheck.Damaged -> return WorkspaceReadiness.Blocked(
+                reason = "${check.reason} Reinstall or repair the workspace to restore it.",
                 canRetry = true
             )
         }
-        if (rootfsInspector.getRootfsSize(workspaceId) <= 0L) {
+        if (!rootfsInspector.hasAnyRegularFile(workspaceId)) {
             return WorkspaceReadiness.Blocked(
-                reason = "The rootfs directory exists but contains 0 bytes.",
+                reason = "The rootfs directory exists but contains no files.",
                 canRetry = true
             )
         }

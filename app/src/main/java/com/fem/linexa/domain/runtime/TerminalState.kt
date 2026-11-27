@@ -34,7 +34,8 @@ sealed interface TerminalState {
      * @param reason human-readable cause, already surfaced in the UI.
      * @param exitCode §1.191: the child's raw exit status when the terminal died
      *   from a *process exit* — null when there is no exit status to report
-     *   (a failure to open, where no child ever ran). The terminal backend's
+     *   (a failure to open, where no child ever ran, or an exit observer that
+     *   could not obtain one). The terminal backend's
      *   `TerminalSession.getExitStatus()` (inherited from the original
      *   Android-Terminal-Emulator lineage, vendored Termux module included)
      *   reports a signal death as the **negated signal number** (its own
@@ -42,8 +43,16 @@ sealed interface TerminalState {
      *   "signal ${-exitStatus}"), so `-9` here means SIGKILL. Carried so the UI
      *   can distinguish an OS kill from an ordinary crash; it deliberately does
      *   not affect any state transition.
+     * @param hint finding 027: the actionable half of the diagnosis, from
+     *   [TerminalExitDescription]. Null when no exit status exists or the table
+     *   has no honest suggestion. The reason remains the complete message; the
+     *   hint is rendered underneath it.
      */
-    data class Error(val reason: String, val exitCode: Int? = null) : TerminalState {
+    data class Error(
+        val reason: String,
+        val exitCode: Int? = null,
+        val hint: String? = null
+    ) : TerminalState {
 
         val killedBySigkill: Boolean get() = exitCode == SIGKILL_EXIT_STATUS
     }

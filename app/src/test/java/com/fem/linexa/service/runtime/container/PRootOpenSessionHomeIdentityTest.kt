@@ -1,5 +1,6 @@
 package com.fem.linexa.service.runtime.container
 
+import com.fem.linexa.core.logging.DebugCapture
 import com.fem.linexa.domain.runtime.DEFAULT_TERMINAL_ID
 import com.fem.linexa.service.runtime.bootstrap.BootstrapManager.TerminfoTestSeam
 import com.fem.linexa.test.support.FakeProot
@@ -43,11 +44,15 @@ class PRootOpenSessionHomeIdentityTest {
         )
         TerminfoTestSeam.overrideBytes = TerminfoTestFixture.validEntries
         harness.create()
+        // RuntimeTrace is gated on the user's debug switch; these tests read
+        // the trace to prove the second open took the repair-skip path.
+        DebugCapture.setEnabled(true)
     }
 
     @After
     fun tearDown() {
         TerminfoTestSeam.overrideBytes = null
+        DebugCapture.resetForTesting()
     }
 
     private fun rootfs(
@@ -117,5 +122,80 @@ class PRootOpenSessionHomeIdentityTest {
         assertEquals("root", call.env["USER"])
         assertTrue("Root Shell runs in the emulated root identity", call.args.contains("-0"))
         assertFalse(call.args.contains("--change-id=1000:1000"))
+    }
+
+    /**
+     * RN-003 regression: the per-workspace-session repair skip must not skip
+     * launch-identity resolution. Opening a second terminal while the first is
+     * live used to leave the placeholder root identity in place, launching the
+     * second shell with `-0` and `USER=linexa` (a root-owned shell in the
+     * user's home).
+     */
+    @Test
+    fun `a second concurrent normal session keeps the declared identity`() = runBlocking {
+        val rootfs = rootfs(userHome = "/home/linexa", uid = 1000)
+        harness.runtime.openTerminal("ws-home", rootfs.absolutePath, "T0", asRoot = false)
+        harness.runtime.openTerminal("ws-home", rootfs.absolutePath, "T1", asRoot = false)
+
+        assertEquals("both opens must reach the pty factory", 2, harness.createCalls.size)
+        val second = harness.createCalls[1]
+        val w = second.args.indexOf("-w")
+        assertTrue("the launch spec must carry a guest cwd", w >= 0)
+        assertEquals("/home/linexa", second.args[w + 1])
+        assertEquals("/home/linexa", second.env["HOME"])
+        assertEquals("linexa", second.env["USER"])
+        assertTrue(
+            "a concurrent normal session must keep the account's uid/gid",
+            second.args.contains("--change-id=1000:1000")
+        )
+        assertFalse(
+            "repair convergence must not demote the session to emulated root",
+            second.args.contains("-0")
+        )
+        val trace = harness.runtimeTrace.render("ws-home")
+        assertTrue(
+            "the second open must use the converged-session skip:\n$trace",
+            trace.contains("guest repair pipeline SKIP")
+        )
+        assertTrue(
+            "the skipped path must still resolve the launch identity:\n$trace",
+            trace.contains("launchIdentity (repair skipped): user=linexa")
+        )
+    }
+
+    /** RN-003 regression: the skip must still resolve a Root Shell's own home. */
+    @Test
+    fun `a second concurrent root shell keeps root's home`() = runBlocking {
+        val rootfs = rootfs(userHome = "/home/linexa", uid = 1000)
+        harness.runtime.openTerminal("ws-home", rootfs.absolutePath, "T0", asRoot = false)
+        harness.runtime.openTerminal("ws-home", rootfs.absolutePath, "T1", asRoot = true)
+
+        assertEquals("both opens must reach the pty factory", 2, harness.createCalls.size)
+        val second = harness.createCalls[1]
+        val w = second.args.indexOf("-w")
+        assertTrue("the launch spec must carry a guest cwd", w >= 0)
+        assertEquals("Root Shell must not inherit the user's home", "/root", second.args[w + 1])
+        assertEquals("/root", second.env["HOME"])
+        assertEquals("root", second.env["USER"])
+        assertTrue("Root Shell runs in the emulated root identity", second.args.contains("-0"))
+        assertFalse(second.args.contains("--change-id=1000:1000"))
+
+        val trace = harness.runtimeTrace.render("ws-home")
+        assertTrue(
+            "the second open must use the converged-session skip:\n$trace",
+            trace.contains("guest repair pipeline SKIP")
+        )
+        assertTrue(
+            "the skipped path must resolve root's identity:\n$trace",
+            trace.contains("launchIdentity (repair skipped): user=root")
+        )
+        assertTrue(
+            "root's home must exist before the launch spec uses -w /root",
+            File(rootfs, "root").isDirectory
+        )
+        assertTrue(
+            "a Root Shell on the skip path still needs its terminal colors",
+            File(rootfs, "root/.termux/colors.properties").isFile
+        )
     }
 }

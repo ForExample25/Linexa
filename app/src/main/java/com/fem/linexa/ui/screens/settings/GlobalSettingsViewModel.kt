@@ -3,6 +3,7 @@ package com.fem.linexa.ui.screens.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.fem.linexa.core.logging.AppLogStore
+import com.fem.linexa.domain.settings.AppLanguage
 import com.fem.linexa.domain.settings.ColorTheme
 import com.fem.linexa.domain.settings.RecentSessionsLayout
 import com.fem.linexa.domain.settings.SettingsRepository
@@ -58,6 +59,16 @@ class GlobalSettingsViewModel @Inject constructor(
     private val _colorTheme = MutableStateFlow(settingsRepository.currentColorTheme())
     val colorTheme: StateFlow<ColorTheme> = _colorTheme.asStateFlow()
 
+    /**
+     * Localization — the same synchronous seed + observed flow as the two
+     * appearance axes above. The selector must show the persisted choice on the
+     * first frame (SYSTEM included), and the root composition observes the same
+     * repository flow, so tapping a row repaints strings and text direction
+     * everywhere without touching the activity, the nav graph or any workspace.
+     */
+    private val _appLanguage = MutableStateFlow(settingsRepository.currentAppLanguage())
+    val appLanguage: StateFlow<AppLanguage> = _appLanguage.asStateFlow()
+
     // ── Terminal UI ────────────────────────────────────────────────────────
 
     /** Which Recent Sessions arrangement is active. */
@@ -107,6 +118,11 @@ class GlobalSettingsViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
+            settingsRepository.observeAppLanguage().collect { language ->
+                _appLanguage.value = language
+            }
+        }
+        viewModelScope.launch {
             settingsRepository.observeRecentSessionsLayout().collect { layout ->
                 _recentSessionsLayout.value = layout
             }
@@ -139,6 +155,18 @@ class GlobalSettingsViewModel @Inject constructor(
     fun setColorTheme(theme: ColorTheme) {
         viewModelScope.launch {
             settingsRepository.setColorTheme(theme)
+        }
+    }
+
+    /**
+     * Persist a language choice. The write is the whole action: the root
+     * composition and this screen both observe the same flow, so the UI, RTL
+     * direction and the selector's check mark all follow from the repository
+     * value. No activity restart, no workspace or terminal teardown.
+     */
+    fun setAppLanguage(language: AppLanguage) {
+        viewModelScope.launch {
+            settingsRepository.setAppLanguage(language)
         }
     }
 

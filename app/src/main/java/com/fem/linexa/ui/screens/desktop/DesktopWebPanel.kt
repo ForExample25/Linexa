@@ -10,8 +10,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Share
+import com.fem.linexa.ui.icons.LinexaIcons
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -94,6 +94,36 @@ internal object DesktopWebMode {
         return siteLocal.firstOrNull { it.startsWith("192.168.") }
             ?: siteLocal.firstOrNull { it.startsWith("10.") }
             ?: siteLocal.firstOrNull { it.startsWith("172.") && isPrivate172(it) }
+    }
+
+    /**
+     * Finding 037 — whether [targetUrl] is the exact origin the panel opened.
+     *
+     * The WebView may navigate within the user's local server (links, a POST
+     * redirect, a client-side route), but it must never be steered to another
+     * host, port, or scheme. This is pure so the security rule has a JVM test
+     * instead of living only inside a Composable. Invalid URLs and non-HTTP(S)
+     * schemes are refused.
+     */
+    fun isPinnedNavigation(initialUrl: String, targetUrl: String): Boolean {
+        val pinned = runCatching { java.net.URI(initialUrl) }.getOrNull() ?: return false
+        val target = runCatching { java.net.URI(targetUrl) }.getOrNull() ?: return false
+        val pinnedScheme = pinned.scheme?.lowercase() ?: return false
+        val targetScheme = target.scheme?.lowercase() ?: return false
+        if (pinnedScheme !in SUPPORTED_WEB_SCHEMES || targetScheme !in SUPPORTED_WEB_SCHEMES) return false
+        if (pinnedScheme != targetScheme) return false
+        val pinnedHost = pinned.host ?: return false
+        val targetHost = target.host ?: return false
+        if (!pinnedHost.equals(targetHost, ignoreCase = true)) return false
+        return effectivePort(pinned) == effectivePort(target)
+    }
+
+    private val SUPPORTED_WEB_SCHEMES = setOf("http", "https")
+
+    private fun effectivePort(uri: java.net.URI): Int = when {
+        uri.port != -1 -> uri.port
+        uri.scheme.equals("https", ignoreCase = true) -> 443
+        else -> 80
     }
 
     /**
@@ -205,7 +235,7 @@ fun DesktopWebViewPanel(
                 }
             ) {
                 Icon(
-                    imageVector = Icons.Filled.OpenInBrowser,
+                    imageVector = LinexaIcons.OpenInBrowser,
                     contentDescription = stringResource(R.string.desktop_web_open_browser),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -240,14 +270,10 @@ fun DesktopWebViewPanel(
                         override fun shouldOverrideUrlLoading(
                             view: WebView,
                             request: WebResourceRequest
-                        ): Boolean {
-                            val target = request.url
-                            val pinned = android.net.Uri.parse(url)
-                            val sameOrigin = target.host == pinned.host &&
-                                target.port == pinned.port &&
-                                (target.scheme == "http" || target.scheme == "https")
-                            return !sameOrigin
-                        }
+                        ): Boolean = !DesktopWebMode.isPinnedNavigation(
+                            initialUrl = url,
+                            targetUrl = request.url.toString()
+                        )
                     }
                     loadUrl(url)
                     loadedUrl = url

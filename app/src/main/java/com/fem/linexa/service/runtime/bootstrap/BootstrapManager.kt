@@ -1110,7 +1110,15 @@ class BootstrapManager @Inject constructor(
             // with a usage message, which means execve succeeded.
             val pb = ProcessBuilder(binaryPath)
             pb.redirectErrorStream(true)
+            // Acceptance finding (2026-11-26, fresh-install run): this probe
+            // used to clear the environment entirely. A dynamic bundled
+            // binary (busybox, tar) then aborts in the linker with
+            // `CANNOT LINK EXECUTABLE ... library not found`, which is not
+            // only a false negative for the probe — it lands in the system
+            // crash buffer as a native crash of the app's own bootstrap
+            // binary. Probe with the SAME environment every real launch uses.
             pb.environment().clear()
+            pb.environment().putAll(processEnv())
             val proc = pb.start()
             // Pre-release audit fix (2026-09-02, finding RT-12): the old
             // readText() BEFORE waitFor blocked until EOF — a probed binary
@@ -1224,7 +1232,7 @@ class BootstrapManager @Inject constructor(
      *
      * F-8 (2026-08-25 audit): the host path no longer lands in the GUEST,
      * though. The vendored PRoot now carries the guest-env-filter patch
-     * (`jniLibs/proot-build/0004-guest-env-filter.patch`): PRootLauncher sets
+     * (`third_party/proot/0004-guest-env-filter.patch`): PRootLauncher sets
      * `PROOT_GUEST_ENV_FILTER` naming the host-owned keys, and PRoot scrubs
      * each of them from the tracee's environment at execve time — value-
      * matched, so a guest that exports its OWN `LD_LIBRARY_PATH` keeps it.

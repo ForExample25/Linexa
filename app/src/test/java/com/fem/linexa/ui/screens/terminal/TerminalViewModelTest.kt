@@ -1,6 +1,7 @@
 package com.fem.linexa.ui.screens.terminal
 
 import com.fem.linexa.domain.runtime.RuntimeState
+import com.fem.linexa.domain.runtime.TerminalOutputWatchdog
 import com.fem.linexa.domain.runtime.TerminalState
 import com.fem.linexa.service.runtime.RuntimeTrace
 import com.fem.linexa.service.runtime.pty.PtyEvent
@@ -17,6 +18,7 @@ import kotlinx.coroutines.test.TestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
@@ -272,6 +274,150 @@ class TerminalViewModelTest {
         assertSame(pty, vm.ptySession.value)
     }
 
+    @Test
+    fun boundIdentityFollowsTheRequestedTerminalEvenWhileItsPtyIsStarting() = runTest(dispatcher) {
+        val source = FakeSource()
+        val ptyT0 = FakePtySession(WS)
+        source.registerTerminal("T0", TerminalState.Running, ptyT0)
+        source.registerTerminal("T1", TerminalState.Starting, null)
+
+        val vm = TerminalViewModel(RuntimeTrace())
+        vm.attachBinder(WS, "T0", source)
+        assertEquals("T0", vm.boundTerminalId.value)
+        assertEquals("T0", vm.ptyTerminalId.value)
+        assertSame(ptyT0, vm.ptySession.value)
+
+        vm.attachBinder(WS, "T1", source)
+
+        assertEquals("T1", vm.boundTerminalId.value)
+        assertNull("the old pty must be gone before the new one binds", vm.ptySession.value)
+        assertNull("and it must not be attributed to another terminal", vm.ptyTerminalId.value)
+    }
+
+    @Test
+    fun theExposedPtyAlwaysCarriesTheRequestedTerminalIdentity() = runTest(dispatcher) {
+        val source = FakeSource()
+        val ptyT1 = FakePtySession(WS)
+        source.registerTerminal("T0", TerminalState.Running, FakePtySession(WS))
+        source.registerTerminal("T1", TerminalState.Running, ptyT1)
+
+        val vm = TerminalViewModel(RuntimeTrace())
+        vm.attachBinder(WS, "T1", source)
+
+        assertEquals("T1", vm.boundTerminalId.value)
+        assertEquals("T1", vm.ptyTerminalId.value)
+        assertSame(ptyT1, vm.ptySession.value)
+    }
+
+    @Test
+    fun aPtyThatResolvesOnRetryStillBelongsToTheRequestedTerminal() = runTest(dispatcher) {
+        val source = FakeSource()
+        source.registerTerminal("T1", TerminalState.Running, null)
+
+        val vm = TerminalViewModel(RuntimeTrace())
+        vm.attachBinder(WS, "T1", source)
+        assertEquals("T1", vm.boundTerminalId.value)
+        assertNull(vm.ptyTerminalId.value)
+
+        val pty = FakePtySession(WS)
+        source.registerPty("T1", pty)
+        advanceTimeBy(250L)
+        advanceUntilIdle()
+
+        assertEquals("T1", vm.boundTerminalId.value)
+        assertEquals("T1", vm.ptyTerminalId.value)
+        assertSame(pty, vm.ptySession.value)
+    }
+
+    @Test
+    fun detachingClearsTheBoundAndPtyIdentitiesTogether() = runTest(dispatcher) {
+        val source = FakeSource()
+        source.registerTerminal("T1", TerminalState.Running, FakePtySession(WS))
+
+        val vm = TerminalViewModel(RuntimeTrace())
+        vm.attachBinder(WS, "T1", source)
+        assertEquals("T1", vm.boundTerminalId.value)
+
+        vm.detachBinder()
+
+        assertNull(vm.boundTerminalId.value)
+        assertNull(vm.ptyTerminalId.value)
+        assertNull(vm.ptySession.value)
+    }
+
+    // ── Finding 019 — first-output watchdog ──────────────────────────────
+
+    @Test
+    fun silentPtyShowsNoOutputWarningWithoutDestroyingIt() = runTest(dispatcher) {
+        val source = FakeSource()
+        val pty = FakePtySession(WS)
+        source.registerTerminal("T1", TerminalState.Running, pty)
+
+        val vm = TerminalViewModel(RuntimeTrace())
+        vm.attachBinder(WS, "T1", source)
+        advanceTimeBy(TerminalOutputWatchdog.DEFAULT_THRESHOLD_MS)
+        runCurrent()
+
+        val warning = vm.noOutputWarning.value
+        assertTrue("a silent live pty must warn", warning != null)
+        assertEquals(4242, warning!!.pid)
+        assertSame("the terminal view keeps the same pty", pty, vm.ptySession.value)
+        assertEquals("the watchdog must not destroy the session", 0, pty.destroyCalls)
+    }
+
+    @Test
+    fun firstOutputBeforeTheDeadlineClearsTheWarning() = runTest(dispatcher) {
+        val source = FakeSource()
+        val pty = FakePtySession(WS)
+        source.registerTerminal("T1", TerminalState.Running, pty)
+
+        val vm = TerminalViewModel(RuntimeTrace())
+        vm.attachBinder(WS, "T1", source)
+        advanceTimeBy(TerminalOutputWatchdog.DEFAULT_THRESHOLD_MS / 2)
+        runCurrent()
+
+        pty.emit(PtyEvent.ScreenUpdated)
+        runCurrent()
+        advanceTimeBy(TerminalOutputWatchdog.DEFAULT_THRESHOLD_MS)
+        runCurrent()
+
+        assertNull("output cancels the banner", vm.noOutputWarning.value)
+        assertEquals(0, pty.destroyCalls)
+    }
+
+    @Test
+    fun outputThatArrivedBeforeTheScreenAttachedAlsoCounts() = runTest(dispatcher) {
+        val source = FakeSource()
+        val pty = FakePtySession(WS, transcript = "prompt$ ")
+        source.registerTerminal("T1", TerminalState.Running, pty)
+
+        val vm = TerminalViewModel(RuntimeTrace())
+        vm.attachBinder(WS, "T1", source)
+        advanceTimeBy(TerminalOutputWatchdog.DEFAULT_THRESHOLD_MS)
+        runCurrent()
+
+        assertNull("a pre-existing prompt is output, not a black screen", vm.noOutputWarning.value)
+        assertEquals(0, pty.destroyCalls)
+    }
+
+    @Test
+    fun detachClearsTheNoOutputWarning() = runTest(dispatcher) {
+        val source = FakeSource()
+        val pty = FakePtySession(WS)
+        source.registerTerminal("T1", TerminalState.Running, pty)
+
+        val vm = TerminalViewModel(RuntimeTrace())
+        vm.attachBinder(WS, "T1", source)
+        advanceTimeBy(TerminalOutputWatchdog.DEFAULT_THRESHOLD_MS)
+        runCurrent()
+        assertTrue(vm.noOutputWarning.value != null)
+
+        vm.detachBinder()
+
+        assertNull(vm.noOutputWarning.value)
+        assertEquals(0, pty.destroyCalls)
+    }
+
     private companion object {
         const val WS = "workspace-1"
     }
@@ -307,7 +453,10 @@ class TerminalViewModelTest {
         fun terminalPty(terminalId: String): PtySession? = ptys[terminalId]
     }
 
-    private class FakePtySession(override val workspaceId: String) : PtySession {
+    private class FakePtySession(
+        override val workspaceId: String,
+        private val transcript: String = ""
+    ) : PtySession {
         override val id: String = "pty-${UUID.randomUUID()}"
         override val pid: Int = 4242
         override val isAlive: Boolean get() = true
@@ -316,12 +465,21 @@ class TerminalViewModelTest {
         private val _events = MutableSharedFlow<PtyEvent>(extraBufferCapacity = 8)
         override val events: SharedFlow<PtyEvent> get() = _events
 
+        var destroyCalls: Int = 0
+            private set
+
+        fun emit(event: PtyEvent) {
+            _events.tryEmit(event)
+        }
+
         override fun write(data: ByteArray) = Unit
         override fun write(text: String) = Unit
         override fun resize(columns: Int, rows: Int) = Unit
-        override fun currentTranscript(): String = ""
-        override fun recentOutput(maxChars: Int): String = ""
+        override fun currentTranscript(): String = transcript
+        override fun recentOutput(maxChars: Int): String = transcript.takeLast(maxChars)
         override suspend fun awaitExit(): Int = 0
-        override fun destroy() = Unit
+        override fun destroy() {
+            destroyCalls++
+        }
     }
 }

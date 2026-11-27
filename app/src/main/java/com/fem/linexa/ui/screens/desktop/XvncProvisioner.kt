@@ -3,15 +3,15 @@ package com.fem.linexa.ui.screens.desktop
 /**
  * §1.85 — Pure (JVM-testable) Xvnc provisioning logic for audit item 4.5.
  *
- * When `which Xvnc` fails in a workspace, the Desktop feature auto-installs
- * Xvnc through the guest's package manager instead of only showing the
- * `desktop_xvnc_missing` error string. Everything here is deterministic
- * string work (no Android/Application needed), mirroring the `TmuxPersist`/
- * `XKeysyms` convention, so the whole detection → command mapping can be
- * asserted in a plain JUnit test.
+ * When `command -v Xvnc` fails in a workspace, the Desktop feature
+ * auto-installs Xvnc through the guest's package manager instead of only
+ * showing the `desktop_xvnc_missing` error string. Everything here is
+ * deterministic string work (no Android/Application needed), mirroring the
+ * `TmuxPersist`/`XKeysyms` convention, so the whole detection → command
+ * mapping can be asserted in a plain JUnit test.
  *
  * Design notes:
- * - Detection reuses the same `which …` probe as
+ * - Detection reuses the same `command -v` probe as
  *   [com.fem.linexa.domain.packagemanager.PackageManagerDetector] (its
  *   [com.fem.linexa.domain.packagemanager.PackageManagerDetector.PROBE_COMMAND]),
  *   so a workspace's real package manager (apt/apk/pacman/dnf/zypper)
@@ -31,17 +31,24 @@ object XvncProvisioner {
      * [com.fem.linexa.domain.packagemanager.PackageManagerDetector]'s
      * detection so the runtime and the installer agree on which package
      * manager a workspace uses.
+     *
+     * `command -v` (not `which`) is a POSIX builtin, and each invocation names
+     * exactly one binary; `||` stops at the first hit, preserving the old
+     * `| head -1` behavior without an external binary (finding 036).
      */
-    const val DETECT_PACKAGE_MANAGER_COMMAND = "which apt-get apk pacman dnf zypper 2>/dev/null | head -1"
+    const val DETECT_PACKAGE_MANAGER_COMMAND =
+        "command -v apt-get 2>/dev/null || command -v apk 2>/dev/null || " +
+            "command -v pacman 2>/dev/null || command -v dnf 2>/dev/null || " +
+            "command -v zypper 2>/dev/null"
 
     /**
      * Maps the package-manager probe's stdout to a canonical key, or null
-     * when no supported package manager was found. Accepts the full `which`
-     * output (e.g. `/usr/bin/apt-get`) — only the basename is compared, so
-     * both a bare and an absolute path resolve.
+     * when no supported package manager was found. Accepts the full
+     * `command -v` output (e.g. `/usr/bin/apt-get`) — only the basename is
+     * compared, so both a bare and an absolute path resolve.
      */
-    fun packageManagerKey(whichOutput: String): String? {
-        val basename = whichOutput.trim().substringAfterLast('/')
+    fun packageManagerKey(probeOutput: String): String? {
+        val basename = probeOutput.trim().substringAfterLast('/')
         return when {
             basename.contains("apt-get") -> KEY_APT
             basename.contains("apk") -> KEY_APK

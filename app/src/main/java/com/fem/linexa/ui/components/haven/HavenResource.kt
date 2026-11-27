@@ -93,17 +93,13 @@ fun HResourceCard(
                 Text(
                     text = title,
                     style = HavenType.rowTitle,
-                    color = h.text,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    color = h.text
                 )
                 if (caption != null) {
                     Text(
                         text = caption,
                         style = HavenType.small,
                         color = h.muted,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.padding(top = 1.dp)
                     )
                 }
@@ -140,8 +136,7 @@ fun HResourceMetric(
             text = label,
             style = HavenType.small,
             color = h.muted,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
+            maxLines = 2
         )
         Text(
             text = value,
@@ -163,8 +158,6 @@ fun HResourceMetric(
                 text = detail,
                 style = HavenType.small,
                 color = h.muted,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(top = 6.dp)
             )
         }
@@ -213,7 +206,7 @@ fun HMiniStat(
             text = label.uppercase(),
             style = HavenType.section,
             color = h.muted,
-            maxLines = 1
+            maxLines = 2
         )
         Text(
             text = value,

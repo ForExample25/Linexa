@@ -54,7 +54,7 @@ class SettingsLinksTest {
 
     @Test
     fun theCommunityLinksAreTheOnesTheProjectActuallyHas() {
-        assertEquals("https://t.me/aniartx", HelpLink.TELEGRAM_CHANNEL.url)
+        assertEquals("https://t.me/LinexaAi", HelpLink.TELEGRAM_CHANNEL.url)
         assertEquals("https://t.me/for_example_me", HelpLink.DEVELOPER_CONTACT.url)
     }
 
@@ -187,7 +187,7 @@ class SettingsLinksTest {
             "github.com/ForExample25/Linexa/issues",
             HelpLink.displayUrl(HelpLink.ISSUES.url)
         )
-        assertEquals("t.me/aniartx", HelpLink.displayUrl(HelpLink.TELEGRAM_CHANNEL.url))
+        assertEquals("t.me/LinexaAi", HelpLink.displayUrl(HelpLink.TELEGRAM_CHANNEL.url))
     }
 
     @Test

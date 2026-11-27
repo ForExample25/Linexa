@@ -1,5 +1,6 @@
 package com.fem.linexa.ui.screens.device
 
+import com.fem.linexa.R
 import com.fem.linexa.core.format.FileSizeFormatter
 import com.fem.linexa.domain.hostinfo.HostBatteryInfo
 import com.fem.linexa.domain.hostinfo.HostCpuCore
@@ -39,7 +40,8 @@ object DeviceInfoMapper {
 
     fun from(
         snapshot: HostSystemInfoSnapshot?,
-        refreshing: Boolean = false
+        refreshing: Boolean = false,
+        labels: DeviceInfoLabels = DeviceInfoLabels.English
     ): DeviceInfoState {
         if (snapshot == null) return DeviceInfoState.LOADING
 
@@ -52,13 +54,13 @@ object DeviceInfoMapper {
             refreshing = refreshing,
             summaryModel = modelLabel(device.manufacturer, device.model),
             summaryAndroid = androidVersionLabel(device.androidRelease, device.sdkInt),
-            summaryCpu = summaryCpuLabel(cpu.logicalCores, cpu.architecture),
+            summaryCpu = summaryCpuLabel(cpu.logicalCores, cpu.architecture, labels),
             summaryRam = formatKb(snapshot.memory.memTotalKb ?: snapshot.memory.androidTotalKb),
-            summaryStorage = storageSummary(snapshot),
+            summaryStorage = storageSummary(snapshot, labels),
             summaryBattery = batterySummary(snapshot.battery.percent, chargingView(snapshot.battery.charging)),
-            summaryUptime = uptimeLabel(device.uptimeMillis),
+            summaryUptime = uptimeLabel(device.uptimeMillis, labels),
 
-            cpuRows = buildCpuRows(snapshot),
+            cpuRows = buildCpuRows(snapshot, labels),
             cpuUsagePercent = cpu.overallUsagePercent?.coerceIn(0f, 100f),
             cpuCores = run {
                 val perCore = cpu.perCoreUsagePercent
@@ -67,18 +69,18 @@ object DeviceInfoMapper {
                     // position in coresPerCoreInfo. An offline cpu1 therefore
                     // leaves a null slot instead of shifting cpu2's value into
                     // cpu1's row.
-                    cpuCoreRow(core, perCore.getOrNull(core.index))
+                    cpuCoreRow(core, perCore.getOrNull(core.index), labels)
                 }
             },
 
             gpuRows = buildGpuRows(snapshot.gpu),
             gpuTemperatureRow = gpuTemperatureRow(snapshot),
 
-            memoryLinuxRows = buildMemoryLinuxRows(snapshot.memory),
+            memoryLinuxRows = buildMemoryLinuxRows(snapshot.memory, labels),
             memoryAndroidRows = buildMemoryAndroidRows(snapshot.memory),
             memoryPressure = memoryPressureOf(snapshot.memory.isLowMemory),
 
-            swapRows = buildSwapRows(snapshot.swap, snapshot.memory.zram),
+            swapRows = buildSwapRows(snapshot.swap, snapshot.memory.zram, labels),
 
             storagePrimary = snapshot.storage.primaryVolume?.let { primary ->
                 StorageVolumeBar(
@@ -88,19 +90,19 @@ object DeviceInfoMapper {
                 )
             },
             storageSecondaryRows = buildStorageSecondaryRows(snapshot),
-            storageOtherVolumes = otherVolumeLines(snapshot),
+            storageOtherVolumes = otherVolumeLines(snapshot, labels),
 
             deviceRows = buildDeviceRows(device),
             androidRows = buildAndroidRows(device, cpu.supportedAbis),
-            hostKernelRows = buildHostKernelRows(device),
+            hostKernelRows = buildHostKernelRows(device, labels),
             linuxEnvironmentNote = linuxEnvironmentNote(),
             selfFootprintRows = buildSelfFootprintRows(snapshot),
 
             batteryPercent = snapshot.battery.percent,
             batteryChargingLabel = chargingView(snapshot.battery.charging),
-            batteryRows = buildBatteryRows(snapshot.battery),
+            batteryRows = buildBatteryRows(snapshot.battery, labels),
 
-            thermalStatus = thermalStatusView(snapshot.thermal.status, snapshot.thermal.severityLabel),
+            thermalStatus = thermalStatusView(snapshot.thermal.status, snapshot.thermal.severityLabel, labels),
             thermalHeadroom = snapshot.thermal.headroom?.let { oneDecimal(it) },
             // Battery temperature is the ONE real temperature Android exposes;
             // it was collected WITH this cycle's battery sample and mirrored
@@ -117,7 +119,7 @@ object DeviceInfoMapper {
 
             networkType = snapshot.network.primaryTransport,
             networkMetered = meteredView(snapshot.network.isMetered),
-            networkDetailRows = buildNetworkDetailRows(snapshot.network),
+            networkDetailRows = buildNetworkDetailRows(snapshot.network, labels),
 
             capabilityRows = snapshot.capabilities.map { (category, availability) ->
                 CapabilityRow(
@@ -131,16 +133,19 @@ object DeviceInfoMapper {
 
     // ── Summary header ──────────────────────────────────────────────────────
 
-    private fun summaryCpuLabel(cores: Int?, arch: String?): String =
-        listOfNotNull(cores?.let { "$it cores" }, arch).joinToString(" · ")
+    private fun summaryCpuLabel(cores: Int?, arch: String?, labels: DeviceInfoLabels): String =
+        listOfNotNull(
+            cores?.let { labels.text(R.string.device_summary_cores, it) },
+            arch
+        ).joinToString(" · ")
             .ifBlank { DeviceInfoState.DASH }
 
-    private fun storageSummary(s: HostSystemInfoSnapshot): String =
+    private fun storageSummary(s: HostSystemInfoSnapshot, labels: DeviceInfoLabels): String =
         s.storage.primaryVolume?.freeBytes?.let { free ->
             val usedPart = s.storage.primaryVolume?.usedBytes?.let {
                 "${FileSizeFormatter.format(it)} / "
             } ?: ""
-            "$usedPart${FileSizeFormatter.format(free)} free"
+            "$usedPart${labels.text(R.string.device_storage_free, FileSizeFormatter.format(free))}"
         } ?: DeviceInfoState.DASH
 
     private fun batterySummary(percent: Int?, charging: DeviceInfoState.ChargingView): String =
@@ -154,7 +159,7 @@ object DeviceInfoMapper {
 
     // ── CPU ─────────────────────────────────────────────────────────────────
 
-    private fun buildCpuRows(s: HostSystemInfoSnapshot): List<InfoRow> {
+    private fun buildCpuRows(s: HostSystemInfoSnapshot, labels: DeviceInfoLabels): List<InfoRow> {
         val cpu = s.cpu
         return listOf(
             // Online/configured pairing keeps meaning even when sysfs refused:
@@ -226,7 +231,8 @@ object DeviceInfoMapper {
      */
     internal fun cpuCoreRow(
         core: HostCpuCore,
-        usagePercent: Float? = null
+        usagePercent: Float? = null,
+        labels: DeviceInfoLabels = DeviceInfoLabels.English
     ): CpuCoreRow = CpuCoreRow(
         index = core.index,
         online = core.online,
@@ -234,7 +240,8 @@ object DeviceInfoMapper {
             core.currentKhz == null && core.maxKhz == null -> null
             else -> listOfNotNull(
                 core.currentKhz?.let(::frequencyLabel),
-                core.maxKhz?.let(::frequencyLabel)?.let { "max $it" }
+                core.maxKhz?.let(::frequencyLabel)
+                    ?.let { labels.text(R.string.device_core_max, it) }
             ).joinToString(" · ")
         },
         usageLabel = usagePercent?.let { String.format(Locale.US, "%.0f%%", it) }
@@ -247,13 +254,18 @@ object DeviceInfoMapper {
      * (`free`) report. Kept separate from Android semantics per HostMemoryInfo:
      * mixing the two IS the plausible-wrong-number bug class.
      */
-    private fun buildMemoryLinuxRows(m: com.fem.linexa.domain.hostinfo.HostMemoryInfo): List<InfoRow> =
+    private fun buildMemoryLinuxRows(
+        m: com.fem.linexa.domain.hostinfo.HostMemoryInfo,
+        labels: DeviceInfoLabels
+    ): List<InfoRow> =
         listOf(
             row(InfoRowId.MEM_TOTAL) { m.memTotalKb?.let(::formatKb) },
             row(InfoRowId.MEM_USED) { m.usedLinuxKb?.let(::formatKb) },
             row(InfoRowId.MEM_AVAILABLE) { m.memAvailableKb?.let(::formatKb) },
             row(InfoRowId.MEM_FREE) { m.memFreeKb?.let(::formatKb) },
-            row(InfoRowId.MEM_BUFFERS_CACHED) { cacheGroupLabel(m.buffersKb, m.cachedKb, m.sReclaimableKb) }
+            row(InfoRowId.MEM_BUFFERS_CACHED) {
+                cacheGroupLabel(m.buffersKb, m.cachedKb, m.sReclaimableKb, labels)
+            }
         )
 
     /** ANDROID SEMANTICS block — ActivityManager.MemoryInfo values. */
@@ -265,11 +277,18 @@ object DeviceInfoMapper {
             row(InfoRowId.MEMORY_CLASS) { m.memoryClassMb?.takeIf { it > 0 }?.let { "$it MB" } }
         )
 
-    private fun cacheGroupLabel(buffersKb: Long?, cachedKb: Long?, sReclaimableKb: Long?): String? {
+    private fun cacheGroupLabel(
+        buffersKb: Long?,
+        cachedKb: Long?,
+        sReclaimableKb: Long?,
+        labels: DeviceInfoLabels
+    ): String? {
         val parts = listOfNotNull(
-            buffersKb?.let { "buffers ${formatKb(it)}" },
-            cachedKb?.let { "cached ${formatKb(it)}" },
-            sReclaimableKb?.let { "reclaimable ${formatKb(it)}" }
+            buffersKb?.let { labels.text(R.string.device_memory_buffers, formatKb(it)) },
+            cachedKb?.let { labels.text(R.string.device_memory_cached, formatKb(it)) },
+            sReclaimableKb?.let {
+                labels.text(R.string.device_memory_reclaimable, formatKb(it))
+            }
         )
         return parts.takeIf { it.isNotEmpty() }?.joinToString("\n")
     }
@@ -284,7 +303,8 @@ object DeviceInfoMapper {
 
     private fun buildSwapRows(
         s: com.fem.linexa.domain.hostinfo.HostSwapInfo,
-        zram: com.fem.linexa.domain.hostinfo.HostZramInfo?
+        zram: com.fem.linexa.domain.hostinfo.HostZramInfo?,
+        labels: DeviceInfoLabels
     ): List<InfoRow> = listOf(
         row(InfoRowId.SWAP_TOTAL) { s.totalKb?.takeIf { it > 0 }?.let(::formatKb) },
         row(InfoRowId.SWAP_USED) { s.usedKb?.takeIf { (s.totalKb ?: 0L) > 0 }?.let(::formatKb) },
@@ -295,7 +315,7 @@ object DeviceInfoMapper {
             value = when {
                 zram == null -> DeviceInfoState.DASH
                 zram.diskSizeBytes != null -> FileSizeFormatter.format(zram.diskSizeBytes!!)
-                zram.present == true -> "present"
+                zram.present == true -> labels.text(R.string.device_value_present)
                 else -> DeviceInfoState.DASH
             },
             known = zram != null && (zram.diskSizeBytes != null || zram.present == true)
@@ -310,7 +330,10 @@ object DeviceInfoMapper {
         } ?: emptyList()
 
     /** Additional volumes beyond the primary, deduped by mount path. */
-    private fun otherVolumeLines(s: HostSystemInfoSnapshot): List<StorageVolumeLine> {
+    private fun otherVolumeLines(
+        s: HostSystemInfoSnapshot,
+        labels: DeviceInfoLabels
+    ): List<StorageVolumeLine> {
         val primaryPath = s.storage.primaryVolume?.path
         return s.storage.allVolumes
             .filter { it.totalBytes != null && it.path != primaryPath }
@@ -320,7 +343,9 @@ object DeviceInfoMapper {
                     name = v.description ?: shortPath(v.path),
                     capacityLabel = listOfNotNull(
                         v.totalBytes?.let(FileSizeFormatter::format),
-                        v.freeBytes?.let { "${FileSizeFormatter.format(it)} free" }
+                        v.freeBytes?.let {
+                            labels.text(R.string.device_storage_free, FileSizeFormatter.format(it))
+                        }
                     ).joinToString("  ·  "),
                     stateLabel = v.state
                 )
@@ -358,15 +383,23 @@ object DeviceInfoMapper {
         row(InfoRowId.ANDROID_FINGERPRINT) { d.fingerprint }
     )
 
-    private fun buildHostKernelRows(d: com.fem.linexa.domain.hostinfo.HostDeviceInfo): List<InfoRow> = listOf(
+    private fun buildHostKernelRows(
+        d: com.fem.linexa.domain.hostinfo.HostDeviceInfo,
+        labels: DeviceInfoLabels
+    ): List<InfoRow> = listOf(
         row(InfoRowId.KERNEL_RELEASE_HOST) { d.kernelRelease },
         row(InfoRowId.KERNEL_VERSION) { d.kernelVersion },
         row(InfoRowId.KERNEL_ARCH) { d.machineArch },
         row(InfoRowId.SELINUX_STATE) {
-            d.selinuxEnforcing?.let { enforcing -> if (enforcing) "enforcing" else "permissive" }
+            d.selinuxEnforcing?.let { enforcing ->
+                labels.text(
+                    if (enforcing) R.string.device_selinux_enforcing
+                    else R.string.device_selinux_permissive
+                )
+            }
         },
-        row(InfoRowId.HOST_UPTIME) { uptimeLabel(d.uptimeMillis) },
-        row(InfoRowId.DEEP_SLEEP) { d.deepSleepMillis?.let(::uptimeLabel) },
+        row(InfoRowId.HOST_UPTIME) { uptimeLabel(d.uptimeMillis, labels) },
+        row(InfoRowId.DEEP_SLEEP) { d.deepSleepMillis?.let { uptimeLabel(it, labels) } },
         row(InfoRowId.BOOT_TIME) { d.bootTimeEpochMillis?.let(::epochLabel) }
     )
 
@@ -399,15 +432,34 @@ object DeviceInfoMapper {
 
     // ── Battery ─────────────────────────────────────────────────────────────
 
-    private fun buildBatteryRows(b: HostBatteryInfo): List<InfoRow> = listOf(
+    private fun powerSourceLabelRes(source: HostBatteryInfo.PowerSource): Int = when (source) {
+        HostBatteryInfo.PowerSource.AC -> R.string.device_power_source_ac
+        HostBatteryInfo.PowerSource.USB -> R.string.device_power_source_usb
+        HostBatteryInfo.PowerSource.WIRELESS -> R.string.device_power_source_wireless
+        HostBatteryInfo.PowerSource.DOCK -> R.string.device_power_source_dock
+        HostBatteryInfo.PowerSource.NONE -> R.string.device_power_source_none
+        HostBatteryInfo.PowerSource.UNKNOWN -> R.string.device_power_source_unknown
+    }
+
+    private fun batteryHealthLabelRes(health: HostBatteryInfo.Health): Int = when (health) {
+        HostBatteryInfo.Health.GOOD -> R.string.device_health_good
+        HostBatteryInfo.Health.OVERHEAT -> R.string.device_health_overheat
+        HostBatteryInfo.Health.DEAD -> R.string.device_health_dead
+        HostBatteryInfo.Health.OVERVOLTAGE -> R.string.device_health_overvoltage
+        HostBatteryInfo.Health.COLD -> R.string.device_health_cold
+        HostBatteryInfo.Health.UNSPECIFIED_FAILURE -> R.string.device_health_unspecified_failure
+        HostBatteryInfo.Health.UNKNOWN -> R.string.device_health_unknown
+    }
+
+    private fun buildBatteryRows(b: HostBatteryInfo, labels: DeviceInfoLabels): List<InfoRow> = listOf(
         InfoRow(
             id = InfoRowId.BATTERY_SOURCE,
-            value = b.powerSource.name.lowercase(Locale.US).replace('_', ' '),
+            value = labels.text(powerSourceLabelRes(b.powerSource)),
             known = b.powerSource != HostBatteryInfo.PowerSource.UNKNOWN
         ),
         InfoRow(
             id = InfoRowId.BATTERY_HEALTH,
-            value = b.health.name.lowercase(Locale.US),
+            value = labels.text(batteryHealthLabelRes(b.health)),
             known = b.health != HostBatteryInfo.Health.UNKNOWN
         ),
         row(InfoRowId.BATTERY_TEMPERATURE) { b.temperatureC?.let { "${oneDecimal(it)} °C" } },
@@ -424,7 +476,9 @@ object DeviceInfoMapper {
         InfoRow(id = InfoRowId.BATTERY_CAPACITY_DESIGN, value = DeviceInfoState.DASH, known = false),
         InfoRow(
             id = InfoRowId.BATTERY_POWER_SAVE,
-            value = b.isPowerSaveMode?.let { if (it) "on" else "off" } ?: DeviceInfoState.DASH,
+            value = b.isPowerSaveMode?.let {
+                labels.text(if (it) R.string.device_value_on else R.string.device_value_off)
+            } ?: DeviceInfoState.DASH,
             known = b.isPowerSaveMode != null
         )
     )
@@ -447,7 +501,8 @@ object DeviceInfoMapper {
 
     internal fun thermalStatusView(
         status: com.fem.linexa.domain.hostinfo.HostThermalInfo.Status?,
-        severityLabel: String?
+        severityLabel: String?,
+        labels: DeviceInfoLabels = DeviceInfoLabels.English
     ): DeviceInfoState.StatusView? {
         status ?: return null
         val severity = when (status) {
@@ -461,10 +516,23 @@ object DeviceInfoMapper {
             // every step past MODERATE means the user should care NOW.
             else -> DeviceInfoState.StatusView.Severity.SEVERE_PLUS
         }
+        val localized = labels.text(thermalLabelRes(status))
         return DeviceInfoState.StatusView(
-            label = severityLabel ?: status.name.lowercase(Locale.US),
+            label = localized.ifBlank { severityLabel ?: status.name.lowercase(Locale.US) },
             severity = severity
         )
+    }
+
+    private fun thermalLabelRes(
+        status: com.fem.linexa.domain.hostinfo.HostThermalInfo.Status
+    ): Int = when (status) {
+        com.fem.linexa.domain.hostinfo.HostThermalInfo.Status.NONE -> R.string.device_thermal_none
+        com.fem.linexa.domain.hostinfo.HostThermalInfo.Status.LIGHT -> R.string.device_thermal_light
+        com.fem.linexa.domain.hostinfo.HostThermalInfo.Status.MODERATE -> R.string.device_thermal_moderate
+        com.fem.linexa.domain.hostinfo.HostThermalInfo.Status.SEVERE -> R.string.device_thermal_severe
+        com.fem.linexa.domain.hostinfo.HostThermalInfo.Status.CRITICAL -> R.string.device_thermal_critical
+        com.fem.linexa.domain.hostinfo.HostThermalInfo.Status.EMERGENCY -> R.string.device_thermal_emergency
+        com.fem.linexa.domain.hostinfo.HostThermalInfo.Status.SHUTDOWN -> R.string.device_thermal_shutdown
     }
 
     // ── Network ─────────────────────────────────────────────────────────────
@@ -475,17 +543,27 @@ object DeviceInfoMapper {
         null -> null
     }
 
-    private fun buildNetworkDetailRows(n: com.fem.linexa.domain.hostinfo.HostNetworkInfo): List<InfoRow> =
+    private fun buildNetworkDetailRows(
+        n: com.fem.linexa.domain.hostinfo.HostNetworkInfo,
+        labels: DeviceInfoLabels
+    ): List<InfoRow> =
         listOf(
             row(InfoRowId.NETWORK_VALIDATED) {
-                n.isValidated?.let { if (it) "internet" else "connected only" }
+                n.isValidated?.let {
+                    labels.text(
+                        if (it) R.string.device_network_internet
+                        else R.string.device_network_connected_only
+                    )
+                }
             },
             row(InfoRowId.NETWORK_INTERFACE) { n.interfaceName },
             row(InfoRowId.NETWORK_DOWNLINK) {
                 n.downlinkKbps?.takeIf { it > 0 }?.let { "$it Kbps*" }
             },
             row(InfoRowId.NETWORK_PRIVATE_DNS) {
-                n.isPrivateDnsActive?.let { if (it) "on" else "off" }
+                n.isPrivateDnsActive?.let {
+                    labels.text(if (it) R.string.device_value_on else R.string.device_value_off)
+                }
             }
         )
 
@@ -524,7 +602,10 @@ object DeviceInfoMapper {
         )
     }
 
-    internal fun uptimeLabel(millis: Long?): String {
+    internal fun uptimeLabel(
+        millis: Long?,
+        labels: DeviceInfoLabels = DeviceInfoLabels.English
+    ): String {
         if (millis == null || millis < 0L) return DeviceInfoState.DASH
         val totalMinutes = millis / 60_000L
         val days = totalMinutes / (24 * 60)
@@ -532,10 +613,12 @@ object DeviceInfoMapper {
         val minutes = totalMinutes % 60
         val seconds = (millis / 1000L) % 60
         return when {
-            days > 0 -> "${days}d ${hours}h ${minutes}m"
-            hours > 0 -> "${hours}h ${minutes}m"
-            minutes > 0 -> "${minutes}m ${seconds}s"
-            else -> "${seconds}s"
+            days > 0 -> labels.text(
+                R.string.device_uptime_days_hours_minutes, days, hours, minutes
+            )
+            hours > 0 -> labels.text(R.string.device_uptime_hours_minutes, hours, minutes)
+            minutes > 0 -> labels.text(R.string.device_uptime_minutes_seconds, minutes, seconds)
+            else -> labels.text(R.string.device_uptime_seconds, seconds)
         }
     }
 

@@ -641,6 +641,147 @@ class StagedRootFsInstallerScanTest {
         )
     }
 
+    // ── RF-001: strip offset and stateful link traversal ─────────────────
+
+    @Test
+    fun aSymlinkThatOnlyEscapesAfterStripComponentsFailsAnalysis() {
+        setUp()
+        // Raw coordinates put the link at rootfs/usr/bin/x; three `..` land
+        // back on the wrapper root and the old check accepted it. Extraction
+        // strips the wrapper, so the link is really usr/bin/x and the same
+        // target climbs one level above staging.
+        val result = analyze(
+            tarGz(
+                dir("./rootfs/"),
+                dir("./rootfs/etc/"),
+                dir("./rootfs/usr/"),
+                dir("./rootfs/var/"),
+                dir("./rootfs/usr/bin/"),
+                file("./rootfs/etc/os-release", "ID=debian\nVERSION_ID=12\n"),
+                elf("./rootfs/usr/bin/bash"),
+                symlink("./rootfs/usr/bin/escape", "../../../etc")
+            ),
+            workspaceId = "ws-strip-escape"
+        )
+
+        val failure = result as? AnalyzeResult.Failure
+            ?: fail("a link that escapes after stripping must fail analysis", result)
+        assertTrue(
+            "failure must name the stripped coordinate, got: ${failure.reason}",
+            failure.reason.contains("after stripping 1 leading component(s)")
+        )
+        assertTrue(
+            "failure must name the escape, got: ${failure.reason}",
+            failure.reason.contains("Symlink escapes extraction rootfs boundary")
+        )
+        assertFalse("rejected analysis leaves no import cache", importCache("ws-strip-escape").exists())
+    }
+
+    @Test
+    fun anEntryWrittenThroughAnEarlierSymlinkFailsAnalysis() {
+        setUp()
+        // `usr/bin/link -> ../../etc` is itself in-root and legal. The next
+        // member is extracted *through* it, which can create files outside the
+        // staging tree even though its own name has no `..`.
+        val result = analyze(
+            tarGz(
+                dir("./"),
+                dir("./etc/"),
+                dir("./usr/"),
+                dir("./var/"),
+                dir("./usr/bin/"),
+                file("./etc/os-release", "ID=debian\nVERSION_ID=12\n"),
+                symlink("./usr/bin/link", "../../etc"),
+                file("./usr/bin/link/payload", "written through the link"),
+                elf("./usr/bin/bash")
+            ),
+            workspaceId = "ws-write-through"
+        )
+
+        val failure = result as? AnalyzeResult.Failure
+            ?: fail("an entry through an earlier symlink must fail analysis", result)
+        assertTrue(
+            "failure must name the traversed link, got: ${failure.reason}",
+            failure.reason.contains("is extracted through symlink 'usr/bin/link'")
+        )
+        assertFalse(importCache("ws-write-through").exists())
+    }
+
+    @Test
+    fun aLegitimateWrappedRelativeSymlinkStillAnalyzes() {
+        setUp()
+        val result = analyze(
+            tarGz(
+                dir("./rootfs/"),
+                dir("./rootfs/etc/"),
+                dir("./rootfs/usr/"),
+                dir("./rootfs/var/"),
+                dir("./rootfs/usr/lib/"),
+                symlink("./rootfs/etc/os-release", "../usr/lib/os-release"),
+                file("./rootfs/usr/lib/os-release", "NAME=\"Alpine Linux\"\nID=alpine\n"),
+                file("./rootfs/etc/alpine-release", "3.24.1\n"),
+                elf("./rootfs/usr/bin/bash")
+            ),
+            workspaceId = "ws-wrapped-relative"
+        )
+
+        val success = result as? AnalyzeResult.Success
+            ?: fail("a normal wrapped rootfs symlink must keep analyzing", result)
+        assertEquals("one wrapper directory must still be stripped", 1, success.stripComponents)
+    }
+
+    @Test
+    fun aLegitimateAbsoluteSymlinkInAWrappedRootfsStillAnalyzes() {
+        setUp()
+        val result = analyze(
+            tarGz(
+                dir("./rootfs/"),
+                dir("./rootfs/bin/"),
+                dir("./rootfs/etc/"),
+                dir("./rootfs/usr/"),
+                dir("./rootfs/var/"),
+                elf("./rootfs/bin/busybox"),
+                symlink("./rootfs/bin/sh", "/bin/busybox"),
+                file("./rootfs/etc/os-release", "NAME=\"Alpine Linux\"\nID=alpine\n"),
+                elf("./rootfs/usr/bin/bash")
+            ),
+            workspaceId = "ws-wrapped-absolute"
+        )
+
+        assertTrue(
+            "absolute in-root links are ordinary guest content and must survive",
+            result is AnalyzeResult.Success
+        )
+    }
+
+    @Test
+    fun aDirectoryMayReplaceAnEarlierSymlinkWithoutFalseRejection() {
+        setUp()
+        // GNU tar unlinks the earlier link when the directory member is
+        // extracted; the guard must follow that replacement, not remember the
+        // link forever.
+        val result = analyze(
+            tarGz(
+                dir("./"),
+                dir("./etc/"),
+                dir("./usr/"),
+                dir("./var/"),
+                dir("./usr/bin/"),
+                file("./etc/os-release", "ID=debian\nVERSION_ID=12\n"),
+                symlink("./usr/bin/x", "busybox"),
+                dir("./usr/bin/x/"),
+                file("./usr/bin/x/y", "ordinary file"),
+                elf("./usr/bin/bash")
+            ),
+            workspaceId = "ws-replaced-link"
+        )
+
+        assertTrue(
+            "replacing a link with a directory is not a traversal",
+            result is AnalyzeResult.Success
+        )
+    }
+
     // ── fixture plumbing ─────────────────────────────────────────────────
 
     private class Member(

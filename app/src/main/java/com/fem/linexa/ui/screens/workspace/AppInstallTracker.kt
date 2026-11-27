@@ -2,6 +2,7 @@ package com.fem.linexa.ui.screens.workspace
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import android.os.SystemClock
 import com.fem.linexa.core.logging.Logger
 import com.fem.linexa.domain.launcher.LauncherApp
 import com.fem.linexa.domain.packagemanager.PackageShell
@@ -76,6 +77,18 @@ class AppInstallTracker @Inject constructor(
     private var probeJob: Job? = null
     private var probeGeneration = 0
 
+    /**
+     * DEEP-AUDIT (2026-11-26): last completed/started authoritative probe.
+     *
+     * The Apps segment calls [refresh] on every entry, and the screen also
+     * attaches + publishes the corpus, so one workspace entry could run the
+     * same guest package-manager query two or three times back-to-back (each
+     * is a PRoot exec, and it competes with the workspace's own start). The
+     * elapsed-realtime gate keeps the "tab entry re-measures" contract while
+     * collapsing calls that arrive inside one short window.
+     */
+    private var lastProbeAtMs = 0L
+
     private var jobsObserver: Job? = null
     private var observedJobsWorkspace: String? = null
     private val handledTerminalJobs = HashSet<String>()
@@ -85,7 +98,10 @@ class AppInstallTracker @Inject constructor(
         workspaceId = wsId
         binder = runtimeBinder
         coordinator.attachBinder(runtimeBinder)
-        if (!same || _states.value.isEmpty()) refresh()
+        // A new workspace / an unmeasured one must measure now. A re-attach to
+        // the SAME workspace with existing measurements goes through the
+        // throttled path, so a recomposition cannot start a second guest probe.
+        refresh(force = !same || _states.value.isEmpty())
         observeJobs()
     }
 
@@ -103,17 +119,67 @@ class AppInstallTracker @Inject constructor(
         _states.value = emptyMap()
     }
 
-    /** Re-runs the authoritative probe (screen entry, explicit refresh, after a job). */
-    fun refresh() {
+    /**
+     * Re-runs the authoritative probe (screen entry, explicit refresh, after a
+     * job).
+     *
+     * @param force when false (tab entry), a probe is skipped if one is already
+     *   in flight or one was started inside [MIN_REFRESH_INTERVAL_MS]. Job
+     *   completions and workspace changes pass `true`.
+     */
+    /**
+     * DRA-004 closure instrumentation: real guest probes started. Internal so
+     * the device audit test can assert throttling without parsing logs.
+     */
+    @Volatile
+    private var executedProbes = 0L
+    internal fun probeCountForTest(): Long = executedProbes
+
+    fun refresh(force: Boolean = false) {
         val b = binder ?: return
         val ws = workspaceId ?: return
+        if (currentApps.isEmpty()) {
+            // Nothing to measure yet (attach happens before the launcher
+            // publishes its corpus). Do not count this as a probe: no guest
+            // command would run.
+            Logger.d(TAG, "probe SKIP ws=$ws reason=no_corpus")
+            return
+        }
+        val now = SystemClock.elapsedRealtime()
+        if (!force) {
+            if (probeJob?.isActive == true) {
+                Logger.d(TAG, "probe SKIP ws=$ws reason=in_flight")
+                return
+            }
+            if (now - lastProbeAtMs < MIN_REFRESH_INTERVAL_MS) {
+                Logger.d(TAG, "probe SKIP ws=$ws reason=throttle elapsed=${now - lastProbeAtMs}ms")
+                return
+            }
+        }
         val generation = ++probeGeneration
+        val sinceLast = now - lastProbeAtMs
         probeJob?.cancel()
+        lastProbeAtMs = now
+        executedProbes++
         _probing.value = true
+        // DRA-004 closure instrumentation: exactly one START line per guest
+        // package-manager measurement, so one Apps entry / tab switch can be
+        // counted from logcat. END closes the pair; SKIP lines explain every
+        // suppressed call.
+        Logger.d(
+            TAG,
+            "probe START ws=$ws generation=$generation force=$force corpus=${currentApps.size} " +
+                "sinceLast=${sinceLast}ms"
+        )
         probeJob = viewModelScope.launch {
             try {
                 val measured = measureAll(b, ws)
                 if (generation == probeGeneration) _states.value = measured
+                Logger.d(
+                    TAG,
+                    "probe END ws=$ws generation=$generation states=${measured.size} " +
+                        "latest=$probeGeneration"
+                )
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -153,7 +219,7 @@ class AppInstallTracker @Inject constructor(
                         else -> Unit
                     }
                 }
-                if (terminalSeen) refresh()
+                if (terminalSeen) refresh(force = true)
             }
         }
     }
@@ -193,12 +259,24 @@ class AppInstallTracker @Inject constructor(
 
     /** Sets the app corpus and immediately re-measures (the launcher's tree load). */
     fun setApps(apps: List<LauncherApp>) {
+        // DEEP-AUDIT: the screen republishes the same corpus on every
+        // recomposition/segment re-entry. Re-running the probe for an unchanged
+        // list is pure guest work.
+        if (apps == currentApps) return
         currentApps = apps
-        refresh()
+        refresh(force = true)
     }
 
     private companion object {
         const val TAG = "AppInstallTracker"
+
+        /**
+         * DEEP-AUDIT: minimum spacing between non-forced probes. Long enough to
+         * collapse the attach + segment-entry + corpus publication burst that a
+         * single workspace entry produces, short enough that returning to the
+         * Apps tab after looking at another tab still re-measures.
+         */
+        const val MIN_REFRESH_INTERVAL_MS = 5_000L
     }
 }
 

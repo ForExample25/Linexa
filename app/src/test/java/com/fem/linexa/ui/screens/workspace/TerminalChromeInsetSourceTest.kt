@@ -21,8 +21,9 @@ import org.junit.Test
  *    content inset below it) — the terminal may never paint behind the status
  *    bar again;
  *  - the workspace app bar (the header row with back / Terminal / Desktop) is
- *    composed ONCE, outside the terminal body swap — it stays visible while
- *    the terminal overlay is open;
+ *    composed ONCE, outside the terminal overlay — it stays composed at a
+ *    stable size and fades out (with its actions disabled) while the terminal
+ *    is open, so the overlay never re-measures the workspace beneath it;
  *  - the terminal surface is rendered inside the content region between the
  *    app bar and the shortcut bar, still opaque, keyboard-aware, always dark
  *    and terminal-color-owned. Since the 2026-11 Settings pass the workspace
@@ -78,20 +79,24 @@ class TerminalChromeInsetSourceTest {
     }
 
     @Test
-    fun theWorkspaceAppBarIsComposedOutsideTheTerminalSwap() {
+    fun theWorkspaceAppBarIsComposedOnceOutsideTheOverlay() {
         val appBar = screen.indexOf("ic_haven_arrow_back")
-        val bodySwap = screen.indexOf("AnimatedContent(")
+        val overlay = screen.indexOf("TerminalOverlay(")
         assertTrue("the app bar must exist", appBar >= 0)
-        assertTrue("the terminal body swap must exist", bodySwap >= 0)
+        assertTrue("the terminal overlay must exist", overlay >= 0)
         assertTrue(
-            "the app bar must be composed BEFORE (outside) the terminal body " +
-                "swap so it stays visible while the terminal overlay is open",
-            appBar < bodySwap
+            "the app bar must be composed BEFORE the overlay so it stays " +
+                "composed (faded, input-disabled) while the terminal is open",
+            appBar < overlay
         )
         assertEquals(
             "the app bar must be composed exactly once — not once per branch",
             1,
             Regex("ic_haven_arrow_back").findAll(screen).count()
+        )
+        assertTrue(
+            "the app bar fades instead of being removed",
+            screen.contains("alpha = appBarAlpha") || screen.contains("graphicsLayer { alpha = appBarAlpha }")
         )
     }
 
@@ -114,8 +119,10 @@ class TerminalChromeInsetSourceTest {
             panel.contains(".background(h.term)")
         )
         assertTrue(
-            "the panel confines IME padding to the terminal column",
-            panel.contains(".imePadding()")
+            "the panel confines the bottom (nav ∪ IME) inset to the terminal column",
+            panel.contains(
+                ".windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))"
+            )
         )
     }
 
@@ -126,8 +133,10 @@ class TerminalChromeInsetSourceTest {
             surfaceFn.contains(".background(h.term)")
         )
         assertTrue(
-            "the terminal region stays keyboard-aware (imePadding)",
-            surfaceFn.contains(".imePadding()")
+            "the terminal region stays keyboard-aware (nav ∪ IME consumed once)",
+            surfaceFn.contains(
+                ".windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))"
+            )
         )
         assertFalse(
             "the terminal region itself must not consume the status-bar inset " +

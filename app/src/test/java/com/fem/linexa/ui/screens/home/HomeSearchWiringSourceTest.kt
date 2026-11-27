@@ -135,7 +135,13 @@ class HomeSearchWiringSourceTest {
     @Test
     fun theEnrichmentPipelineIsStillTheSameChain() {
         val pipeline = between(viewModel, "val workspacesUi: StateFlow<List<Workspace>> =", "// ── Search / sort / filter (P3)")
-        assertTrue(Regex("""repository\.observeAll\(\)\s*\.distinctUntilChanged\(\)\s*\.debounce\(150\)\s*\.transformLatest \{ list ->""").containsMatchIn(pipeline))
+        // Phase 1 (2026-11-24): the pipeline derives from the ViewModel's single
+        // Room upstream (`workspaceRows`) instead of opening a second
+        // `repository.observeAll()` collector, and the first non-empty list
+        // bypasses the install-burst debounce.
+        assertTrue(Regex("""workspaceRows\s*\.debounce \{ list ->""").containsMatchIn(pipeline))
+        assertTrue(pipeline.contains("firstNonEmptyEmission"))
+        assertTrue(pipeline.contains("ROW_DEBOUNCE_MS"))
         assertTrue(Regex("""\.stateIn\(viewModelScope, SharingStarted\.WhileSubscribed\(5_000\), emptyList\(\)\)""").containsMatchIn(pipeline))
         assertTrue(pipeline.contains("enrichmentCache"))
     }

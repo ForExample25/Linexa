@@ -52,6 +52,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.fem.linexa.core.i18n.linexaString
 import com.fem.linexa.R
 import com.fem.linexa.core.format.FileSizeFormatter
 import com.fem.linexa.data.Workspace
@@ -405,9 +406,7 @@ private fun InstallingState(progress: Float, label: String) {
                 text = stringResource(R.string.workspace_installing, label),
                 style = HavenType.body,
                 color = h.text,
-                textAlign = TextAlign.Center,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
+                textAlign = TextAlign.Center
             )
             Spacer(modifier = Modifier.height(16.dp))
             HProgress(fraction = progress.coerceIn(0f, 1f), big = true)
@@ -438,9 +437,7 @@ private fun BusyState(operation: String) {
                 text = operation,
                 style = HavenType.body,
                 color = h.text,
-                textAlign = TextAlign.Center,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis
+                textAlign = TextAlign.Center
             )
         }
     }
@@ -651,9 +648,7 @@ private fun DiagnosticLogFooter(logPath: String) {
         Text(
             text = stringResource(R.string.workspace_persistent_logs),
             style = HavenType.rowTitle,
-            color = h.text,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
+            color = h.text
         )
         Text(
             text = stringResource(R.string.workspace_logs_location, logPath),
@@ -818,7 +813,7 @@ private suspend fun saveDiagnosticsToFile(
             withContext(Dispatchers.Main) {
                 Toast.makeText(
                     context,
-                    context.getString(R.string.workspace_diagnostics_saved, targetFile.absolutePath),
+                    context.linexaString(R.string.workspace_diagnostics_saved, targetFile.absolutePath),
                     Toast.LENGTH_LONG
                 ).show()
             }
@@ -826,7 +821,10 @@ private suspend fun saveDiagnosticsToFile(
             withContext(Dispatchers.Main) {
                 Toast.makeText(
                     context,
-                    context.getString(R.string.diagnostic_save_failed, e.message),
+                    context.linexaString(
+                        R.string.diagnostic_save_failed,
+                        e.message ?: e.javaClass.simpleName
+                    ),
                     Toast.LENGTH_LONG
                 ).show()
             }

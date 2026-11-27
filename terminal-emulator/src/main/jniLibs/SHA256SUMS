@@ -1,0 +1,11 @@
+# F-045 / R-11: supply-chain pin for the prebuilt JNI layer.
+#
+# These binaries are copied verbatim from termux/termux-app v0.118.3
+# (commit 5b657c6adf4304e5198951ce815fe0205dcac29c) and are NOT produced by
+# this Gradle build. `PrebuiltLibraryPinTest` fails if either file changes
+# without this manifest, so a modified binary cannot ship unnoticed.
+#
+# Rebuild with `terminal-emulator/scripts/rebuild-libtermux.sh` and update
+# these hashes (and PROVENANCE.md) in the same change.
+e53837c8475f9540e84ac3c310ed5c2f110ea5183a0ac5eb5d183d49f3e5e6fc  arm64-v8a/libtermux.so
+1a3336d97e85b14aa6bce7aff4c05777d9a67acb37e735c974117ad5d640123b  armeabi-v7a/libtermux.so

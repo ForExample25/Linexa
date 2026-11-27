@@ -11,6 +11,7 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.ChecksSdkIntAtLeast
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -315,6 +316,12 @@ private fun PhantomLimitGuidanceBlock(guidance: PhantomLimitGuidance) {
  * "All files access" (MANAGE_EXTERNAL_STORAGE) exists only on API 30+.
  * Pure, so the API-gating logic is unit-testable on the JVM.
  */
+// Lint cannot infer the SDK gate from a helper that takes `sdkInt` as a
+// parameter, so the all-files access call below was reported as a NewApi
+// error even though it only runs behind this check. The annotation is the
+// supported way to describe that contract: it names the parameter that
+// carries the API level, so static analysis sees the same guard the caller does.
+@ChecksSdkIntAtLeast(parameter = 0, api = Build.VERSION_CODES.R)
 internal fun fileAccessSupported(sdkInt: Int): Boolean = sdkInt >= Build.VERSION_CODES.R
 
 /**

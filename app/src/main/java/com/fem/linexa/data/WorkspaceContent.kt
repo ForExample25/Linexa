@@ -64,43 +64,43 @@ object WorkspaceContent {
     val builtinFeatures: List<Feature> = listOf(
         Feature(
             id = "audio",
-            title = "Audio",
-            description = "Route sound from the workspace",
+            titleRes = R.string.feature_audio_title,
+            descriptionRes = R.string.feature_audio_desc,
             iconRes = R.drawable.ic_haven_audio,
             enabledByDefault = true
         ),
         Feature(
             id = "clipboard",
-            title = "Clipboard",
-            description = "Share clipboard with the host",
+            titleRes = R.string.feature_clipboard_title,
+            descriptionRes = R.string.feature_clipboard_desc,
             iconRes = R.drawable.ic_haven_clipboard,
             enabledByDefault = true
         ),
         Feature(
             id = "ssh",
-            title = "SSH",
-            description = "Expose an SSH server on the workspace",
+            titleRes = R.string.feature_ssh_title,
+            descriptionRes = R.string.feature_ssh_desc,
             iconRes = R.drawable.ic_haven_ssh,
             enabledByDefault = false
         ),
         Feature(
             id = "notifications",
-            title = "Notifications",
-            description = "Forward workspace notifications",
+            titleRes = R.string.feature_notifications_title,
+            descriptionRes = R.string.feature_notifications_desc,
             iconRes = R.drawable.ic_haven_info,
             enabledByDefault = true
         ),
         Feature(
             id = "storage",
-            title = "Shared Storage",
-            description = "Mount host storage into the workspace",
+            titleRes = R.string.feature_storage_title,
+            descriptionRes = R.string.feature_storage_desc,
             iconRes = R.drawable.ic_haven_storage,
             enabledByDefault = true
         ),
         Feature(
             id = FEATURE_DESKTOP,
-            title = "Desktop",
-            description = "Enable the Desktop entry and choose how it runs (VNC or web)",
+            titleRes = R.string.feature_desktop_title,
+            descriptionRes = R.string.feature_desktop_desc,
             iconRes = R.drawable.ic_haven_monitor,
             // Desktop prerequisites (2026-09-02): Desktop is NOT enabled by
             // default. A fresh workspace starts with Desktop OFF; the user
@@ -113,8 +113,8 @@ object WorkspaceContent {
         ),
         Feature(
             id = FEATURE_GPU,
-            title = "GPU Acceleration",
-            description = "Hardware GL via VirGL (falls back to software when unavailable)",
+            titleRes = R.string.feature_gpu_title,
+            descriptionRes = R.string.feature_gpu_desc,
             iconRes = R.drawable.ic_haven_gpu,
             enabledByDefault = false
         )

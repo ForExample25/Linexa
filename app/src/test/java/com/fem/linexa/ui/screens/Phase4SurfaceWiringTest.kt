@@ -42,6 +42,39 @@ class Phase4SurfaceWiringTest {
         // never through a Column-based expandable panel.
         assertTrue(screen.contains("} else if (hostVisible.isNotEmpty()) {"))
         assertFalse(screen.contains("HExpandablePanel("))
+        // PERF-001 (phase 8): a collapsed section composes no rows, so it must
+        // not order the process table either. The sort sits behind the expand
+        // gate; the header count and empty state use the raw sample count so a
+        // collapsed section still reports the true number of processes.
+        assertTrue(screen.contains("val hostProcessCount = state.hostProcesses?.processes?.size ?: 0"))
+        assertTrue(
+            screen.contains(
+                "if (hostExpanded) {\n            HostProcessPresentation.ordered("
+            )
+        )
+        assertTrue(screen.contains("count = hostProcessCount"))
+        assertFalse(screen.contains("count = hostRows.size"))
+        assertFalse(screen.contains("if (hostRows.isEmpty())"))
+    }
+
+    @Test
+    fun activityScreenNeverStartsTheRuntimeService() {
+        // PERF-003: visiting the Activity tab must not create RuntimeService.
+        // The screen only attaches to a service the workspace start path owns,
+        // and only while a session exists.
+        val vm = src("ui/screens/activity/ActivityViewModel.kt")
+        assertFalse(
+            "the Activity tab must never call startService — that leak is what created the service",
+            vm.contains("startService(intent)")
+        )
+        assertTrue(
+            "the read-only bind must be gated on the session state",
+            vm.contains("sessionManager.sessionStates")
+        )
+        assertTrue(
+            "the bind is session-gated, so its collectors must die with the connection",
+            vm.contains("serviceCollectorJobs.forEach { it.cancel() }")
+        )
     }
 
     @Test
@@ -50,7 +83,9 @@ class Phase4SurfaceWiringTest {
         assertTrue(vm.contains("private val hostScanner: HostProcessScanner"))
         assertTrue(vm.contains("fun start()"))
         assertTrue(vm.contains("fun pause()"))
-        assertTrue(vm.contains("hostScanner.snapshot()"))
+        // PERF-006: the engine is still wired; only the PSS walk is conditional
+        // on the section being expanded.
+        assertTrue(vm.contains("hostScanner.snapshot(includePss = hostProcessesExpanded)"))
         // No low-level name filter was added to the monitor.
         assertFalse(vm.contains("libproot.so"))
         assertFalse(vm.contains("\"ssh\""))

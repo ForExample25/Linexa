@@ -231,7 +231,7 @@ class WorkspaceFeatureReconcilerTest {
     @Test
     fun launchInstallsTheServerWhenTheGuestDoesNotHaveIt() = runBlocking {
         val guest = RecordingGuestFeatureHost().apply {
-            responses["which apt-get"] = CommandResult(0, "/usr/bin/apt-get\n", "")
+            responses[PackageManagerDetector.PROBE_COMMAND] = CommandResult(0, "/usr/bin/apt-get\n", "")
             responses["os-release"] = CommandResult(0, "ID=debian\n", "")
         }
         // Probe reports missing until the install has run.
@@ -337,7 +337,7 @@ class WorkspaceFeatureReconcilerTest {
     fun anEnabledToggleThatCannotBeInstalledDoesNotThrow() = runBlocking {
         val guest = RecordingGuestFeatureHost().apply {
             responses["command -v sshd"] = CommandResult(1, "", "")
-            responses["which apt-get"] = CommandResult(1, "", "")
+            responses[PackageManagerDetector.PROBE_COMMAND] = CommandResult(1, "", "")
             responses["os-release"] = CommandResult(1, "", "")
         }
         // No supported package manager: reconcileSsh returns Failed, and the
@@ -598,7 +598,7 @@ class WorkspaceFeatureReconcilerTest {
         // applied — they are unrelated capabilities.
         val guest = RecordingGuestFeatureHost().apply {
             responses["command -v sshd"] = CommandResult(1, "", "")
-            responses["which apt-get"] = CommandResult(1, "", "")
+            responses[PackageManagerDetector.PROBE_COMMAND] = CommandResult(1, "", "")
             responses["os-release"] = CommandResult(1, "", "")
         }
         reconciler(
@@ -695,7 +695,7 @@ class WorkspaceFeatureReconcilerTest {
     fun theLaunchPathTouchesNoOtherDaemonAndNoLifecycleCommand() = runBlocking {
         val guest = RecordingGuestFeatureHost().apply {
             responses["command -v sshd"] = CommandResult(1, "", "")
-            responses["which apt-get"] = CommandResult(0, "/usr/bin/apt-get\n", "")
+            responses[PackageManagerDetector.PROBE_COMMAND] = CommandResult(0, "/usr/bin/apt-get\n", "")
             responses["os-release"] = CommandResult(0, "ID=debian\n", "")
         }
         reconciler(repositoryWith(sshOnly(true)), guest).launchReconcile(ws)

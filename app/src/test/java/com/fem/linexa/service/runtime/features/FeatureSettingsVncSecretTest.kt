@@ -41,6 +41,24 @@ class FeatureSettingsVncSecretTest {
     }
 
     @Test
+    fun noAuthConsentDefaultsOffAndRoundTrips() {
+        // Finding 007: a no-password start must require this explicit flag.
+        assertFalse(FeatureSettings().desktopVncAllowUnauthenticated)
+        assertFalse(FeatureSettings.from(emptyMap()).desktopVncAllowUnauthenticated)
+        assertEquals(
+            "false",
+            FeatureSettings().toAttributes()[FeatureSettings.KEY_DESKTOP_VNC_ALLOW_UNAUTHENTICATED]
+        )
+
+        val consented = FeatureSettings(desktopVncAllowUnauthenticated = true)
+        assertEquals(
+            "true",
+            consented.toAttributes()[FeatureSettings.KEY_DESKTOP_VNC_ALLOW_UNAUTHENTICATED]
+        )
+        assertTrue(FeatureSettings.from(consented.toAttributes()).desktopVncAllowUnauthenticated)
+    }
+
+    @Test
     fun toStringNeverContainsThePassword() {
         val text = FeatureSettings(desktopVncPassword = "topSecret99").toString()
         assertFalse(text.contains("topSecret99"))

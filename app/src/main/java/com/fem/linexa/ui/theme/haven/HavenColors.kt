@@ -8,6 +8,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.TextUnitType
 import androidx.compose.ui.unit.dp
@@ -203,6 +205,16 @@ object HavenDim {
     val cardGap = 12.dp
     val sectionTop = 26.dp
     val hairline = 1.dp
+    /** Gap between adjacent header action circles (Home, Workspace, every page header). */
+    val headerActionGap = 10.dp
+    /** Inner horizontal padding of a row inside a `tight` card (equals [cardPad]). */
+    val cardRowH = 20.dp
+    /** Vertical padding of a single-line status row inside a `tight` card. */
+    val cardRowV = 14.dp
+    /** Vertical padding of a compact settings row inside a `tight` card. */
+    val cardRowCompactV = 12.dp
+    /** Vertical padding of a block that carries actions (progress, buttons). */
+    val cardBlockV = 16.dp
 
     // ── Controls ──
     val hbtn = 40.dp
@@ -273,6 +285,91 @@ object HavenType {
     val mono = FontFamily.Monospace
     val sans = FontFamily.Default
 
+    // ── Prose styles ──
+    // Declared once, in Latin metrics, in [HavenLatinType] below; each getter
+    // hands out the script-calibrated style (see [HavenScript]). Call sites
+    // are unchanged: `HavenType.body` still reads like a constant, and reading
+    // it inside a composition subscribes to the script flag, so a language
+    // switch recalibrates every prose style without per-screen edits.
+    /** `.h1` — 28sp semibold, tight tracking. */
+    val h1: TextStyle get() = HavenLatinType.h1.forScript()
+    /** `.h2` — 26sp semibold. */
+    val h2: TextStyle get() = HavenLatinType.h2.forScript()
+    /** Workspace / screen titles — 22sp semibold. */
+    val h3: TextStyle get() = HavenLatinType.h3.forScript()
+    /** Card/section titles — 17sp semibold. */
+    val title: TextStyle get() = HavenLatinType.title.forScript()
+    /** Hero value inside the Activity card — 18sp semibold. */
+    val titleLg: TextStyle get() = HavenLatinType.titleLg.forScript()
+    /** List row titles — 15sp semibold. */
+    val rowTitle: TextStyle get() = HavenLatinType.rowTitle.forScript()
+    /** Row body — 15sp regular. */
+    val body: TextStyle get() = HavenLatinType.body.forScript()
+    /** Row descriptions — 13sp. */
+    val desc: TextStyle get() = HavenLatinType.desc.forScript()
+    /** Small labels — 12sp. */
+    val small: TextStyle get() = HavenLatinType.small.forScript()
+    /** Section headers — 12.5sp semibold, uppercase, letter-spaced. */
+    val section: TextStyle get() = HavenLatinType.section.forScript()
+    /** Eyebrow — 10sp bold uppercase, wide tracking. */
+    val eyebrow: TextStyle get() = HavenLatinType.eyebrow.forScript()
+    /** Sidebar brand — 13sp bold uppercase. */
+    val brand: TextStyle get() = HavenLatinType.brand.forScript()
+    /** Bottom-nav labels — 10sp semibold. */
+    val navLabel: TextStyle get() = HavenLatinType.navLabel.forScript()
+    /** Tile label — 10.5sp bold uppercase. */
+    val tileLabel: TextStyle get() = HavenLatinType.tileLabel.forScript()
+
+    /**
+     * Letter-spacing for a tracked label (`em` of the font size). Latin/uppercase
+     * labels keep the designed tracking; Arabic-script text (Persian) gets none,
+     * because added tracking pulls apart letters that must stay joined.
+     */
+    fun tracking(value: Float): TextUnit =
+        if (HavenScript.isArabicScript) 0.sp else em(value)
+
+
+    /** Mono description (paths, metadata) — 12sp. */
+    val descMono = TextStyle(
+        fontFamily = mono,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Normal,
+        // Paths, commands and IDs are technical content and stay LTR in every
+        // language, including Persian. The surrounding app chrome is also LTR
+        // (a global policy), so Start is simply the left edge; pinning the
+        // direction keeps mixed-script identifiers in logical order.
+        textDirection = TextDirection.Ltr,
+        textAlign = TextAlign.Start
+    )
+
+    // ── Numeric / data ──
+    // Every numeric/mono style below pins LTR: measurements, IDs and log
+    // lines are technical content and read in logical order in every
+    // language. Body/heading styles intentionally do NOT pin a direction, so
+    // Persian prose keeps its native RTL bidi rendering inside the LTR chrome.
+    /** `.pn .pv` — 26sp mono semibold (pane numbers). */
+    val num26 = TextStyle(fontFamily = mono, fontSize = 26.sp, fontWeight = FontWeight.SemiBold, letterSpacing = em(-0.02f), textDirection = TextDirection.Ltr, textAlign = TextAlign.Start)
+    /** `.tile .tv` — 22sp mono semibold. */
+    val num22 = TextStyle(fontFamily = mono, fontSize = 22.sp, fontWeight = FontWeight.SemiBold, letterSpacing = em(-0.01f), textDirection = TextDirection.Ltr, textAlign = TextAlign.Start)
+    /** Performance hero — 44sp mono. */
+    val num44 = TextStyle(fontFamily = mono, fontSize = 44.sp, fontWeight = FontWeight.SemiBold, letterSpacing = em(-0.03f), textDirection = TextDirection.Ltr, textAlign = TextAlign.Start)
+    /** Medium mono value — 14sp. */
+    val num14 = TextStyle(fontFamily = mono, fontSize = 14.sp, fontWeight = FontWeight.Medium, textDirection = TextDirection.Ltr, textAlign = TextAlign.Start)
+    /** Inline mono — 12.5sp. */
+    val mono12 = TextStyle(fontFamily = mono, fontSize = 12.5.sp, fontWeight = FontWeight.Normal, textDirection = TextDirection.Ltr, textAlign = TextAlign.Start)
+    /** Terminal body. */
+    val term = TextStyle(fontFamily = mono, fontSize = 15.sp, fontWeight = FontWeight.Normal, lineHeight = 24.sp, textDirection = TextDirection.Ltr, textAlign = TextAlign.Start)
+    /** Mono block (logs, traces). */
+    val monoBlock = TextStyle(fontFamily = mono, fontSize = 12.sp, fontWeight = FontWeight.Normal, lineHeight = 21.sp, textDirection = TextDirection.Ltr, textAlign = TextAlign.Start)
+}
+
+/**
+ * Latin-metric prose styles — the design values of [HavenType]'s prose scale.
+ * Never read directly by UI code; go through [HavenType], which applies the
+ * Arabic-script calibration. Prose styles deliberately leave `textDirection`
+ * unspecified so Persian keeps native bidi rendering inside the LTR chrome.
+ */
+private object HavenLatinType {
     /** `.h1` — 28sp semibold, tight tracking. */
     val h1 = TextStyle(fontSize = 28.sp, fontWeight = FontWeight.SemiBold, letterSpacing = em(-0.02f))
     /** `.h2` — 26sp semibold. */
@@ -289,8 +386,6 @@ object HavenType {
     val body = TextStyle(fontSize = 15.sp, fontWeight = FontWeight.Normal)
     /** Row descriptions — 13sp. */
     val desc = TextStyle(fontSize = 13.sp, fontWeight = FontWeight.Normal, lineHeight = 18.sp)
-    /** Mono description (paths, metadata) — 12sp. */
-    val descMono = TextStyle(fontFamily = mono, fontSize = 12.sp, fontWeight = FontWeight.Normal)
     /** Small labels — 12sp. */
     val small = TextStyle(fontSize = 12.sp, fontWeight = FontWeight.Normal)
     /** Section headers — 12.5sp semibold, uppercase, letter-spaced. */
@@ -301,25 +396,60 @@ object HavenType {
     val brand = TextStyle(fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = em(0.14f))
     /** Bottom-nav labels — 10sp semibold. */
     val navLabel = TextStyle(fontSize = 10.sp, fontWeight = FontWeight.SemiBold, letterSpacing = em(0.05f))
-
-    // ── Numeric / data ──
-    /** `.pn .pv` — 26sp mono semibold (pane numbers). */
-    val num26 = TextStyle(fontFamily = mono, fontSize = 26.sp, fontWeight = FontWeight.SemiBold, letterSpacing = em(-0.02f))
-    /** `.tile .tv` — 22sp mono semibold. */
-    val num22 = TextStyle(fontFamily = mono, fontSize = 22.sp, fontWeight = FontWeight.SemiBold, letterSpacing = em(-0.01f))
-    /** Performance hero — 44sp mono. */
-    val num44 = TextStyle(fontFamily = mono, fontSize = 44.sp, fontWeight = FontWeight.SemiBold, letterSpacing = em(-0.03f))
-    /** Medium mono value — 14sp. */
-    val num14 = TextStyle(fontFamily = mono, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-    /** Inline mono — 12.5sp. */
-    val mono12 = TextStyle(fontFamily = mono, fontSize = 12.5.sp, fontWeight = FontWeight.Normal)
     /** Tile label — 10.5sp bold uppercase. */
     val tileLabel = TextStyle(fontSize = 10.5.sp, fontWeight = FontWeight.Bold, letterSpacing = em(0.1f))
-    /** Terminal body. */
-    val term = TextStyle(fontFamily = mono, fontSize = 15.sp, fontWeight = FontWeight.Normal, lineHeight = 24.sp)
-    /** Mono block (logs, traces). */
-    val monoBlock = TextStyle(fontFamily = mono, fontSize = 12.sp, fontWeight = FontWeight.Normal, lineHeight = 21.sp)
 }
+
+/**
+ * Script profile of the active UI language.
+ *
+ * Persian (Arabic script) differs from Latin in two ways that matter to a
+ * fixed-rhythm design system:
+ *
+ *  1. Letter-spacing. Tracking is applied after every glyph; in a joining
+ *     script that opens gaps inside words and breaks the cursive connection.
+ *     Haven's tracked styles (eyebrow, section, brand, nav, tile labels and
+ *     the negative tracking on headings) are therefore set to zero.
+ *  2. Line box. Without an explicit line height Compose takes the line box
+ *     from the font's own ascent/descent. Persian falls back to a system
+ *     Arabic-script face whose metrics are much taller than the Latin face, so
+ *     every label, button and row grew. Styles without an explicit line height
+ *     get a fixed proportional one so the same style makes the same box in both
+ *     scripts. Wrapped prose keeps its explicit line heights (`desc`, `term`,
+ *     `monoBlock`).
+ *
+ * Font SIZES are intentionally not scaled here; any size calibration must be
+ * measured on a device before it is introduced.
+ *
+ * The flag is Compose snapshot state published once by `LinexaTheme` from the
+ * localized configuration. Reading it inside a composition subscribes the
+ * reader, so a language switch recomposes the affected text.
+ */
+object HavenScript {
+    private val arabicScript = androidx.compose.runtime.mutableStateOf(false)
+
+    /** True while the active UI language is written in Arabic script. */
+    val isArabicScript: Boolean get() = arabicScript.value
+
+    /** Publishes the active script. Called by `LinexaTheme` only. */
+    internal fun publish(arabic: Boolean) {
+        if (arabicScript.value != arabic) arabicScript.value = arabic
+    }
+
+    /** Proportional line height for styles that do not declare one (Persian only). */
+    const val ARABIC_LINE_HEIGHT_EM = 1.3f
+}
+
+/** Applies the Arabic-script calibration of [HavenScript] to a prose style. */
+private fun TextStyle.forScript(): TextStyle =
+    if (!HavenScript.isArabicScript) {
+        this
+    } else {
+        copy(
+            letterSpacing = 0.sp,
+            lineHeight = if (lineHeight == TextUnit.Unspecified) em(HavenScript.ARABIC_LINE_HEIGHT_EM) else lineHeight
+        )
+    }
 
 /**
  * Resolves the Haven palette for the current composition.

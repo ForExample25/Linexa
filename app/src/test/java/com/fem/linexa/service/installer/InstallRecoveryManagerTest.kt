@@ -263,6 +263,192 @@ class InstallRecoveryManagerTest {
         assertNotNull(repository.getByIdSync("ready"))
         assertNotNull(repository.getByIdSync("interrupted"))
     }
+
+    // ── RF-030: activation finished, status write did not ─────────────────
+
+    @Test
+    fun importingWorkspaceWithAValidLiveRootfsIsPromotedToReady() {
+        setUp()
+        val id = "activated-ws"
+        assertTrue(workspaceDir(id).mkdirs())
+        createValidRootfs(id)
+        repository.seed(metadata(id, WorkspaceStatus.Importing(0.9f)))
+        File(workspaceDir(id), ".import-cache").mkdirs()
+        File(workspaceDir(id), ".download-cache").mkdirs()
+
+        runRecovery()
+
+        val updates = repository.updateStatusCalls.filter { it.first == id }
+        assertEquals("exactly one status decision", 1, updates.size)
+        assertEquals(
+            "a complete rootfs must not be declared a broken download",
+            WorkspaceStatus.Ready,
+            updates.single().second
+        )
+        assertFalse("import scratch must be reclaimed", File(workspaceDir(id), ".import-cache").exists())
+        assertFalse("download scratch must be reclaimed", File(workspaceDir(id), ".download-cache").exists())
+        assertTrue("the rootfs itself must be left in place", fileManager.getRootfsPath(id).isDirectory)
+    }
+
+    @Test
+    fun importingWorkspaceWithADamagedRootfsReportsDamageNotADownload() {
+        setUp()
+        val id = "damaged-ws"
+        assertTrue(workspaceDir(id).mkdirs())
+        createDamagedRootfs(id)
+        repository.seed(metadata(id, WorkspaceStatus.Importing(0.9f)))
+
+        runRecovery()
+
+        val broken = repository.updateStatusCalls.single { it.first == id }.second
+        assertTrue("must be Broken", broken is WorkspaceStatus.Broken)
+        val reason = (broken as WorkspaceStatus.Broken).reason
+        assertTrue("the reason must name the damage, got: $reason", reason.contains("damaged", ignoreCase = true))
+        assertFalse("it must not blame the download, got: $reason", reason.contains("Download", ignoreCase = true))
+        assertFalse("it must not claim the install was interrupted, got: $reason", reason.contains("interrupted", ignoreCase = true))
+    }
+
+    // ── RF-021: activation swap recovery and debris sweep ─────────────────
+
+    @Test
+    fun anInterruptedActivationRestoresThePreviousRootfsInsteadOfLeavingTheWorkspaceEmpty() {
+        setUp()
+        val id = "swap-ws"
+        val dir = workspaceDir(id)
+        assertTrue(dir.mkdirs())
+        // Crash between `live → rootfs.previous-*` and `staging → live`:
+        // no live rootfs, no staging, one previous tree.
+        val previous = File(dir, "rootfs.previous-1000")
+        createValidRootfsAt(previous)
+        repository.seed(metadata(id, WorkspaceStatus.Importing(0.5f)))
+
+        runRecovery()
+
+        val live = fileManager.getRootfsPath(id)
+        assertTrue("the previous tree must be restored as the live rootfs", live.isDirectory)
+        assertTrue("the shell inside it must survive the rename", File(live, "bin/sh").canExecute())
+        assertFalse("the previous name must be consumed", previous.exists())
+        assertEquals(
+            "a restored, valid rootfs must be promoted rather than marked Broken",
+            WorkspaceStatus.Ready,
+            repository.updateStatusCalls.single { it.first == id }.second
+        )
+    }
+
+    @Test
+    fun staleActivationAndQuarantineDebrisIsSweptWhileUnrelatedEntriesStay() {
+        setUp()
+        val id = "debris-ws"
+        val dir = workspaceDir(id)
+        assertTrue(dir.mkdirs())
+        createValidRootfs(id)
+        repository.seed(metadata(id, WorkspaceStatus.Ready))
+
+        val previous = File(dir, "rootfs.previous-1000").apply {
+            assertTrue(mkdirs())
+            File(this, "payload").writeText("old rootfs")
+        }
+        val quarantine = File(dir, ".staging-rootfs.quarantine-1000").apply {
+            assertTrue(mkdirs())
+            File(this, "payload").writeText("contained tree")
+        }
+        val notDebris = File(dir, "rootfs.previous-not-a-timestamp").apply {
+            assertTrue(mkdirs())
+        }
+
+        runRecovery()
+
+        assertFalse("stale rootfs.previous-* must be reclaimed", previous.exists())
+        assertFalse("a stale containment quarantine must be reclaimed", quarantine.exists())
+        assertTrue("only the exact numeric debris names may be touched", notDebris.exists())
+    }
+
+    // ── RF-031: config staged until activation ────────────────────────────
+
+    @Test
+    fun aStagedConfigIsPromotedOnlyWhenTheLiveRootfsExists() {
+        setUp()
+        val id = "config-ws"
+        assertTrue(workspaceDir(id).mkdirs())
+        createValidRootfs(id)
+        repository.seed(metadata(id, WorkspaceStatus.Ready))
+        val staged = fileManager.getStagedConfigPath(id)
+        staged.writeText("workspace: ConfigWs\n")
+
+        runRecovery()
+
+        assertEquals(
+            "the staged config must become the real config.yaml",
+            "workspace: ConfigWs\n",
+            fileManager.getWorkspaceConfigPath(id).readText()
+        )
+        assertFalse("the staged name must not survive", staged.exists())
+    }
+
+    @Test
+    fun aStagedConfigWithoutARootfsIsDiscardedAsOrphaned() {
+        setUp()
+        val id = "config-orphan-ws"
+        assertTrue(workspaceDir(id).mkdirs())
+        repository.seed(metadata(id, WorkspaceStatus.Broken("never activated")))
+        val staged = fileManager.getStagedConfigPath(id)
+        staged.writeText("workspace: NeverActivated\n")
+
+        runRecovery()
+
+        assertFalse("a config for a rootfs that never activated must not survive", staged.exists())
+        assertFalse(
+            "and it must not be promoted to config.yaml",
+            fileManager.getWorkspaceConfigPath(id).exists()
+        )
+    }
+
+    @Test
+    fun aStagedConfigIsDiscardedWhileStagingStillExistsEvenWithALiveRootfs() {
+        setUp()
+        val id = "config-mid-swap-ws"
+        assertTrue(workspaceDir(id).mkdirs())
+        // The old tree is live (or restored from `rootfs.previous-*`), but the
+        // staging rename never completed. The staged config describes the
+        // staging tree, not the live one, so it must not replace the old file.
+        createValidRootfs(id)
+        fileManager.getWorkspaceConfigPath(id).writeText("workspace: OldTree\n")
+        createStaging(id)
+        repository.seed(metadata(id, WorkspaceStatus.Importing(0.9f)))
+        val staged = fileManager.getStagedConfigPath(id)
+        staged.writeText("workspace: NewTree\n")
+
+        runRecovery()
+
+        assertEquals(
+            "the old rootfs keeps its own config while activation never completed",
+            "workspace: OldTree\n",
+            fileManager.getWorkspaceConfigPath(id).readText()
+        )
+        assertFalse("the unactivated staged config must be discarded", staged.exists())
+        assertFalse("the staging tree is still cleaned up", fileManager.getStagingRootfsPath(id).exists())
+    }
+
+    private fun createValidRootfs(id: String) =
+        createValidRootfsAt(fileManager.getRootfsPath(id))
+
+    /** Minimal tree that satisfies [com.fem.linexa.service.runtime.WorkspaceFileManager.checkRootfs]. */
+    private fun createValidRootfsAt(rootfs: File) {
+        for (dir in listOf("etc", "usr", "usr/bin", "usr/lib", "bin")) {
+            assertTrue("must create $dir", File(rootfs, dir).mkdirs())
+        }
+        val shell = File(rootfs, "bin/sh")
+        shell.writeText("#!/bin/sh\nexit 0\n")
+        assertTrue("the launch shell must be executable", shell.setExecutable(true))
+    }
+
+    /** Layout present, launch shell gone — the RF-003 `Damaged` shape. */
+    private fun createDamagedRootfs(id: String) {
+        val rootfs = fileManager.getRootfsPath(id)
+        for (dir in listOf("etc", "usr", "usr/bin", "usr/lib")) {
+            assertTrue("must create $dir", File(rootfs, dir).mkdirs())
+        }
+    }
 }
 
 /**

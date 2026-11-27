@@ -8,9 +8,9 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -79,7 +79,9 @@ fun HButton(
         modifier = modifier
             .then(if (block) Modifier.fillMaxWidth() else Modifier)
             .havenPressScale(interaction, enabled)
-            .height(height)
+            // The height is a minimum, not a cap: a longer Persian label wraps
+            // and the button grows while keeping the minimum touch target.
+            .heightIn(min = height)
             .clip(RoundedCornerShape(if (size == HavenButtonSize.DEFAULT) HavenDim.rBtn else 12.dp))
             .background(bg)
             .clickable(
@@ -88,7 +90,10 @@ fun HButton(
                 indication = null,
                 onClick = onClick
             )
-            .padding(horizontal = if (size == HavenButtonSize.DEFAULT) 22.dp else 16.dp),
+            .padding(
+                horizontal = if (size == HavenButtonSize.DEFAULT) 22.dp else 16.dp,
+                vertical = 8.dp
+            ),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(9.dp, Alignment.CenterHorizontally)
     ) {
@@ -101,8 +106,7 @@ fun HButton(
                 HavenType.desc.copy(fontWeight = FontWeight.SemiBold, fontSize = androidx.compose.ui.unit.TextUnit(14f, androidx.compose.ui.unit.TextUnitType.Sp))
             },
             color = if (enabled) fg else fg.copy(alpha = 0.45f),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
+            textAlign = TextAlign.Center
         )
     }
 }
@@ -231,9 +235,9 @@ fun HToggle(
  *
  *  The selected pill is one shared surface that SLIDES between options — the
  *  same indicator language as [HBottomNav] — instead of a per-option colour
- *  that fades in and out. Dimensions never change: every option keeps its
- *  weight and height, and the indicator is drawn behind the labels, so a
- *  selection change causes no re-measure and no layout jump.
+ *  that fades in and out. Each cell keeps the design minimum height and a
+ *  longer translation wraps to two lines; the row takes the tallest cell, so
+ *  the indicator still spans the full control without clipping a label.
  */
 @Composable
 fun HSegmented(
@@ -253,6 +257,11 @@ fun HSegmented(
     Row(
         modifier = modifier
             .fillMaxWidth()
+            // The row takes the tallest label's height. Each cell keeps the
+            // familiar minimum pill height; a longer translation wraps to two
+            // lines and the control grows instead of clipping. No fixed row
+            // height is imposed, so intrinsic measurement can never undercount
+            // a wrapped Persian label.
             .clip(RoundedCornerShape(50))
             .background(h.surface2)
             .padding(4.dp)
@@ -269,7 +278,7 @@ fun HSegmented(
             Box(
                 modifier = Modifier
                     .weight(1f)
-                    .height(if (mini) HavenDim.segMiniH else HavenDim.segH)
+                    .heightIn(min = if (mini) HavenDim.segMiniH else HavenDim.segH)
                     .clip(RoundedCornerShape(50))
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
@@ -282,8 +291,9 @@ fun HSegmented(
                     text = option,
                     style = if (mini) HavenType.desc.copy(fontWeight = FontWeight.SemiBold) else HavenType.body.copy(fontWeight = FontWeight.SemiBold),
                     color = fg,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
+                    textAlign = TextAlign.Center,
+                    maxLines = 2
                 )
             }
         }

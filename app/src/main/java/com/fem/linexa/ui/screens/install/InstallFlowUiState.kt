@@ -66,7 +66,10 @@ data class InstallFlowUiState(
 ) {
     /** True while the flow can still be abandoned without losing committed work. */
     val cancellable: Boolean
-        get() = phase == InstallFlowPhase.ANALYZING || phase == InstallFlowPhase.CONFIRM
+        get() = phase == InstallFlowPhase.ANALYZING ||
+            phase == InstallFlowPhase.CONFIRM ||
+            // RF-010/UX-001: extraction is now cancellable end-to-end.
+            phase == InstallFlowPhase.INSTALLING
 
     /** True when the failure has no workspace row and must be shown on this screen. */
     val showsFailureInPlace: Boolean

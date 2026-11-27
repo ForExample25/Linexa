@@ -266,7 +266,7 @@ public final class TerminalEmulator {
     private final byte[] mUtf8InputBuffer = new byte[4];
     private int mLastEmittedCodePoint = -1;
 
-    public final TerminalColors mColors = new TerminalColors();
+    public final TerminalColors mColors;
 
     private static final String LOG_TAG = "TerminalEmulator";
 
@@ -323,7 +323,17 @@ public final class TerminalEmulator {
     }
 
     public TerminalEmulator(TerminalOutput session, int columns, int rows, int cellWidthPixels, int cellHeightPixels, Integer transcriptRows, TerminalSessionClient client) {
+        this(session, columns, rows, cellWidthPixels, cellHeightPixels, transcriptRows, client, null);
+    }
+
+    /**
+     * RN-006: construct with a session-owned color scheme instead of the
+     * process-global {@link TerminalColors#COLOR_SCHEME}. Passing {@code null}
+     * preserves the upstream default.
+     */
+    public TerminalEmulator(TerminalOutput session, int columns, int rows, int cellWidthPixels, int cellHeightPixels, Integer transcriptRows, TerminalSessionClient client, TerminalColorScheme colorScheme) {
         mSession = session;
+        mColors = new TerminalColors(colorScheme);
         mScreen = mMainBuffer = new TerminalBuffer(columns, getTerminalTranscriptRows(transcriptRows), rows);
         mAltBuffer = new TerminalBuffer(columns, rows, rows);
         mClient = client;

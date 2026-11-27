@@ -3,9 +3,11 @@ package com.fem.linexa.ui.screens.terminal
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.fem.linexa.core.logging.Logger
+import com.fem.linexa.domain.runtime.TerminalOutputWatchdog
 import com.fem.linexa.domain.runtime.TerminalState
 import com.fem.linexa.service.runtime.RuntimeBinder
 import com.fem.linexa.service.runtime.RuntimeTrace
+import com.fem.linexa.service.runtime.pty.PtyEvent
 import com.fem.linexa.service.runtime.pty.PtySession
 import com.fem.linexa.service.runtime.pty.PtySessionSource
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -14,6 +16,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -56,14 +59,44 @@ class TerminalViewModel @Inject constructor(
     private val _ptySession = MutableStateFlow<PtySession?>(null)
     val ptySession: StateFlow<PtySession?> = _ptySession.asStateFlow()
 
+    /**
+     * The terminal id owned by [ptySession], or null when no pty is exposed.
+     * Paired with [ptySession] in the same synchronous mutation so the panel
+     * can prove header and pty share one identity.
+     */
+    private val _ptyTerminalId = MutableStateFlow<String?>(null)
+    val ptyTerminalId: StateFlow<String?> = _ptyTerminalId.asStateFlow()
+
     private val _terminalState = MutableStateFlow<TerminalState?>(null)
     val terminalState: StateFlow<TerminalState?> = _terminalState.asStateFlow()
+
+    /**
+     * The terminal id [ptySession] is currently bound to. The panel renders a
+     * pty only when this equals the window whose header is on screen, so a
+     * desktop selection that changed this frame can never paint the previous
+     * window's pty under the new window's identity.
+     */
+    private val _boundTerminalId = MutableStateFlow<String?>(null)
+    val boundTerminalId: StateFlow<String?> = _boundTerminalId.asStateFlow()
+
+    /**
+     * Finding 019: a live pty that has produced no bytes for
+     * [TerminalOutputWatchdog.DEFAULT_THRESHOLD_MS]. Non-blocking — the pty
+     * stays alive and the terminal view stays mounted. Null once any output
+     * arrives, the pty changes, or the screen detaches.
+     */
+    data class NoOutputWarning(val pid: Int, val elapsedMs: Long)
+
+    private val _noOutputWarning = MutableStateFlow<NoOutputWarning?>(null)
+    val noOutputWarning: StateFlow<NoOutputWarning?> = _noOutputWarning.asStateFlow()
 
     private var workspaceId: String? = null
     private var terminalId: String? = null
     private var source: PtySessionSource? = null
     private var observeJob: Job? = null
     private var retryJob: Job? = null
+    private var outputJob: Job? = null
+    private var watchdogJob: Job? = null
 
     /**
      * Attaches the workspace's shared binder (the graph-scoped
@@ -88,12 +121,14 @@ class TerminalViewModel @Inject constructor(
         this.workspaceId = workspaceId
         this.terminalId = terminalId
         this.source = source
+        _boundTerminalId.value = terminalId
+        Logger.i(TAG, "CHAIN: bound terminal ws=$workspaceId tid=$terminalId source=TerminalAttach")
         if (switchedTerminal) {
             // Never let the previously focused window's pty survive into a
             // different window while the new terminal is still resolving. When
             // it resolves synchronously the very next line replaces this null
             // in the same call, so no frame ever loses a live terminal.
-            _ptySession.value = null
+            setPty(terminalId, null)
         }
         observeJob?.cancel()
         retryJob?.cancel()
@@ -116,6 +151,16 @@ class TerminalViewModel @Inject constructor(
     }
 
     /**
+     * Pairs the exposed pty with the terminal id it belongs to. Always update
+     * both flows together: the panel's render policy refuses a pty whose
+     * [ptyTerminalId] differs from the rendered window.
+     */
+    private fun setPty(terminalId: String?, pty: PtySession?) {
+        _ptyTerminalId.value = if (pty != null) terminalId else null
+        _ptySession.value = pty
+    }
+
+    /**
      * Drops the UI-side reference to the terminal. **Detach only** — the pty
      * and its [TerminalSession] stay alive in the manager; re-entry via
      * [attachBinder] re-resolves the same live session. Never calls
@@ -129,8 +174,10 @@ class TerminalViewModel @Inject constructor(
         observeJob = null
         retryJob?.cancel()
         retryJob = null
+        stopOutputWatchdog()
         _terminalState.value = null
-        _ptySession.value = null
+        setPty(null, null)
+        _boundTerminalId.value = null
     }
 
     override fun onCleared() {
@@ -160,16 +207,18 @@ class TerminalViewModel @Inject constructor(
                     retryJob = null
                     if (_ptySession.value?.id != pty.id) {
                         Logger.i(TAG, "TERMINAL_CHAIN: resolved live pty workspaceId=$wsId terminalId=$tid sessionId=${pty.id} pid=${pty.pid}")
+                        startOutputWatchdog(pty)
                     }
                     Logger.i(TAG, "CHAIN: resolvePty SUCCESS pid=${pty.pid} ws=$wsId tid=$tid")
                     runtimeTrace.record(wsId, "TerminalViewModel.resolvePty SUCCESS terminalId=$tid pid=${pty.pid}")
-                    _ptySession.value = pty
+                    setPty(tid, pty)
                 } else {
                     Logger.d(TAG, "$tid not resolvable yet (state=$state) for $wsId — scheduling retry")
                     Logger.i(TAG, "CHAIN: resolvePty no-pty state=$state ws=$wsId tid=$tid — scheduling retry")
                     runtimeTrace.record(wsId, "resolvePty no-pty state=$state terminalId=$tid — scheduling retry")
                     scheduleRetry(wsId, tid, src)
-                    _ptySession.value = null
+                    stopOutputWatchdog()
+                    setPty(tid, null)
                 }
             }
             else -> {
@@ -182,9 +231,88 @@ class TerminalViewModel @Inject constructor(
                 }
                 Logger.i(TAG, "CHAIN: resolvePty clearing pty ws=$wsId tid=$tid state=${stateLabel(state)}")
                 runtimeTrace.record(wsId, "resolvePty clearing pty ws=$wsId terminalId=$tid state=${stateLabel(state)}")
-                _ptySession.value = null
+                stopOutputWatchdog()
+                setPty(tid, null)
             }
         }
+    }
+
+    /**
+     * Finding 019 — watch the first output of exactly one pty.
+     *
+     * Two sources, because either alone can miss the first prompt: the
+     * session's own event stream covers output produced after this call, and
+     * the product-facing output snapshot covers output produced before the
+     * screen attached. A resolved pty that already has text therefore never warns;
+     * a pty that stays silent for the threshold gets a banner, but is not
+     * touched. The watchdog is replaced only when the pty identity changes.
+     */
+    private fun startOutputWatchdog(pty: PtySession) {
+        outputJob?.cancel()
+        watchdogJob?.cancel()
+        _noOutputWarning.value = null
+        val watchdog = TerminalOutputWatchdog()
+
+        outputJob = viewModelScope.launch {
+            pty.events.first { event ->
+                event is PtyEvent.ScreenUpdated || event is PtyEvent.TitleChanged
+            }
+            markFirstOutput(pty, watchdog)
+        }
+
+        // Seed from output that arrived before this screen subscribed. Done
+        // AFTER the collector is launched so an output in between is caught by
+        // at least one of the two paths. `recentOutput` is the product-facing
+        // snapshot; `currentTranscript` stays diagnostics-only (§16.2).
+        val existing = runCatching { pty.recentOutput(1) }.getOrDefault("")
+        if (existing.isNotEmpty()) {
+            markFirstOutput(pty, watchdog)
+            outputJob?.cancel()
+            outputJob = null
+            return
+        }
+
+        watchdogJob = viewModelScope.launch {
+            delay(TerminalOutputWatchdog.DEFAULT_THRESHOLD_MS)
+            if (watchdog.shouldWarn(TerminalOutputWatchdog.DEFAULT_THRESHOLD_MS)) {
+                _noOutputWarning.value = NoOutputWarning(
+                    pid = pty.pid,
+                    elapsedMs = TerminalOutputWatchdog.DEFAULT_THRESHOLD_MS
+                )
+                Logger.w(
+                    TAG,
+                    "NO_OUTPUT: pid=${pty.pid} ws=${pty.workspaceId} tid=${terminalId} " +
+                        "silent for ${TerminalOutputWatchdog.DEFAULT_THRESHOLD_MS}ms — pty kept alive"
+                )
+                runtimeTrace.record(
+                    pty.workspaceId,
+                    "terminal no-output watchdog: terminalId=$terminalId pid=${pty.pid} " +
+                        "silentMs=${TerminalOutputWatchdog.DEFAULT_THRESHOLD_MS} (pty not killed)"
+                )
+            }
+            watchdogJob = null
+        }
+    }
+
+    private fun markFirstOutput(pty: PtySession, watchdog: TerminalOutputWatchdog) {
+        if (watchdog.hasOutput) return
+        watchdog.onOutput()
+        _noOutputWarning.value = null
+        watchdogJob?.cancel()
+        watchdogJob = null
+        Logger.i(TAG, "FIRST_OUTPUT: pid=${pty.pid} ws=${pty.workspaceId} tid=${terminalId}")
+        runtimeTrace.record(
+            pty.workspaceId,
+            "terminal first output observed: terminalId=$terminalId pid=${pty.pid}"
+        )
+    }
+
+    private fun stopOutputWatchdog() {
+        outputJob?.cancel()
+        outputJob = null
+        watchdogJob?.cancel()
+        watchdogJob = null
+        _noOutputWarning.value = null
     }
 
     private fun stateLabel(state: TerminalState?): String = when (state) {
@@ -213,7 +341,7 @@ class TerminalViewModel @Inject constructor(
                 val pty = src.getPtySession(wsId, tid)
                 if (pty != null) {
                     Logger.i(TAG, "TERMINAL_CHAIN: retry $attempts resolved pty pid=${pty.pid} for $wsId/$tid")
-                    _ptySession.value = pty
+                    setPty(tid, pty)
                     retryJob = null
                     return@launch
                 }

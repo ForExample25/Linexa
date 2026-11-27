@@ -26,7 +26,7 @@ import org.mockito.Mockito
  * lockstep:
  *
  *  1. the vendored PRoot's `PROOT_GUEST_ENV_FILTER` scrub
- *     (proot-build/0004 — value-matched, so guest-authored values survive;
+ *     (third_party/proot/0004 — value-matched, so guest-authored values survive;
  *     verified end-to-end with the real binary on x86_64: the guest `env`
  *     shows exactly the unfiltered keys),
  *  2. [PRootLauncher] setting that variable on every guest launch — and ONLY

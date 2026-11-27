@@ -104,8 +104,9 @@ class CpuMonitoringSourceConsistencyTest {
 
     @Test
     fun `every screen-level cpu poller is foreground gated`() {
+        // PERF-015: WorkspaceScreen is intentionally absent — its workspace-
+        // scoped sampler was removed because no composable rendered its output.
         val screens = mapOf(
-            "ui/screens/workspace/WorkspaceScreen.kt" to "performanceViewModel.pause()",
             "ui/screens/taskmanager/TaskManagerScreen.kt" to "viewModel.stop()",
             "ui/screens/activity/ActivityScreen.kt" to "viewModel.pause()"
         )

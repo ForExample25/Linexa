@@ -127,9 +127,12 @@ class MotionSystemSourceTest {
             "the create FAB rotation must use the shared selection spec",
             fileManager.contains("fileMotions.selectionSpec()")
         )
-        assertTrue(
-            "the storage sections must use the shared expand tokens",
-            fileManager.contains("expandVertically(motions.enterSpec())")
+        // The storage sections are always visible now (their collapsible
+        // headers were removed), so there is no section expand transition left
+        // to pin. The remaining surfaces must still bind the shared tokens.
+        assertFalse(
+            "the File Manager must not reintroduce collapsible storage headers",
+            fileManager.contains("CollapsibleSectionHeader")
         )
         assertTrue(
             "the toast must use the shared fade/slide tokens",

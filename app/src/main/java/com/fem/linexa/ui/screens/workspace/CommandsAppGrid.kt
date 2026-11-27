@@ -374,7 +374,7 @@ fun CommandAppTile(
             text = name,
             style = HavenType.rowTitle.copy(fontSize = 13.sp),
             color = h.text,
-            maxLines = 1,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(top = 9.dp)
@@ -384,8 +384,7 @@ fun CommandAppTile(
                 text = subtitle,
                 style = HavenType.small,
                 color = h.muted,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+                maxLines = 2,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.padding(top = 2.dp)
             )
@@ -434,7 +433,7 @@ fun CategoryAppTile(
             text = name,
             style = HavenType.rowTitle.copy(fontSize = 13.sp),
             color = h.text,
-            maxLines = 1,
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(top = 9.dp)
@@ -447,8 +446,7 @@ fun CategoryAppTile(
             },
             style = HavenType.small,
             color = h.muted,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+            maxLines = 2,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(top = 2.dp)
         )

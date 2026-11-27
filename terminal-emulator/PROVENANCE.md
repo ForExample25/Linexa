@@ -32,3 +32,19 @@ Nothing else: the emulator sources, the JNI layer and the test suite are
 byte-identical to the pinned commit. Bumping the vendored sources without
 updating the commit hash above is caught by
 `TerminalStackLicenseGuardTest`.
+
+## Prebuilt binary pin (F-045 / R-11)
+
+`src/main/jniLibs/{arm64-v8a,armeabi-v7a}/libtermux.so` are prebuilt and
+pinned by `src/main/jniLibs/SHA256SUMS`:
+
+```
+e53837c8475f9540e84ac3c310ed5c2f110ea5183a0ac5eb5d183d49f3e5e6fc  arm64-v8a/libtermux.so
+1a3336d97e85b14aa6bce7aff4c05777d9a67acb37e735c974117ad5d640123b  armeabi-v7a/libtermux.so
+```
+
+`PrebuiltLibraryPinTest` recomputes both hashes on every `:terminal-emulator`
+test run, so a silently replaced binary fails the build. To rebuild from the
+vendored `src/main/jni/termux.c` and `Android.mk`, run
+`terminal-emulator/scripts/rebuild-libtermux.sh` (requires an Android NDK) and update the hashes
+above in the same commit.

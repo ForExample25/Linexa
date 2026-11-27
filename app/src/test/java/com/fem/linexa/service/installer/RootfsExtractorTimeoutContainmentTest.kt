@@ -12,16 +12,17 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 
 /**
- * Phase 04: the extraction timeout path runs the containment helper instead
- * of a bare `destroyForcibly()`, and the test-only timeout override makes the
- * path reachable in milliseconds.
+ * Phase 04 / RootFS R1: the extraction timeout path runs the tree
+ * containment helper instead of a bare `destroyForcibly()`, and the test-only
+ * timeout/containment overrides make the path reachable in milliseconds.
  *
  * The REAL [RootfsExtractor] runs against [FakeProot]'s `SLOW_EXIT` scenario
- * (it sleeps `SLEEP_SLEEP_SECONDS` before exiting 0) with a 500 ms override:
+ * (it sleeps `SLEEP_SLEEP_SECONDS` before exiting 0) with a 500 ms timeout:
  * the extraction therefore hits the deadline while the fake is still alive,
- * [ProcessContainment.killTree] is invoked for real (SIGTERM lands on the
- * host), and the failure must be the timeout message — not the seccomp
- * detector, not a crash.
+ * [com.fem.linexa.core.filesystem.ProcessTreeTerminator] is invoked for real,
+ * and the failure must be the timeout message — not the seccomp detector,
+ * not a crash. Production's `android.system.Os.kill` is a JVM stub here, so
+ * the send fails and the extractor must stay fail-closed (quarantine).
  */
 class RootfsExtractorTimeoutContainmentTest {
 
@@ -61,6 +62,11 @@ class RootfsExtractorTimeoutContainmentTest {
         // SLOW_EXIT keeps the fake alive for FakeProot.SLOW_SLEEP_SECONDS; the
         // override turns the 30-minute production deadline into 500 ms.
         harness.rootfsExtractor.extractionTimeoutOverrideMs = 500L
+        // The production sender is the JVM-stubbed Os.kill, so no signal can
+        // land: keep the TERM/KILL verification windows short instead of the
+        // 3 s + 10 s production budgets.
+        harness.rootfsExtractor.containmentGraceOverrideMs = 300L
+        harness.rootfsExtractor.containmentHardLimitOverrideMs = 300L
 
         val started = System.nanoTime()
         val failure = runBlocking {

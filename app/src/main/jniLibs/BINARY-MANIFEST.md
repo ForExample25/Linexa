@@ -12,7 +12,7 @@ All are Android ELF, NDK-built, and dynamically linked for API 24+, except
 The `libproot.so` / `lib__bin__loader__.so` pair is rebuilt from the
 `termux/proot` tag `v5.1.107.89`, commit
 `a89b3732ec6ae1db674510f0843b2f3db54d0a2f`, with the four Linexa patches in
-`proot-build/` applied. The patches add the empty-pathname `readlinkat` guard,
+`third_party/proot/` applied. The patches add the empty-pathname `readlinkat` guard,
 resolve link2symlink targets relative to the link's own directory, fix the
 `<string.h>` include required by NDK r29, and add the guest-environment filter.
 Both ABIs use the same source lineage:
@@ -23,14 +23,14 @@ Both ABIs use the same source lineage:
   libandroid-shmem 0.7, because the previous static PRoot had no vendored
   runtime dependencies.
 
-Build recipe: `proot-build/` patches over `termux/proot` tag `v5.1.107.89`,
+Build recipe: `third_party/proot/` patches over `termux/proot` tag `v5.1.107.89`,
 termux `build.sh` flags (`PROOT_WITH_LIBANDROID_SHMEM=true`,
 `PROOT_UNBUNDLE_LOADER` pointing at `{filesDir}/bootstrap/bin`,
 `CPPFLAGS += -DARG_MAX=131072 -DVERSION="5.1.107.89"`). `loader` from the same
 build is vendored as `lib__bin__loader__.so`; `PROOT_LOADER` always points
 there at runtime. The rebuilt pair was verified end-to-end on x86_64 with the
 same source and patches (real ptrace + real dpkg), using the test drivers in
-`proot-build/`.
+`third_party/proot/`.
 
 They must keep the `lib__*__.so` names: AGP auto-packages only `lib*.so`
 jniLibs entries (see the `packaging { jniLibs }` block of
@@ -101,18 +101,18 @@ BSD-3-Clause, tmux ISC, PCRE2 BSD-3-Clause WITH PCRE2-exception, and the
 remaining libraries LGPL-2.1-or-later, LGPL-3.0-or-later, MIT, 0BSD, zlib,
 or public domain). The rebuilt PRoot binaries are **GPL-2.0-or-later**
 (PRoot's actual grant), built from the termux source tag with the Linexa
-patches in `proot-build/`. The complete component-by-component record,
+patches in `third_party/proot/`. The complete component-by-component record,
 copyright notices, and corresponding-source offer are in the repository-root
 `THIRD_PARTY_NOTICES.md`.
 
 ## Regenerating
 
 1. **proot pair (both ABIs):** fetch `termux/proot` tag `v5.1.107.89`,
-   apply `proot-build/000{1,2,3,4}-*.patch` in order, and build with the
+   apply `third_party/proot/000{1,2,3,4}-*.patch` in order, and build with the
    termux `build.sh` flags. arm64-v8a links the vendored termux
    `libtalloc.so.2` / `libandroid-shmem.so`; armeabi-v7a builds talloc 2.4.2
    and libandroid-shmem 0.7 from source with the NDK. Verify with the two
-   test drivers in `proot-build/`.
+   test drivers in `third_party/proot/`.
 2. **Everything else:** fetch
    `https://packages-cf.termux.dev/apt/termux-main/dists/stable/main/binary-{aarch64,arm}/Packages`,
    download the debs for the versions above, and compare `sha256sum` with the

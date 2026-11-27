@@ -47,10 +47,10 @@ class WorkspaceNetworkProvisionerSemanticsTest {
         override suspend fun execCommand(workspaceId: String, command: String): com.fem.linexa.domain.runtime.CommandResult {
             execs += command
             execCommandDispatcher?.invoke(command)?.let { return it }
-            // Order matters: the detector's `which` probe names the binaries
+            // Order matters: the detector's probe names the package managers
             // too, so it must be matched before the generic contains checks.
             val output = when {
-                command.startsWith("which") -> "/usr/bin/apt-get\n"
+                command == PackageManagerDetector.PROBE_COMMAND -> "/usr/bin/apt-get\n"
                 command.startsWith("cat /etc/hosts") -> hosts
                 command.startsWith("hostname") -> "$hostname\n"
                 command.contains("os-release") -> osRelease
@@ -73,6 +73,12 @@ class WorkspaceNetworkProvisionerSemanticsTest {
             }
             return com.fem.linexa.domain.runtime.CommandResult(0, output, "")
         }
+
+        override suspend fun execCommandWithInput(
+            workspaceId: String,
+            command: String,
+            stdin: String
+        ): com.fem.linexa.domain.runtime.CommandResult = execCommand(workspaceId, command)
 
         override suspend fun startDaemon(workspaceId: String, name: String, command: String): Boolean = true
         override suspend fun stopDaemon(workspaceId: String, name: String) = Unit

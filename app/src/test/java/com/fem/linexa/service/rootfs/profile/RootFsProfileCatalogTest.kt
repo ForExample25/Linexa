@@ -1,5 +1,6 @@
 package com.fem.linexa.service.rootfs.profile
 
+import com.fem.linexa.service.installer.RootFsProbe
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -18,7 +19,10 @@ import java.io.File
  */
 class RootFsProfileCatalogTest {
 
-    private val assetDir: File = resolveAssetDir()
+    private val assetDir: File =
+        resolveModulePath("src/main/assets/${AssetRootFsProfileCatalog.ASSET_DIR}")
+
+    private val jniLibsDir: File = resolveModulePath("src/main/jniLibs")
 
     private val source = ProfileByteSource { fileName ->
         File(assetDir, fileName).takeIf { it.isFile }?.readBytes()
@@ -185,22 +189,52 @@ class RootFsProfileCatalogTest {
         assertTrue("asset dir does not exist: $assetDir", assetDir.isDirectory)
     }
 
+    @Test
+    fun everyAdvertisedArchitectureHasAPackagedProot() {
+        // `supported_architectures` now promises that *this build* can run the
+        // rootfs. That promise only holds when the matching PRoot binary is in
+        // the APK; otherwise the import is accepted and the workspace fails at
+        // launch. The `third_party/proot/` directory holds build inputs, not
+        // packaged ABIs, so only directories carrying a
+        // `libproot.so` count.
+        val packagedAbis = jniLibsDir.listFiles()
+            ?.filter { it.isDirectory && File(it, "libproot.so").isFile }
+            ?.map { it.name }
+            ?.toSet()
+            .orEmpty()
+        assertTrue("no packaged libproot.so found in $jniLibsDir", packagedAbis.isNotEmpty())
+        profiles.forEach { profile ->
+            profile.supportedArchitectures.forEach { arch ->
+                val rootfsArch = RootFsProbe.RootFsArch.entries.firstOrNull { it.label == arch }
+                assertNotNull(
+                    "profile '${profile.id}' advertises '$arch', which no RootFsArch maps to an ABI",
+                    rootfsArch
+                )
+                assertTrue(
+                    "profile '${profile.id}' advertises '$arch' (${rootfsArch!!.abi}) but " +
+                        "jniLibs/${rootfsArch.abi}/libproot.so is not packaged " +
+                        "(packaged ABIs: $packagedAbis)",
+                    rootfsArch.abi in packagedAbis
+                )
+            }
+        }
+    }
+
     private companion object {
         /**
-         * Walks up from the working directory to find the module's asset dir.
+         * Walks up from the working directory to find a module-relative path.
          *
          * Gradle runs unit tests with the working directory set to the module,
          * but that is a convention rather than a guarantee (IDE runners differ),
          * so the search is done rather than assumed.
          */
-        fun resolveAssetDir(): File {
-            val relative = "src/main/assets/${AssetRootFsProfileCatalog.ASSET_DIR}"
+        fun resolveModulePath(relative: String): File {
             var dir: File? = File(".").absoluteFile
             while (dir != null) {
                 val candidate = File(dir, relative)
-                if (candidate.isDirectory) return candidate
+                if (candidate.exists()) return candidate
                 val nested = File(dir, "app/$relative")
-                if (nested.isDirectory) return nested
+                if (nested.exists()) return nested
                 dir = dir.parentFile
             }
             error("could not locate $relative from ${File(".").absolutePath}")

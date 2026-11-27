@@ -1,160 +1,280 @@
 # Runtime Architecture
 
-**Status:** Current — describes the implemented PRoot runtime, verified against source.
+**Source locations:** `app/src/main/java/com/fem/linexa/service/runtime/`,
+`app/src/main/java/com/fem/linexa/domain/runtime/`,
+`app/src/main/java/com/fem/linexa/service/installer/`
 
-**Project:** Linexa Linux Workspace (`com.fem.linexa`)
+This document describes the PRoot runtime: process launch paths, PTY integration, session
+lifecycle, environment construction, the guest compatibility surface, and the RootFS
+installation pipeline. Feature-level behavior is covered in [`../features/`](../features/).
 
-**Source locations:** `app/src/main/java/com/fem/linexa/service/runtime/`, `app/src/main/java/com/fem/linexa/domain/runtime/`, `app/src/main/java/com/fem/linexa/service/installer/`
-
----
-
-## 1. Purpose
-
-This document is the authoritative reference for Linexa's runtime: PRoot container execution, PTY terminal stack, session lifecycle, launch paths, environment construction, and the `/proc`/`/sys`/`/dev` compatibility surface presented to guests.
-
----
-
-## 2. Scope
-
-In scope:
-
-- `ContainerRuntime` / `PRootContainerRuntime` and `PRootLauncher`
-- PTY allocation via the vendored Termux `:terminal-emulator` module (`libtermux.so`)
-- Session lifecycle (workspace start → terminal open → close)
-- The three process launch paths (`openTerminal`, `execInternal`, `startDaemon`)
-- Environment construction and guest env filtering
-- Bootstrap layout, seccomp fallback, `/dev/shm`, `/run`, `/proc` snapshots
-- RootFS installation pipeline (staged installer)
-- Runtime self-heal and startup recovery sweep
-
-Out of scope:
-
-- Feature provisioners (audio, clipboard, notifications, desktop, GPU): [`features/`](../features/)
-- Host system info: [`features/HOST_SYSTEM_INFO.md`](../features/HOST_SYSTEM_INFO.md)
-- Data/persistence schema: [`architecture/DATA_AND_PERSISTENCE.md`](./DATA_AND_PERSISTENCE.md)
-
----
-
-## 3. Current implementation status
-
-| Area | Status | Evidence |
-|---|---|---|
-| PRoot container runtime (`PRootContainerRuntime`) | Implemented | `service/runtime/container/PRootContainerRuntime.kt` (~2,743 lines) |
-| PRoot argv/env construction (`PRootLauncher`) | Implemented | `service/runtime/container/PRootLauncher.kt` (~644 lines) |
-| Real PTY terminal stack (vendored Termux terminal-emulator) | Implemented | `service/runtime/pty/`, vendored `:terminal-emulator`/`:terminal-view` |
-| Three launch paths (PTY / exec / daemon) | Implemented | `PRootContainerRuntime.kt` |
-| SessionManager + WorkspaceTerminalManager | Implemented | `service/runtime/SessionManager.kt`, `WorkspaceTerminalManager.kt` |
-| Staged RootFS installer | Implemented | `service/installer/StagedRootFsInstaller.kt` |
-| `/proc`/`/sys`/`/dev` binds + snapshots | Implemented | `PRootLauncher.kt`, `GuestRootfsInitializer.kt` |
-| tmux persistence (opt-in, default off) | Implemented | `TmuxPersist.kt`, `feature.terminal.persistence` (default off) |
-| Wake lock (opt-in, 60-minute ceiling) | Implemented | `service/runtime/wakelock/` |
-
----
-
-## 4. Technical overview
-
-### 4.1 Module map
+## 1. Module map
 
 | Package | Role | Key classes |
 |---|---|---|
-| `service.runtime` | Session/process orchestration | `RuntimeService`, `RuntimeBinder`, `SessionManager`, `WorkspaceTerminalManager`, `WorkspaceSessionSupervisor`, `RuntimeLifecycleManager`, `TerminalSession`, `RuntimeViewModel`, `RuntimeTrace` |
-| `service.runtime.pty` | PTY abstraction over the Termux terminal-emulator | `PtySession`, `PtySessionFactory`, `TermuxPtySession`, `TermuxPtySessionFactory`, `PtySessionSource`, `TermuxTerminalSessionProvider` |
-| `service.runtime.container` | PRoot process construction & lifecycle | `PRootLauncher` (pure argv/env builder), `PRootContainerRuntime` (sessions/exec/daemons), `ContainerRuntime` (iface), `TmuxPersist` (dormant) |
-| `service.runtime.bootstrap` | Bundled-binary layout & env | `BootstrapManager`, `BootstrapManifest`, `BusyboxAppletLayer` |
-| `service.runtime.features` | Guest feature provisioners | `SshdProvisioner`, `XvncProvisioner`, `NotifySendProvisioner`, clipboard/audio bridges, `WorkspaceFeatureSupervisor`, `WorkspaceFeatureReconciler` |
-| `service.runtime.hostinfo` | Host info runtime bridge | `HostInfoRuntimeBridge`, `ProcSnapshotContentFactory` |
+| `service.runtime` | Session and process orchestration | `RuntimeService`, `RuntimeBinder`, `SessionManager`, `WorkspaceTerminalManager`, `WorkspaceSessionSupervisor`, `RuntimeLifecycleManager`, `TerminalSession`, `RuntimeTrace` |
+| `service.runtime.pty` | PTY abstraction over the vendored terminal-emulator | `PtySession`, `PtySessionFactory`, `TermuxPtySession`, `TermuxPtySessionFactory`, `TermuxTerminalSessionProvider` |
+| `service.runtime.container` | PRoot process construction and lifecycle | `PRootLauncher` (argv/environment builder), `PRootContainerRuntime` (sessions, exec, daemons), `ContainerRuntime`, `TmuxPersist`, root-exec bridge |
+| `service.runtime.bootstrap` | Bundled-binary layout and environment | `BootstrapManager`, `BootstrapManifest`, `BusyboxAppletLayer` |
+| `service.runtime.features` | Guest feature provisioners | SSH, Xvnc, notify-send, clipboard/audio bridges, feature supervisors and reconciler |
+| `service.runtime.hostinfo` | Host-information bridge | `HostInfoRuntimeBridge`, `ProcSnapshotContentFactory` |
 | `service.runtime.wakelock` | Wake-lock policy | `WorkspaceWakeLockManager`, `WakeLockPolicy`, `HostWakeLock`, `AndroidWakeLock` |
-| `service.installer` | Staged rootfs installer | `InstallCoordinator`, `RootFsInstaller`/`StagedRootFsInstaller`, `RootfsExtractor`, `L2sLinkRewriter`, `RootfsFixupService`, `GuestRootfsInitializer`, `OciLayerUnwrapper`, `InstallRecoveryManager`, `RootFsProbe` |
+| `service.installer` | Staged RootFS install | `InstallCoordinator`, `StagedRootFsInstaller`, `RootfsExtractor`, `L2sLinkRewriter`, `RootfsFixupService`, `GuestRootfsInitializer`, `OciLayerUnwrapper`, `InstallRecoveryManager`, `RootFsProbe` |
 | `domain.runtime` | Pure runtime models | `RuntimeState`, `TerminalState`, `CommandResult`, `FeatureIds` |
-| `service.rootfs(.profile)` | Archive/metadata/profile machinery | `RootFsDescriptor`, `CompressedArchiveStream`, `ArchiveSignalCollector`, `RootFsProfileCatalog` |
+| `service.rootfs(.profile)` | Archive, metadata, and profile machinery | `RootFsDescriptor`, `CompressedArchiveStream`, `ArchiveSignalCollector`, `RootFsProfileCatalog` |
 
-### 4.2 The three process launch paths
+## 2. Process launch paths
 
-| Path | Spawns | stdio | TTY? | Used by |
+| Path | Spawns | stdio | TTY | Used by |
 |---|---|---|---|---|
-| `openTerminal` → `TermuxPtySession` → `libtermux.so` native | PRoot directly (no tmux) | PTY master/slave (`/dev/ptmx` + `/dev/pts/N`) | **Yes** (setsid + ctty) | Workspace terminals T0/T1/…, Management terminal (host `/system/bin/sh`) |
-| `execInternal` → `runProcess` | PRoot (`/bin/sh -c cmd`) via `ProcessBuilder`, `redirectErrorStream(true)`, full env replacement | pipes (stdin = never-written pipe) | **No** | Package Manager UI, File Manager, feature provisioners, dpkg preflight, probes |
-| `startDaemon` → `launchDaemonProcess` | PRoot (`/bin/sh -c 'exec daemon'`) via `ProcessBuilder`, output → log file | file-backed stdout | **No** | Xvnc, sshd (`ManagedDaemon` map) |
+| `openTerminal` → `TermuxPtySession` → `libtermux.so` | PRoot directly (no tmux) | PTY master/slave (`/dev/ptmx` + `/dev/pts/N`) | Yes (setsid + controlling terminal) | Workspace terminals, Root Shell, management terminal |
+| `execInternal` → `runProcess` | PRoot `/bin/sh -c <command>` through `ProcessBuilder` | Pipes; stdin is a never-written pipe | No | Package Manager, File Manager, provisioners, dpkg preflight, probes |
+| `startDaemon` → `launchDaemonProcess` | PRoot `/bin/sh -c 'exec <daemon>'` through `ProcessBuilder` | File-backed stdout | No | Xvnc, sshd, managed guest daemons |
 
-tmux is vendored but **deliberately off the launch path**. `PRootLauncher.kt` guards against tmux as PTY child; `feature.terminal.persistence` (default off) wraps launches with `tmux new-session -A -s ...` via `TmuxPersist` for opt-in session persistence. Closing a terminal never stops the workspace; lifecycle is enter/leave only.
+tmux is vendored but is not the core PTY child. `feature.terminal.persistence` (default
+off) uses `TmuxPersist` to wrap launches with an opt-in tmux session. Closing a terminal
+does not stop the workspace; workspace lifecycle is entered/left explicitly.
 
-### 4.3 Session lifecycle
+### 2.1 Process ownership and termination
 
-1. `RuntimeViewModel.bindService()` starts + binds `RuntimeService` (BIND_AUTO_CREATE); `WorkspaceNavGraph` triggers `startWorkspace()` (`ACTION_START`).
-2. `RuntimeService.onCreate` builds `RuntimeBinder` and `WorkspaceSessionSupervisor`; `onStartCommand` → `startForegroundNotification` → `launchSession` → supervisor.
-3. `WorkspaceSessionSupervisor.run()`: `WorkspaceLaunchValidator.evaluate` gate → `RuntimeLifecycleManager.requestStart()` (re-entrancy-guarded) → evicts other active workspace → `WorkspaceTerminalManager.openTerminal(...)` → `StartOutcome.Started(pty, generation)`; then awaits `awaitSessionEnd` (only `closeWorkspace` completes it — terminal exit ≠ workspace exit).
-4. `PRootContainerRuntime.openTerminal()`: bootstrap self-heal, per-terminal `PROOT_TMP_DIR` scope, guest `/tmp` repair, dpkg health check + optional `dpkg --configure -a` preflight exec, config.yaml overrides, seccomp probe/fallback, then `ptySessionFactory.create(...)` **on the Main thread** (the Termux `TerminalSession` captures the constructing thread's Looper — UNVERIFIED against current source; was stated for the removed terminal-lib).
+A process is identified by **PID + `/proc/<pid>/stat` start time (field 22) + UID**, not by
+PID alone. Android recycles PIDs aggressively, so a signal is only safe while the start time
+still matches the value captured at launch. The process group is recorded as well, but only
+used when `/proc` proves the host is its leader (`pgid == pid`); the bundled busybox has no
+`setsid`, so a new group cannot be imposed on every launch.
 
-### 4.4 Environment construction
+Every daemon, one-shot exec, and native extraction captures its host identity immediately
+after `ProcessBuilder.start()` (`captureProcessIdentity()`). The identity is **never
+re-derived at stop time**: by then the child may be reaped and its PID reused, and
+`/proc/<pid>/stat` would describe a stranger. The one exception is the terminal pty child's
+process group: the child calls `setsid()` just after `fork()`, so the launch-time read can
+race it. `closeTerminal` re-reads the group from the same PID **only while the captured start
+time still matches**, which fixes the race without weakening the identity pin.
 
-`BootstrapManager.bootstrapEnv()` = `{PATH={filesDir}/bootstrap/bin, LD_LIBRARY_PATH={filesDir}/bootstrap/lib, PROOT_LOADER={filesDir}/bootstrap/bin/loader, TERMINFO={filesDir}/terminfo (if key entry usable)}`. `PRootLauncher.buildLaunchSpec` layers guest keys on top: `HOME=/root, USER=root, TERM=xterm-256color, COLORTERM=truecolor, LANG=C.UTF-8, PATH=/usr/local/sbin:...:/bin`. `config.yaml linexa.env` overrides are filtered against `HOST_ENV_KEYS` by `applyConfigEnv`. `PROOT_GUEST_ENV_FILTER` scrubs host-only env vars (`LD_LIBRARY_PATH`, `PROOT_TMP_DIR`, `PROOT_LOADER`, `TERMINFO`, and the filter name itself) at the execve enter side; guest-authored values are preserved. The rootfs extractor deliberately does not set the filter (its bundled bionic `tar` needs host `LD_LIBRARY_PATH` to link).
+Closing a terminal is therefore a component teardown, not just a pty kill:
 
-### 4.5 Seccomp fallback
+1. Remove the session from the map (no new attach can find it).
+2. Run `ProcessTreeTerminator` over the pty child's captured identity — PRoot ignores
+   SIGHUP/SIGTERM, and SIGKILLing only the tracer orphans its tracees to init.
+3. `destroy()` the pty session, wait up to `TERMINAL_EXIT_GRACE_MS` for the exit, and release
+   the terminal's `PROOT_TMP_DIR` scope **only if** termination was confirmed. An unconfirmed
+   survivor keeps its scratch tree; the next open of that scope reclaims it.
 
-`resolveSeccompFallback`: one bounded probe (`/bin/sh -c "exit 0"`, 30 s) on first terminal open; on the documented marker string sets `BootstrapManager.needsNoSeccomp`, after which every launch pre-applies `PROOT_NO_SECCOMP=1`. `execInternal` retries once on the failure signature. The installer shares the same flag.
+Component termination (`ProcessTreeTerminator`, used by daemon stop, exec timeout, and the
+extraction timeout) works in this order:
 
-### 4.6 /proc /sys /dev
+1. Snapshot the own-UID `/proc` table **before** signalling. PRoot tracees are children of
+   the PRoot host; after the host dies they reparent to init and the PPID chain is gone.
+2. Build the target set from the snapshot: the rooted host, its live descendants, and — when
+   the host is a group leader — every live member of that group. This covers a member that
+   double-forked and left the PPID chain while remaining in the group.
+3. Refuse incomplete identities and foreign UIDs. Send SIGTERM to each still-identical
+   member, wait a bounded grace window, re-snapshot descendants of the survivors, then send
+   SIGKILL and verify every target is gone (row vanished, start time changed, or zombie).
+4. Report `confirmed` only when no survivor remains. An unconfirmed result is logged and the
+   caller must not treat the tree as dead.
 
-PRoot binds host `/proc`, `/sys`, `/dev` wholesale (no mount code in Linexa; Android init's mount options are inherited). Android `untrusted_app` SELinux + `hidepid=invisible` make `/proc/stat`, `/proc/loadavg`, `/proc/uptime`, `/proc/version`, `/proc/vmstat` return `EACCES`. Linexa overlays static snapshot files for these five files (`PROC_BIND_OVER_NAMES: loadavg, stat, uptime, version, vmstat`) via `PRootLauncher.procBindOvers()` at `{rootfs}/proc/.<name>`, written by `GuestRootfsInitializer.ensureProcSnapshots()`. Values are static/frozen synthetic values (product decision: "tools start" over "tools are honest"). `/dev/shm` is absent on the Android host; Linexa creates a rootfs-owned `/dev/shm` (mode 1777) via `ensureGuestDevShm()` and binds it over `/dev/shm`. `/run` is created (mode 1777) via `ensureGuestRun()` and bound over `/run`.
+No component operation performs a workspace-wide cmdline sweep. `killRootfsProcesses()` is
+retained only for two whole-workspace operations:
 
-### 4.7 Kernel release spoof
+- `closeWorkspaceSessions()` — final teardown after every owned component has already been
+  stopped; catches genuine leftovers of that rootfs.
+- `startupRecoverySweep()` — a fresh app process owns no live sessions, so own-UID processes
+  still referencing a workspace rootfs path are orphans of a previous app process.
 
-`--kernel-release=6.1.0-linexa` (`SPOOFED_KERNEL_RELEASE`) spoofs `uname` so version-probing guest software does not see the Android kernel string. Reused for the `/proc/version` snapshot.
+A dead daemon host contributes no targets, so stopping it sends **zero signals**; if the host
+identity was never captured, termination degrades to the recorded `Process` object only and
+logs that guest-tree containment was unavailable. It never falls back to the workspace sweep.
+`stopAllDaemons()` removes all requested daemons first and runs one termination pass for the
+whole batch, so `N` daemons do not cause `N` `/proc` scans.
 
-### 4.8 System V IPC
+## 3. Session lifecycle
 
-`--sysvipc` is emitted so guest IPC syscalls reach the Android host IPC namespace unchanged.
+1. `RuntimeViewModel.bindService()` starts and binds `RuntimeService` with
+   `BIND_AUTO_CREATE`. The workspace graph requests `startWorkspace()`.
+2. `RuntimeService.onCreate` builds `RuntimeBinder` and `WorkspaceSessionSupervisor`.
+   `onStartCommand` starts the foreground notification and launches the session.
+3. `WorkspaceSessionSupervisor.run()` evaluates `WorkspaceLaunchValidator`, requests a
+   start through `RuntimeLifecycleManager`, evicts any other active workspace, and calls
+   `WorkspaceTerminalManager.openTerminal(...)`.
+4. `PRootContainerRuntime.openTerminal()` performs bootstrap self-healing, per-terminal
+   `PROOT_TMP_DIR` setup, guest `/tmp` repair, dpkg health checks and optional
+   `dpkg --configure -a`, config overrides, the seccomp probe, and PTY creation.
+5. PTY creation is dispatched to the main-Looper dispatcher. The vendored
+   `TerminalSession` captures the constructing thread's Looper and routes emulator writes
+   through it, so construction must not happen on an arbitrary worker thread.
+6. The supervisor waits for session end. Only `closeWorkspace` completes that wait; a
+   terminal exiting does not itself stop the workspace.
 
-### 4.9 /dev/fd and stdio binds
+### 3.1 Terminal exit statuses and 127 diagnosis
 
-`-b /proc/self/fd:/dev/fd`, `-b /proc/self/fd/0:/dev/stdin`, `-b /proc/self/fd/1:/dev/stdout`, `-b /proc/self/fd/2:/dev/stderr` so guest TTY detection sees the same symlink shape a real distro provides.
+The PTY reports one status per terminal. `PtySession.awaitExit` returns
+`waitpid(2)`'s value: a normal exit is `WEXITSTATUS` in `0..255`, a signal death is
+`-WTERMSIG`. `domain/runtime/TerminalExitDescription` is the single table that turns that
+number into the reason and hint the panel shows; the raw code is always preserved. An
+unobtainable status is `null` and is rendered as "unavailable" — it is never coerced to
+`-1`, which the table would read as a real SIGHUP.
 
-### 4.10 RootFS installation pipeline
+| Status | Meaning | Hint |
+|---|---|---|
+| `126` | Command found but not executable | Check the executable bit and the shebang interpreter. |
+| `127` | Command or shell not found | Check `launch.shell` / `environment.shell` and that the command exists in the image. |
+| `137` | Exited **as if** killed by SIGKILL | A guest process may have been killed; Android may have reclaimed memory. |
+| `139` | Exited **as if** killed by SIGSEGV | A guest binary or interpreter crashed; check the image and the command. |
+| `-9` | Kernel wait status: killed by SIGKILL | Android may have reclaimed the terminal. Also gates the SIGKILL battery notice. |
+| `-11` / `-15` | Kernel wait status: SIGSEGV / SIGTERM | Named directly. |
+| other | Generic "exited unexpectedly", raw code kept | Open the session diagnostics. |
 
-1. Download/import → `StagedRootFsInstaller.analyze()` (Pass 1, JVM): SHA-256 digest, tee to `.import-cache/source-archive`, per-entry `ArchiveValidator.checkEntry` (path traversal, zip-slip, symlink escape, 8 GiB bomb cap), root-level metadata capture, profile resolution, OCI layout resolution, disk-space gate.
-2. `RootfsExtractor.extract()` (Pass 2, native): `proot --link2symlink tar -xf … -C staging --delay-directory-restore --preserve-permissions --checkpoint=100`. Birthplace of install-time L2S hardlink families.
-3. `L2sLinkRewriter.rewrite(staging)` (Pass 2.5): rewrites `.l2s.*` symlink targets to relative (staging→live correctness).
-4. `validateExtractedRootfs` (Pass 3): profile required directories + shell candidates.
-5. `runInstallSteps` (Pass 3.5): profile install steps (`ENSURE_TMP` → `ENSURE_DEV_SHM` → `ANDROID_ACCOUNT_FIXUP` → `SEED_RESOLV_CONF`); `RootfsFixupService.fixUp` + `GuestRootfsInitializer.ensureGuestTmp`.
-6. `writeWorkspaceConfig` (Pass 4): captured `config.yaml`.
-7. Activation: `WorkspaceFileManager.activateStagedRootfs()` — live→`rootfs.previous-<ts>`, staging→`rootfs` (single rename), restore on failure.
-8. Runtime self-heal at every launch: `ensureGuestTmp`, `ensureGuestDevShm`, `ensureGuestRun`, `ensureProcSnapshots`, `ensureDpkgHealthy` (+ optional `dpkg --configure -a` preflight).
+`137`/`139` are **hedged**: they are the shell convention `128 + signal`, but a guest can
+also `exit 137` itself, and an OOM kill arrives as `137` rather than `-9`. Only a negative
+wait status is kernel evidence of a signal. The terminal's SIGKILL battery notice is
+therefore shown only for the direct `-9` status, never for `137`.
 
----
+A **live** pty with no output is a separate case from an exit. `TerminalViewModel` starts a
+first-output watchdog when it resolves the session; if no output arrives within eight
+seconds and the pty is still alive, the panel overlays a non-blocking "No output yet" banner
+with Diagnostics and Restart. The terminal view stays mounted, the pty is never destroyed,
+and a prompt captured before the screen attached counts as output. A child that actually
+exits takes the normal `TerminalState.Error` path and its error card instead.
 
-## 5. Mermaid: session lifecycle
+To diagnose a `127`:
+
+1. Run `command -v <name>` in the guest. `127` is the shell's "not found" status, so a typo
+   or a package that is not installed is the first check. (`command -v` is used throughout
+   the runtime; `which` is not assumed to exist.)
+2. If the command exists, check the launch shell. A `launch.shell` or `environment.shell`
+   that is missing or not executable makes every command exit `127`. The profile validator
+   rejects such a path and falls through to the next source before launch, so a persisted
+   bad override is logged rather than silently used.
+3. Use **Diagnostics** on the terminal error card. It reports the terminal id, raw status
+   (or `unavailable`), reason, hint, bounded tail of the session output, and the workspace
+   runtime trace.
+4. If the status is `137`, check logcat for `lmkd`/Android memory pressure before assuming
+   the guest's own command was killed.
+
+## 4. Environment construction
+
+`BootstrapManager.bootstrapEnv()` supplies the host-side bootstrap layout:
+
+```
+PATH={filesDir}/bootstrap/bin
+LD_LIBRARY_PATH={filesDir}/bootstrap/lib
+PROOT_LOADER={filesDir}/bootstrap/bin/loader
+TERMINFO={filesDir}/terminfo   (when usable)
+```
+
+`PRootLauncher.buildLaunchSpec` layers the guest environment on top. An
+interactive terminal resolves its identity from the workspace's RootFS metadata and
+`/etc/passwd`: the default account is `linexa` with `HOME=/home/linexa`, and the
+launch uses `--change-id=<uid>:<gid>` so `id`, `whoami`, and the prompt reflect that
+account. If no usable account exists, the launch falls back to root emulation.
+Privileged one-shot operations, root daemons, and the Root shell use `-0` with
+`HOME=/root` and `USER=root`. Every launch sets `TERM=xterm-256color`,
+`COLORTERM=truecolor`, `LANG=C.UTF-8`, `SHELL`, and a guest `PATH`. Per-workspace
+`config.yaml` values are filtered against the host-key allowlist by `applyConfigEnv`.
+
+The interactive shell precedence is `launch.shell` → `environment.shell` → probe.
+Both declared values are validated by `GuestShellValidator` against the rootfs before
+use: the path must be absolute, resolve without escaping the rootfs (symlinks are
+followed inside it, with bounded hops), and name a regular executable file. A script's
+shebang interpreter, or an ELF binary's `PT_INTERP` loader, must also exist and be
+executable inside the rootfs. A rejected declaration is logged with its reason and falls
+through to the next source; it never reaches `exec`.
+
+`PROOT_GUEST_ENV_FILTER` scrubs host-only variables at the exec boundary, including
+`LD_LIBRARY_PATH`, `PROOT_TMP_DIR`, `PROOT_LOADER`, `TERMINFO`, and the filter variable
+itself. Guest-authored values are preserved. The rootfs extractor deliberately does not set
+the filter because its bundled bionic `tar` needs the host library path.
+
+## 5. Seccomp fallback
+
+On the first terminal open, `resolveSeccompFallback` runs one bounded probe
+(`/bin/sh -c "exit 0"`, 30 s). If the known seccomp failure marker is observed,
+`BootstrapManager.needsNoSeccomp` is set and every subsequent launch pre-applies
+`PROOT_NO_SECCOMP=1`. `execInternal` also retries once when it sees the failure signature.
+The installer uses the same flag. Root-emulated launches always set the flag, as described
+in [`../features/ROOT_SHELL_AND_SUDO.md`](../features/ROOT_SHELL_AND_SUDO.md).
+
+## 6. Guest compatibility surface
+
+PRoot binds the host `/proc`, `/sys`, and `/dev` into the guest. Android's
+`untrusted_app` SELinux domain and `hidepid` restrictions make several `/proc` files
+unreadable or incomplete, so Linexa overlays selected files with a stable guest-facing view.
+
+- Baseline snapshot files are written by
+  `GuestRootfsInitializer.ensureProcSnapshots()` under `{rootfs}/proc/.<name>`.
+- At every launch, `HostInfoRuntimeBridge.refreshProcOverlays()` rewrites those files from
+  the host-information provider. While a workspace is running, `RuntimeService` drives a
+  2-second overlay ticker for running workspaces.
+- `PRootLauncher.procBindOvers()` binds each present snapshot over the corresponding guest
+  path. The set includes `cpuinfo`, `loadavg`, `meminfo`, `stat`, `swaps`, `uptime`,
+  `version`, and `vmstat`, plus the `/proc/net` files `dev`, `route`, and `if_inet6`.
+- If a snapshot cannot be written, the bind is skipped and the guest sees the underlying
+  PRoot/Android view. Baseline synthetic values are the fallback when the host cannot
+  provide a real value.
+
+Values that Android exposes are used directly; values that are genuinely unavailable are
+reported as unavailable rather than fabricated as zero. `/dev/shm` is created inside the
+rootfs with mode `1777` and bound over `/dev/shm`; `/run` is created with mode `1777` and
+bound over `/run`.
+
+The kernel release is spoofed with `--kernel-release=6.1.0-linexa` so guest software does
+not see the Android kernel string. `--sysvipc` is emitted so guest IPC syscalls use the host
+IPC namespace. `/proc/self/fd` is bound to `/dev/fd`, `/dev/stdin`, `/dev/stdout`, and
+`/dev/stderr` so guest TTY detection sees the expected symlink shape.
+
+## 7. RootFS installation pipeline
+
+```
+DownloadService / ImportService -> StagedRootFsInstaller
+  Pass 1 (JVM)   analyze(): SHA-256, archive validation, profile resolution, OCI layout
+  Pass 2 (native) RootfsExtractor.extract(): proot --link2symlink tar -xf ... -C staging
+  Pass 2.5       L2sLinkRewriter.rewrite(staging): relative .l2s.* targets
+  Pass 3         validateExtractedRootfs(): profile-required directories and shell
+  Pass 3.5       runInstallSteps(): ENSURE_TMP, ENSURE_DEV_SHM, ANDROID_ACCOUNT_FIXUP,
+                 SEED_RESOLV_CONF; RootfsFixupService and GuestRootfsInitializer
+  Pass 4         writeWorkspaceConfig(): captured config.yaml
+  Activation     WorkspaceFileManager.activateStagedRootfs(): live -> rootfs.previous-<ts>,
+                 staging -> rootfs, with restore on failure
+```
+
+`InstallRecoveryManager` handles crashes between phases at application startup. Before every
+session, exec, or daemon launch, the runtime self-heals the guest `/tmp`, `/dev/shm`,
+`/run`, `/proc` snapshots, and dpkg state.
+
+## 8. Session lifecycle diagram
 
 ```mermaid
 graph TD
-    subgraph UI ["Android UI (Compose)"]
-        WTP[WorkspaceTerminalPanel]
+    subgraph UI["Compose UI"]
+        WTP[Workspace terminal panel]
         RTV[RealTerminalView]
     end
 
-    subgraph VM ["ViewModel layer"]
+    subgraph VM["View models"]
         TVM[TerminalViewModel]
         RVM[RuntimeViewModel]
     end
 
-    subgraph Service ["RuntimeService (foreground)"]
+    subgraph Service["RuntimeService"]
         RB[RuntimeBinder]
         WSS[WorkspaceSessionSupervisor]
         RLM[RuntimeLifecycleManager]
     end
 
-    subgraph Container ["PRootContainerRuntime"]
+    subgraph Container["PRootContainerRuntime"]
         OT[openTerminal]
-        BS[bootstrap self-heal]
-        DH[dpkg health + tmp/shm/run/proc]
-        PS[ptySessionFactory.create Main thread]
+        BS[Bootstrap self-heal]
+        DH[tmp, shm, run, proc, dpkg checks]
+        PS[PTY creation on main Looper]
     end
 
-    subgraph PTY ["PTY (Termux terminal-emulator)"]
+    subgraph PTY["PTY"]
         TPS[TermuxPtySession]
-        NL[libtermux.so /dev/ptmx + /dev/pts/N]
+        NL[libtermux.so: /dev/ptmx + /dev/pts/N]
     end
 
-    subgraph Guest ["Guest rootfs (PRoot)"]
+    subgraph Guest["Guest rootfs"]
         SH[/bin/bash --login]
     end
 
@@ -162,7 +282,7 @@ graph TD
     TVM --> RB
     RTV -->|attachSession| RB
     RB -->|getPtySession| WSS
-    WSS -->|run()| RLM
+    WSS --> RLM
     RLM -->|launchSession| OT
     OT --> BS
     OT --> DH
@@ -172,35 +292,37 @@ graph TD
     NL -->|exec proot| SH
 ```
 
----
+## 9. Dependencies and interactions
 
-## 6. Dependencies and interactions
+- `PRootContainerRuntime` depends on `PRootLauncher`, `PtySessionFactory`,
+  `WorkspaceFileManager`, `WorkspaceConfigParser`, `BootstrapManager`, `RuntimeTrace`,
+  `GuestRootfsInitializer`, `WorkspaceRepository`, and `WorkspaceRootFsMetadata`.
+- `StagedRootFsInstaller` depends on `WorkspaceFileManager`, `ArchiveValidator`,
+  `BootstrapManager`, `RootfsExtractor`, `L2sLinkRewriter`, `RootfsFixupService`,
+  `GuestRootfsInitializer`, `OciLayerUnwrapper`, and `RootFsProfileCatalog`.
+- `TermuxPtySessionFactory` is the default `PtySessionFactory`. The terminal-emulator
+  internals are consumed by `TermuxPtySession`, `TermuxTerminalSessionProvider`, and the
+  terminal view.
 
-- `PRootContainerRuntime` ← `PRootLauncher`, `PtySessionFactory`, `WorkspaceFileManager`, `WorkspaceConfigParser`, `BootstrapManager`, `RuntimeTrace`, `GuestRootfsInitializer`, `WorkspaceRepository`, `WorkspaceRootFsMetadata`.
-- `StagedRootFsInstaller` ← `WorkspaceFileManager`, `ArchiveValidator`, `BootstrapManager`, `RootfsExtractor`, `L2sLinkRewriter`, `RootfsFixupService`, `GuestRootfsInitializer`, `OciLayerUnwrapper`, `RootFsProfileCatalog`.
-- `TermuxPtySessionFactory` is bound as the default `PtySessionFactory` (`AppModule`).
-- The consumers of Termux terminal-emulator internals are `TermuxPtySession`/`TermuxTerminalSessionProvider` and the terminal UI (`RealTerminalView`) (enforced socially by `ImportBoundaryTest` and `PtySession`'s library-agnostic interface).
+## 10. Runtime characteristics and limits
 
----
+- The one-shot exec path has no TTY by design. `DEBIAN_FRONTEND=noninteractive` is layered
+  in to prevent debconf stalls.
+- Android `/proc` visibility limits what the guest and the host process list can observe.
+  Linexa overlays the files it can answer and leaves the rest to PRoot.
+- After app-process death there is no reattach path. Runtime state resets and the startup
+  recovery sweep reaps orphaned workspace processes. Per-component stops never use that
+  sweep; they terminate their launch's recorded process tree (see §2.1).
+- x86_64 hosts are not supported because no x86_64 PRoot binary is packaged.
+- The guest `/proc` overlay is a compatibility view, not a full kernel emulation. Tools that
+  depend on kernel-specific counters may see reduced detail when Android denies the source.
 
-## 7. Limitations and known issues
+## 11. Related documentation
 
-- Core runtime flows still need on-device verification; see [`engineering/TESTING_STRATEGY.md`](../engineering/TESTING_STRATEGY.md).
-- PRoot rebuilt pairs (arm64-v8a + armeabi-v7a) rebuilt with patches 0001–0004 have not been executed on-device; x86_64 real-binary verification only.
-- `/proc` snapshot values are static/frozen; `uptime`/`loadavg` do not tick.
-- `/dev/shm`, `/run`, `/proc` snapshots are self-healed at every launch; imported/older workspaces get them on next launch.
-- The one-shot exec path has no TTY by design; `DEBIAN_FRONTEND=noninteractive` is layered in to prevent debconf stalls.
-- Host `PATH`/`LD_LIBRARY_PATH` leak into the guest is partially mitigated by `PROOT_GUEST_ENV_FILTER` (value-matched scrub); `PATH` is overridden by the guest layer.
-
----
-
-## 8. Related documentation
-
-- [`architecture/SYSTEM_ARCHITECTURE.md`](./SYSTEM_ARCHITECTURE.md) — system architecture, module layout
-- [`architecture/APPLICATION_ARCHITECTURE.md`](./APPLICATION_ARCHITECTURE.md) — package layering and boundary rules
-- [`architecture/DATA_AND_PERSISTENCE.md`](./DATA_AND_PERSISTENCE.md) — Room, schema, RootFS metadata (`linexa.yaml`)
-- [`features/HOST_SYSTEM_INFO.md`](../features/HOST_SYSTEM_INFO.md) — host info subsystem, selective pass-through, `/proc` overlays
-- [`features/TERMINAL_AND_LINUX_RUNTIME.md`](../features/TERMINAL_AND_LINUX_RUNTIME.md) — (this document is the runtime reference)
-- [`features/DESKTOP_AND_VNC.md`](../features/DESKTOP_AND_VNC.md) — desktop daemons (Xvnc, sshd) launched via `startDaemon`
-- [`decisions/ADR_REGISTER.md`](../decisions/ADR_REGISTER.md) — runtime Keep/Fix/Refactor decisions
-- [`engineering/PERFORMANCE.md`](../engineering/PERFORMANCE.md) — runtime performance considerations
+- [`SYSTEM_ARCHITECTURE.md`](./SYSTEM_ARCHITECTURE.md) — modules, entry points, native packaging
+- [`APPLICATION_ARCHITECTURE.md`](./APPLICATION_ARCHITECTURE.md) — package layering and DI
+- [`DATA_AND_PERSISTENCE.md`](./DATA_AND_PERSISTENCE.md) — Room, RootFS metadata, install pipeline
+- [`../features/TERMINAL_AND_LINUX_RUNTIME.md`](../features/TERMINAL_AND_LINUX_RUNTIME.md) — terminal UI and PTY feature behavior
+- [`../features/HOST_SYSTEM_INFO.md`](../features/HOST_SYSTEM_INFO.md) — host facts and guest pass-through
+- [`../features/ROOT_SHELL_AND_SUDO.md`](../features/ROOT_SHELL_AND_SUDO.md) — root-emulated execution
+- [`app/src/main/jniLibs/BINARY-MANIFEST.md`](../../app/src/main/jniLibs/BINARY-MANIFEST.md) — native binary provenance

@@ -143,6 +143,65 @@ class ArchiveBoundaryAuditorTest {
     }
 
     @Test
+    fun `a composed link chain that leaves staging is rejected despite a lexical in-root path`() {
+        // MV-RF-06: p/q/r resolves to the staging root, so `p/q/r/..` is
+        // lexically p/q but physically the staging parent. The old lexical
+        // check accepted m.
+        val staging = staging()
+        File(staging, "p/q").mkdirs()
+        symlink(File(staging, "p/q/r"), Path.of("../.."))
+        symlink(File(staging, "m"), Path.of("p/q/r/.."))
+
+        val failure = auditor().auditAndNormalize(staging, WORKSPACE)
+
+        assertNotNull("a composed escaping chain must reject the archive", failure)
+        assertTrue(
+            "the failure must name the resolved escape: $failure",
+            failure!!.contains("resolved through symlinks") || failure.contains("escapes")
+        )
+    }
+
+    @Test
+    fun `a composed link chain that stays inside staging is accepted`() {
+        val staging = staging()
+        File(staging, "p/q").mkdirs()
+        File(staging, "x").writeText("payload")
+        symlink(File(staging, "p/q/r"), Path.of("../.."))
+        symlink(File(staging, "m"), Path.of("p/q/r/x"))
+
+        assertNull(
+            "an in-root composed chain is ordinary guest content",
+            auditor().auditAndNormalize(staging, WORKSPACE)
+        )
+    }
+
+    @Test
+    fun `a target traversing a link to the staging root and then above is rejected`() {
+        val staging = staging()
+        val victim = File(tmp.root, "composed-victim").apply { writeText("host secret\n") }
+        File(staging, "p/q").mkdirs()
+        symlink(File(staging, "p/q/r"), Path.of("../.."))
+        symlink(File(staging, "m"), Path.of("p/q/r/../../composed-victim"))
+
+        val failure = auditor().auditAndNormalize(staging, WORKSPACE)
+
+        assertNotNull("the physical resolution must reject the archive", failure)
+        assertEquals("the host victim must be untouched", "host secret\n", victim.readText())
+    }
+
+    @Test
+    fun `a symlink cycle inside staging is not treated as an escape`() {
+        val staging = staging()
+        symlink(File(staging, "a"), Path.of("b"))
+        symlink(File(staging, "b"), Path.of("a"))
+
+        assertNull(
+            "an in-root cycle is not a host-boundary escape",
+            auditor().auditAndNormalize(staging, WORKSPACE)
+        )
+    }
+
+    @Test
     fun `a legitimate absolute in-root link is rewritten to a relative target`() {
         val staging = staging()
         File(staging, "usr/bin").mkdirs()

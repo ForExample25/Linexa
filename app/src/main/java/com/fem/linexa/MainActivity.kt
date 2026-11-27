@@ -11,16 +11,24 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.rememberNavController
+import com.fem.linexa.core.i18n.AppLocale
 import com.fem.linexa.navigation.AppNavGraph
 import com.fem.linexa.navigation.TerminalDeepLinkBus
 import com.fem.linexa.service.runtime.RuntimeNotificationContent
+import com.fem.linexa.ui.i18n.AppLocaleViewModel
 import com.fem.linexa.ui.theme.AppThemeViewModel
 import com.fem.linexa.ui.theme.LinexaTheme
 import dagger.hilt.android.AndroidEntryPoint
@@ -143,7 +151,8 @@ class MainActivity : ComponentActivity() {
 fun LinexaApp(
     navController: NavHostController,
     onControllerReady: (NavHostController) -> Unit = {},
-    themeViewModel: AppThemeViewModel = hiltViewModel()
+    themeViewModel: AppThemeViewModel = hiltViewModel(),
+    appLocaleViewModel: AppLocaleViewModel = hiltViewModel()
 ) {
     // Register the hoisted controller once the graph is composed, so deep links
     // (notification Open) can reach it.
@@ -168,17 +177,43 @@ fun LinexaApp(
     val darkTheme = themeMode.resolveDarkTheme(isSystemInDarkTheme())
     val colorTheme by themeViewModel.colorTheme.collectAsState()
 
-    LinexaTheme(darkTheme = darkTheme, colorTheme = colorTheme) {
-        // §1.89: paint the root Surface with the same color every Scaffold
-        // uses (MaterialTheme.colorScheme.background), so the window
-        // background, the NavHost crossfades, and the empty areas between
-        // screens all match — the confirm -> install transition no longer
-        // flashes the default `surface` color underneath.
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = MaterialTheme.colorScheme.background
-        ) {
-            AppNavGraph(navController = navController)
+    // Localization: the whole tree — stringResource, dialogs, locale-aware
+    // formatting — is re-provided from this one place. Recreating the activity
+    // for a language change (the platform's default) would tear down the nav
+    // graph and the workspace's terminal surface, so instead the localized
+    // context is swapped in place.
+    //
+    // Layout-direction policy: the application chrome is ALWAYS left-to-right,
+    // in English and in Persian. Language selects resources and text content,
+    // never the arrangement of rows, navigation, padding or icons. The direction
+    // is pinned here, at the composition root, so no screen or nested component
+    // can inherit RTL from the Persian locale. Persian text itself still renders
+    // RTL through Compose's first-strong bidi heuristic (TextDirection.Unspecified);
+    // only the surrounding layout is LTR. See
+    // docs/design/ACCESSIBILITY_AND_LOCALIZATION.md §4.2.1.
+    val baseContext = LocalContext.current
+    val appLanguage by appLocaleViewModel.appLanguage.collectAsState()
+    val localizedContext = remember(baseContext, appLanguage) {
+        AppLocale.localizedContext(baseContext, appLanguage)
+    }
+
+    CompositionLocalProvider(
+        LocalContext provides localizedContext,
+        LocalConfiguration provides localizedContext.resources.configuration,
+        LocalLayoutDirection provides LayoutDirection.Ltr
+    ) {
+        LinexaTheme(darkTheme = darkTheme, colorTheme = colorTheme) {
+            // §1.89: paint the root Surface with the same color every Scaffold
+            // uses (MaterialTheme.colorScheme.background), so the window
+            // background, the NavHost crossfades, and the empty areas between
+            // screens all match — the confirm -> install transition no longer
+            // flashes the default `surface` color underneath.
+            Surface(
+                modifier = Modifier.fillMaxSize(),
+                color = MaterialTheme.colorScheme.background
+            ) {
+                AppNavGraph(navController = navController)
+            }
         }
     }
 }

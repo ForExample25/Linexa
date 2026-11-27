@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.fem.linexa.core.logging.Logger
 import com.fem.linexa.domain.packagemanager.AptSimulateParser
+import com.fem.linexa.service.runtime.features.DesktopInstallationService
 import com.fem.linexa.service.runtime.RuntimeBinder
 import com.fem.linexa.service.runtime.features.AudioFeatureState
 import com.fem.linexa.service.runtime.features.ClipboardAlias
@@ -74,7 +75,14 @@ class FeaturesViewModel @Inject constructor(
      * desktop-capability attribute from the live probe (same single source
      * of truth `WorkspaceDetailViewModel` writes through).
      */
-    private val workspaceRepository: com.fem.linexa.domain.workspace.WorkspaceRepository? = null
+    private val workspaceRepository: com.fem.linexa.domain.workspace.WorkspaceRepository? = null,
+    /**
+     * The shared desktop installation engine (also used by DesktopViewModel's
+     * implicit install). Defaulted so existing test harnesses that construct
+     * this ViewModel directly keep compiling; Hilt supplies the singleton.
+     */
+    private val desktopInstaller: com.fem.linexa.service.runtime.features.DesktopInstallationService =
+        com.fem.linexa.service.runtime.features.DesktopInstallationService()
 ) : ViewModel() {
 
     private var binder: RuntimeBinder? = null
@@ -464,77 +472,84 @@ class FeaturesViewModel @Inject constructor(
         val ws = workspaceId ?: return
         val b = binder ?: return
         val fm = fileManager
-        val command = DesktopPreset.installCommand(current.preset, "apt") ?: return
 
         desktopInstallJob?.cancel()
         desktopInstallJob = viewModelScope.launch {
             var phase = DesktopInstallPhase.UPDATING_INDEX
             var currentPackage: String? = null
-            val tail = ArrayDeque<String>()
 
             _desktopInstallState.value =
                 DesktopInstallUiState.Installing(current.preset, phase, null)
-            val result = try {
-                b.execCommandStreaming(ws, command) { line ->
-                    // Bounded tail for the failure message (real output, never invented).
-                    if (line.isNotBlank()) {
-                        tail.addLast(line.trim())
-                        while (tail.size > FAILURE_TAIL_LINES) tail.removeFirst()
+
+            // The install itself is the shared DesktopInstallationService —
+            // the same engine "Start Desktop" uses — so package definitions,
+            // package-manager resolution, per-workspace exclusion and
+            // post-install verification cannot differ between the two paths.
+            // This ViewModel only maps real output lines onto UI phases.
+            val outcome = try {
+                desktopInstaller.install(
+                    workspaceId = ws,
+                    preset = current.preset,
+                    rootfs = fm.getRootfsPath(ws),
+                    exec = { cmd -> b.execCommand(ws, cmd) },
+                    execStreaming = { cmd, forward -> b.execCommandStreaming(ws, cmd) { line -> forward(line) } },
+                    onLine = { line ->
+                        // Phase transitions from deterministic markers only.
+                        val progress = AptSimulateParser.parseInstallProgress(line)
+                        if (progress != null) {
+                            phase = DesktopInstallPhase.INSTALLING
+                            currentPackage = progress.packageName
+                        } else if (phase == DesktopInstallPhase.UPDATING_INDEX &&
+                            (
+                                line.startsWith("Reading package lists") ||
+                                    line.startsWith("Building dependency tree") ||
+                                    line.startsWith("The following") ||
+                                    line.startsWith("Need to get")
+                                )
+                        ) {
+                            phase = DesktopInstallPhase.DOWNLOADING
+                        }
+                        _desktopInstallState.value = DesktopInstallUiState.Installing(
+                            current.preset, phase, currentPackage
+                        )
                     }
-                    // Phase transitions from deterministic markers only.
-                    val progress = AptSimulateParser.parseInstallProgress(line)
-                    if (progress != null) {
-                        phase = DesktopInstallPhase.INSTALLING
-                        currentPackage = progress.packageName
-                    } else if (phase == DesktopInstallPhase.UPDATING_INDEX &&
-                        (
-                            line.startsWith("Reading package lists") ||
-                                line.startsWith("Building dependency tree") ||
-                                line.startsWith("The following") ||
-                                line.startsWith("Need to get")
-                            )
-                    ) {
-                        phase = DesktopInstallPhase.DOWNLOADING
-                    }
-                    _desktopInstallState.value = DesktopInstallUiState.Installing(
-                        current.preset, phase, currentPackage
-                    )
-                }
+                )
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
-                Logger.e(TAG, "Desktop install exec threw for $ws", e)
+                Logger.e(TAG, "Desktop install threw for $ws", e)
                 _desktopInstallState.value =
                     DesktopInstallUiState.Failed(e.message ?: "Desktop installation failed")
                 return@launch
             }
 
-            if (result.exitCode != 0) {
-                val reason = result.error.ifBlank { result.output }.ifBlank {
-                    "apt-get exited with code ${result.exitCode}"
+            val sessionPath = when (outcome) {
+                is DesktopInstallationService.Result.Installed -> outcome.sessionPath
+                is DesktopInstallationService.Result.AlreadyInstalled -> outcome.sessionPath
+                DesktopInstallationService.Result.Busy -> {
+                    _desktopInstallState.value = DesktopInstallUiState.Failed(
+                        "Another desktop installation is already running for this workspace"
+                    )
+                    return@launch
                 }
-                _desktopInstallState.value = DesktopInstallUiState.Failed(
-                    (reason.lines().filter { it.isNotBlank() }.takeLast(FAILURE_TAIL_LINES) +
-                        tail.toList()).distinct().joinToString("\n").take(MAX_REASON_CHARS)
-                )
-                Logger.w(TAG, "Desktop install failed for $ws (exit=${result.exitCode})")
-                return@launch
-            }
-
-            // Verify before reporting success — same rule the RootFS flow
-            // pins (§1.86): an "exit 0" without the artifact on disk is a
-            // failure, never a completed state.
-            val sessionPath = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                DesktopEnvironmentProbe.anySessionPresent(fm.getRootfsPath(ws), current.preset)
-            }
-            if (sessionPath == null) {
-                // Typed verify-failure fact; the UI renders the localized
-                // message (the ViewModel layer holds no string resources).
-                _desktopInstallState.value = DesktopInstallUiState.Failed(
-                    reason = "apt-get reported success but no session was found in the workspace",
-                    verifyFailedPresetName = current.preset.displayName
-                )
-                return@launch
+                is DesktopInstallationService.Result.Unsupported -> {
+                    _desktopInstallState.value = DesktopInstallUiState.Failed(outcome.reason)
+                    return@launch
+                }
+                is DesktopInstallationService.Result.Failed -> {
+                    _desktopInstallState.value = DesktopInstallUiState.Failed(outcome.reason)
+                    Logger.w(TAG, "Desktop install failed for $ws (exit=${outcome.exitCode})")
+                    return@launch
+                }
+                DesktopInstallationService.Result.VerifyFailed -> {
+                    // Typed verify-failure fact; the UI renders the localized
+                    // message (the ViewModel layer holds no string resources).
+                    _desktopInstallState.value = DesktopInstallUiState.Failed(
+                        reason = "The package manager reported success but no session was found in the workspace",
+                        verifyFailedPresetName = current.preset.displayName
+                    )
+                    return@launch
+                }
             }
 
             // Refresh the persisted capability attribute from the live probe
@@ -595,11 +610,5 @@ class FeaturesViewModel @Inject constructor(
 
     private companion object {
         const val TAG = "FeaturesViewModel"
-
-        /** Bounded real-output tail kept for the failure message. */
-        const val FAILURE_TAIL_LINES = 8
-
-        /** Hard cap on the failure reason surfaced to the UI. */
-        const val MAX_REASON_CHARS = 600
     }
 }

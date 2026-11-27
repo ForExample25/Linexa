@@ -28,6 +28,18 @@ class HostProcessScannerTest {
         }
     }
 
+    /** Counts every `/proc/<pid>/<file>` read so the cache can be asserted. */
+    private class CountingProcFs(private val delegate: FakeProcFs) : ProcFsReader {
+        val reads = mutableMapOf<Pair<Int, String>, Int>()
+        override fun listPids(): List<Int>? = delegate.listPids()
+        override fun readText(pid: Int, name: String): String? {
+            reads[pid to name] = (reads[pid to name] ?: 0) + 1
+            return delegate.readText(pid, name)
+        }
+        override fun selfPid(): Int = delegate.selfPid()
+        override fun selfUid(): Int? = delegate.selfUid()
+    }
+
     private fun stat(
         pid: Int,
         name: String,
@@ -130,6 +142,38 @@ class HostProcessScannerTest {
         assertNull(own.cpuPercentOfDevice)
         assertEquals(MetricAvailability.PENDING, own.cpuAvailability)
         assertNull(own.parentPid?.takeIf { it <= 0 })
+    }
+
+    @Test
+    fun `an inaccessible pid is not re-read until the periodic probe`() = runBlocking {
+        val counting = CountingProcFs(reader)
+        val scanner = HostProcessScanner(counting, CpuTopologyProvider(), FakeSignals())
+
+        val first = scanner.snapshot()
+        assertEquals(1, first.inaccessibleProcesses)
+        assertEquals(1, counting.reads[8 to "stat"] ?: 0)
+
+        val second = scanner.snapshot()
+        assertEquals(
+            "PERF-006: a denied pid must not be probed again on every tick",
+            1,
+            counting.reads[8 to "stat"] ?: 0
+        )
+        assertEquals("the cached verdict is still reported honestly", 1, second.inaccessibleProcesses)
+        // Readable rows are never cached away.
+        assertEquals(2, counting.reads[6 to "stat"] ?: 0)
+    }
+
+    @Test
+    fun `a collapsed process section skips the pss page-table walk`() = runBlocking {
+        val counting = CountingProcFs(reader)
+        val scanner = HostProcessScanner(counting, CpuTopologyProvider(), FakeSignals())
+
+        val snapshot = scanner.snapshot(includePss = false)
+        assertNull("PERF-006: no smaps_rollup while nothing renders it", counting.reads[6 to "smaps_rollup"])
+        val own = snapshot.processes.single { it.pid == 6 }
+        assertEquals("status VmRSS is still reported", 512L, own.memKb)
+        assertEquals(false, own.memoryIsProportional)
     }
 
     @Test

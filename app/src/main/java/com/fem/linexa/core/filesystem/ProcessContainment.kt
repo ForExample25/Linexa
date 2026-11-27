@@ -62,14 +62,55 @@ fun interface ProcessSignalSender {
 /**
  * Best-effort host PID of a JVM child process.
  *
- * The project compiles against an Android `java.lang.Process` surface where
- * the Java 9 `pid()` method is not visible to Kotlin, so this uses the same
- * reflective access as `GpuProcess` instead of a direct call. Returns null
- * when the runtime implementation does not expose a public `pid()`; callers
- * then treat the identity as unknown (fail closed) rather than guessing.
+ * Resolution order:
+ *
+ *  1. `Process.pid()` through the **public** [Process] class (never through
+ *     `process.javaClass`, whose implementation type is package-private). It
+ *     is a public API on the JVM, but Android's SDK (`android.jar`) does not
+ *     declare it: the method exists only in libcore's implementation, so a
+ *     normal app targeting a released SDK receives a hidden-API denial and
+ *     every lookup returns null. That regression made every extraction and
+ *     runtime launch on-device report "could not capture /proc identity".
+ *  2. The runtime's process description. Android's `UNIXProcess.toString()`
+ *     returns `Process[pid=<n>, hasExited=...]`; the JVM's returns
+ *     `Process[pid=<n>, exitValue=...]`. `toString()` is public on every
+ *     runtime, so it survives hidden-API enforcement. The parsed PID is
+ *     still verified against `/proc/<pid>/stat` by [captureProcessIdentity]
+ *     before anything is signalled, so a misleading description can only
+ *     fail closed.
+ *
+ * Returns null when neither path yields a positive PID; callers then treat
+ * the identity as unknown (fail closed) rather than guessing.
  */
-internal fun processHostPid(process: Process): Int? =
-    runCatching { (process.javaClass.getMethod("pid").invoke(process) as? Int) }.getOrNull()
+internal fun processHostPid(process: Process): Int? {
+    val direct = runCatching {
+        val method = Process::class.java.getMethod("pid")
+        when (val pid = method.invoke(process)) {
+            is Int -> pid
+            is Long -> pid.toInt()
+            else -> null
+        }
+    }.getOrNull()
+    if (direct != null && direct > 0) return direct
+
+    // Android: `pid()` is not in the SDK, so fall back to the public
+    // description. Never guess: an unparsable description returns null.
+    return runCatching { parseHostPidFromDescription(process.toString()) }.getOrNull()
+}
+
+/**
+ * Extracts the PID from the `toString()` shape shared by Android's
+ * `UNIXProcess` (`Process[pid=8445, hasExited=false]`) and the JVM's
+ * `ProcessImpl` (`Process[pid=8445, exitValue=0]`).
+ */
+internal fun parseHostPidFromDescription(description: String): Int? =
+    PROCESS_PID_IN_DESCRIPTION.find(description)
+        ?.groupValues
+        ?.getOrNull(1)
+        ?.toIntOrNull()
+        ?.takeIf { it > 0 }
+
+private val PROCESS_PID_IN_DESCRIPTION = Regex("""\bpid=(\d+)""")
 
 class ProcessContainment(
     private val expectedUid: Int?,

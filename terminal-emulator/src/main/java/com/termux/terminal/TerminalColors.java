@@ -14,19 +14,35 @@ public final class TerminalColors {
      */
     public final int[] mCurrentColors = new int[TextStyle.NUM_INDEXED_COLORS];
 
+    /**
+     * RN-006: the scheme THIS instance resets to. Previously every
+     * {@link TerminalColors} read the process-global {@link #COLOR_SCHEME}, so
+     * applying one workspace's colors.properties silently changed the default
+     * colors of every other workspace's terminal (and OSC 104 in them). The
+     * default constructor keeps the upstream behaviour for callers that have
+     * no per-session scheme; the emulator passes the session's own copy.
+     */
+    private final TerminalColorScheme mColorScheme;
+
     /** Create a new instance with default colors from the theme. */
     public TerminalColors() {
+        this(COLOR_SCHEME);
+    }
+
+    /** Create a new instance with default colors from the given scheme. */
+    public TerminalColors(TerminalColorScheme colorScheme) {
+        mColorScheme = (colorScheme == null) ? COLOR_SCHEME : colorScheme;
         reset();
     }
 
     /** Reset a particular indexed color with the default color from the color theme. */
     public void reset(int index) {
-        mCurrentColors[index] = COLOR_SCHEME.mDefaultColors[index];
+        mCurrentColors[index] = mColorScheme.mDefaultColors[index];
     }
 
     /** Reset all indexed colors with the default color from the color theme. */
     public void reset() {
-        System.arraycopy(COLOR_SCHEME.mDefaultColors, 0, mCurrentColors, 0, TextStyle.NUM_INDEXED_COLORS);
+        System.arraycopy(mColorScheme.mDefaultColors, 0, mCurrentColors, 0, TextStyle.NUM_INDEXED_COLORS);
     }
 
     /**

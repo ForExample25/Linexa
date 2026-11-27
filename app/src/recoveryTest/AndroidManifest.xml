@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Test-only manifest overlay, used ONLY when the build runs with
+  `-Plinexa.recoveryTest=true` (see app/build.gradle.kts).
+
+  Purpose: the post-remediation acceptance pass restores the verified
+  workspace backup into an isolated package (`com.fem.linexa.recoverytest`)
+  with `adb shell run-as`, which requires the installed app to be debuggable.
+  Setting `isDebuggable = true` in the DSL would also make AGP tell R8 not to
+  obfuscate or optimize, so the artifact would no longer exercise the
+  production shrinker output. This overlay keeps the DSL flag at `false`
+  (full R8 obfuscation + optimization, same rules as production) and turns on
+  `android:debuggable` only in the merged manifest of the isolated test
+  artifact.
+
+  This file is never referenced by a normal build: without the Gradle
+  property the release source set keeps the default manifest.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <application
+        android:debuggable="true"
+        tools:replace="android:debuggable" />
+
+</manifest>

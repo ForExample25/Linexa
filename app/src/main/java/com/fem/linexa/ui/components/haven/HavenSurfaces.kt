@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -185,9 +186,7 @@ fun HRow(
             Text(
                 text = title,
                 style = HavenType.rowTitle,
-                color = titleColor ?: h.text,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                color = titleColor ?: h.text
             )
             if (description != null) {
                 Text(
@@ -195,8 +194,10 @@ fun HRow(
                     style = if (descriptionMono) HavenType.descMono else HavenType.desc,
                     color = h.text2,
                     modifier = Modifier.padding(top = 3.dp),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+                    // Paths/IDs in mono stay to two lines; prose descriptions
+                    // show in full and let the row grow.
+                    maxLines = if (descriptionMono) 2 else Int.MAX_VALUE,
+                    overflow = if (descriptionMono) TextOverflow.Ellipsis else TextOverflow.Clip
                 )
             }
         }
@@ -349,18 +350,28 @@ fun HDialog(
         ) {
             Text(
                 text = title,
-                style = HavenType.titleLg.copy(fontSize = androidx.compose.ui.unit.TextUnit(18f, androidx.compose.ui.unit.TextUnitType.Sp), letterSpacing = com.fem.linexa.ui.theme.haven.em(-0.01f)),
+                style = HavenType.titleLg.copy(fontSize = androidx.compose.ui.unit.TextUnit(18f, androidx.compose.ui.unit.TextUnitType.Sp), letterSpacing = HavenType.tracking(-0.01f)),
                 color = h.text
             )
-            if (body != null) {
-                Text(
-                    text = body,
-                    style = HavenType.desc.copy(lineHeight = HavenType.desc.lineHeight * 1.18f),
-                    color = h.text2,
-                    modifier = Modifier.padding(top = 10.dp)
-                )
+            // A long Persian description (or a list of paths) scrolls inside
+            // the dialog instead of pushing the actions off-screen. The action
+            // row is measured outside the scroll area, so the primary button
+            // stays reachable at any font scale.
+            Column(
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                if (body != null) {
+                    Text(
+                        text = body,
+                        style = HavenType.desc.copy(lineHeight = HavenType.desc.lineHeight * 1.18f),
+                        color = h.text2,
+                        modifier = Modifier.padding(top = 10.dp)
+                    )
+                }
+                content()
             }
-            content()
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -423,7 +434,7 @@ fun HMenu(
         ) {
             Column(
                 modifier = modifier
-                    .width(172.dp)
+                    .widthIn(min = 172.dp, max = 280.dp)
                     .clip(RoundedCornerShape(HavenDim.rMenu))
                     .background(h.surface2)
                     .padding(6.dp)
@@ -432,13 +443,13 @@ fun HMenu(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(42.dp)
+                            .heightIn(min = 42.dp)
                             .clip(RoundedCornerShape(11.dp))
                             .clickable {
                                 onDismiss()
                                 item.onClick()
                             }
-                            .padding(horizontal = 13.dp),
+                            .padding(horizontal = 13.dp, vertical = 9.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(11.dp)
                     ) {
@@ -455,8 +466,7 @@ fun HMenu(
                                 fontSize = androidx.compose.ui.unit.TextUnit(14f, androidx.compose.ui.unit.TextUnitType.Sp)
                             ),
                             color = if (item.danger) h.red else h.text,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            maxLines = 2
                         )
                     }
                 }
@@ -589,7 +599,7 @@ fun HGlyph(
             style = HavenType.title.copy(
                 fontSize = androidx.compose.ui.unit.TextUnit(fontSize, androidx.compose.ui.unit.TextUnitType.Sp),
                 fontWeight = FontWeight.Bold,
-                letterSpacing = com.fem.linexa.ui.theme.haven.em(-0.02f)
+                letterSpacing = HavenType.tracking(-0.02f)
             ),
             color = if (darkText) Color(0xFF1A1C1E) else Color.White,
             maxLines = 1

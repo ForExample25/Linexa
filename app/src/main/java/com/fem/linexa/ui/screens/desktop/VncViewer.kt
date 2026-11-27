@@ -7,8 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Keyboard
+import com.fem.linexa.ui.icons.LinexaIcons
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -203,7 +202,7 @@ fun VncViewer(
                     )
             ) {
                 Icon(
-                    imageVector = Icons.Filled.Keyboard,
+                    imageVector = LinexaIcons.Keyboard,
                     contentDescription = stringResource(R.string.desktop_keyboard_toggle),
                     tint = Color.White
                 )

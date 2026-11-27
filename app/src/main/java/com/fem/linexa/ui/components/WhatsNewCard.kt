@@ -269,6 +269,7 @@ private fun CategoryPill(category: ChangeCategory) {
         ChangeCategory.IMPROVED -> R.string.whats_new_category_improved to LinexaColors.Accent
         ChangeCategory.FIXED -> R.string.whats_new_category_fixed to LinexaColors.Disk
         ChangeCategory.CHANGED -> R.string.whats_new_category_changed to LinexaColors.Warning
+        ChangeCategory.PERFORMANCE -> R.string.whats_new_category_performance to LinexaColors.Net
     }
 
     Box(

@@ -81,7 +81,7 @@ class ShortcutsViewModelTest {
         )
     }
 
-    // Test-isolation fix (2026-09-03): see HomeViewModelPreviewTest — cancel
+    // Test-isolation fix (2026-09-03): see HomeViewModelEnrichmentTest — cancel
     // leaked ViewModel scopes BEFORE resetMain so their Main-dispatcher
     // resumptions cannot hit the missing-Main fatal and poison the next
     // test class's setMain check.
@@ -612,6 +612,13 @@ class ShortcutsViewModelTest {
             execCommands += command
             return CommandResult(exitCode = 0, output = execOutput)
         }
+
+        override suspend fun execWithInput(
+            workspaceId: String,
+            rootfsPath: String,
+            command: String,
+            stdin: String
+        ): CommandResult = exec(workspaceId, rootfsPath, command)
 
         override suspend fun execStreaming(
             workspaceId: String,

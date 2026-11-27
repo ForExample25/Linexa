@@ -98,13 +98,36 @@ class ArchiveBoundaryAuditor @Inject constructor(
                         if (target.isAbsolute) {
                             // Lexical resolution against the staging root: the
                             // guest's `/` is the staging directory, so an
-                            // absolute target must stay under it.
+                            // absolute target must stay under it. This lexical
+                            // form is what gets written back as a relative
+                            // target, preserving the guest-visible path.
                             val resolved = root.resolve(targetText.trimStart('/')).normalize()
                             if (!resolved.startsWith(root)) {
                                 inspectionFailure =
                                     "archive boundary audit rejected '$linkRel' -> '$targetText': " +
                                         "absolute target escapes the staging rootfs"
                                 return FileVisitResult.TERMINATE
+                            }
+                            // RF-002: lexical containment is not enough. An
+                            // intermediate component (e.g. `p/q/r` inside the
+                            // target) may itself be a link that leaves the
+                            // root; resolve every component the way the
+                            // filesystem does before accepting the link.
+                            when (val resolution = resolveFollowingLinks(root, file, target)) {
+                                is Resolution.Escaped -> {
+                                    inspectionFailure =
+                                        "archive boundary audit rejected '$linkRel' -> '$targetText': " +
+                                            "resolved through symlinks it escapes the staging rootfs " +
+                                            "(${resolution.detail})"
+                                    return FileVisitResult.TERMINATE
+                                }
+                                is Resolution.Unresolvable -> {
+                                    inspectionFailure =
+                                        "archive boundary audit could not resolve '$linkRel' -> " +
+                                            "'$targetText': ${resolution.reason}"
+                                    return FileVisitResult.TERMINATE
+                                }
+                                is Resolution.InRoot -> Unit
                             }
                             val relativeTarget = file.parent.relativize(resolved)
                             if (relativeTarget.toString().isEmpty()) {
@@ -116,13 +139,25 @@ class ArchiveBoundaryAuditor @Inject constructor(
                             rewrites += Rewrite(file, linkRel, relativeTarget)
                         } else {
                             // Relative links are already rename-safe. Reject
-                            // only those that climb above the staging root.
-                            val resolved = file.parent.resolve(targetText).normalize()
-                            if (!resolved.startsWith(root)) {
-                                inspectionFailure =
-                                    "archive boundary audit rejected '$linkRel' -> '$targetText': " +
-                                        "relative target escapes the staging rootfs"
-                                return FileVisitResult.TERMINATE
+                            // those that climb above the staging root, and
+                            // follow any intermediate links in the target so a
+                            // composed chain cannot smuggle the resolution
+                            // outside (RF-002).
+                            when (val resolution = resolveFollowingLinks(root, file, target)) {
+                                is Resolution.Escaped -> {
+                                    inspectionFailure =
+                                        "archive boundary audit rejected '$linkRel' -> '$targetText': " +
+                                            "resolved through symlinks it escapes the staging rootfs " +
+                                            "(${resolution.detail})"
+                                    return FileVisitResult.TERMINATE
+                                }
+                                is Resolution.Unresolvable -> {
+                                    inspectionFailure =
+                                        "archive boundary audit could not resolve '$linkRel' -> " +
+                                            "'$targetText': ${resolution.reason}"
+                                    return FileVisitResult.TERMINATE
+                                }
+                                is Resolution.InRoot -> Unit
                             }
                         }
                         return FileVisitResult.CONTINUE
@@ -248,6 +283,98 @@ class ArchiveBoundaryAuditor @Inject constructor(
         return failure
     }
 
+    /**
+     * RF-002: resolves [target] component by component against the real tree,
+     * following nested symlinks, so a composed chain cannot hide an escape
+     * behind a lexically innocent `..`.
+     *
+     * Absolute targets are anchored at the staging root (the guest's `/`);
+     * relative targets start at the link's parent. A component that is itself a
+     * link has its target expanded in place, exactly as `readlink -f` would.
+     * Missing final components are allowed (a guest may create the target
+     * later); walking `..` above [root] is an escape.
+     */
+    private fun resolveFollowingLinks(root: Path, link: Path, target: Path): Resolution {
+        val queue = ArrayDeque<String>()
+        var current: Path
+        if (target.isAbsolute) {
+            current = root
+            target.toString().trimStart('/').split('/').forEach { queue.addLast(it) }
+        } else {
+            current = link.parent ?: return Resolution.Unresolvable("link has no parent directory")
+            target.toString().split('/').forEach { queue.addLast(it) }
+        }
+
+        var followedLinks = 0
+        while (queue.isNotEmpty()) {
+            when (val segment = queue.removeFirst()) {
+                "", "." -> Unit
+                ".." -> {
+                    if (current == root) {
+                        return Resolution.Escaped("target climbs above the staging root")
+                    }
+                    current = current.parent
+                        ?: return Resolution.Escaped("target climbs above the filesystem root")
+                }
+                else -> {
+                    val next = current.resolve(segment)
+                    if (Files.isSymbolicLink(next)) {
+                        followedLinks++
+                        if (followedLinks > MAX_RESOLVED_LINKS) {
+                            // A cycle is not an escape: following it fails with
+                            // ELOOP on any host tool, and a guest may
+                            // legitimately contain such a pair. Stop at the
+                            // last in-root path instead of rejecting the whole
+                            // archive; any out-of-root step was caught above.
+                            val stopped = current.normalize()
+                            return if (stopped.startsWith(root)) {
+                                Resolution.InRoot(stopped)
+                            } else {
+                                Resolution.Escaped("symlink chain left the staging root")
+                            }
+                        }
+                        val nested = try {
+                            Files.readSymbolicLink(next)
+                        } catch (e: Exception) {
+                            return Resolution.Unresolvable(
+                                "could not read nested symlink '${next.fileName}': ${e.message}"
+                            )
+                        }
+                        val nestedText = nested.toString()
+                        if (nestedText.indexOf('\u0000') >= 0) {
+                            return Resolution.Unresolvable("nested symlink target contains a NUL byte")
+                        }
+                        if (nested.isAbsolute) {
+                            current = root
+                            nestedText.trimStart('/').split('/').reversed()
+                                .forEach { queue.addFirst(it) }
+                        } else {
+                            // Relative to the directory containing `next`,
+                            // which is `current`; it stays unchanged while the
+                            // expanded segments are consumed.
+                            nestedText.split('/').reversed().forEach { queue.addFirst(it) }
+                        }
+                    } else {
+                        current = next.normalize()
+                    }
+                }
+            }
+        }
+
+        val normalized = current.normalize()
+        return if (normalized.startsWith(root)) {
+            Resolution.InRoot(normalized)
+        } else {
+            Resolution.Escaped("final target '$normalized' is outside '$root'")
+        }
+    }
+
+    private sealed interface Resolution {
+        data class InRoot(val path: Path) : Resolution
+        data class Escaped(val detail: String) : Resolution
+        data class Unresolvable(val reason: String) : Resolution
+    }
+
     private fun relative(root: Path, file: Path): String = try {
         root.relativize(file).toString().ifEmpty { "." }
     } catch (_: Exception) {
@@ -277,6 +404,7 @@ class ArchiveBoundaryAuditor @Inject constructor(
     private companion object {
         const val TAG = "ArchiveBoundaryAuditor"
         const val TEMP_PREFIX = ".linexa-rfs03-"
+        const val MAX_RESOLVED_LINKS = 40
         val ACCOUNT_FILE_NAMES = listOf("passwd", "shadow", "group", "gshadow")
     }
 }

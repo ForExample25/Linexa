@@ -11,96 +11,87 @@ import org.junit.Test
  * Desktop Modes (2026-08) — the shell-safety and arg-construction guarantees
  * of [DesktopVncAuthProvisioner].
  *
- * This is the one place a *secret* travels through a guest shell, so the
- * tests pin the two properties that make that safe: the quoting cannot be
- * escaped out of, and the generated default never contains anything the
- * quoting has to fight.
+ * Findings 031: a secret must never appear in the guest command (and therefore
+ * never in PRoot's argv). These tests pin that the password reaches
+ * `vncpasswd -f` only as stdin, and that the command's temp-file/rename shape
+ * is the hardened one (noclobber creation, 0600 from birth, atomic replace).
+ * [DesktopVncAuthProvisioner.shellSingleQuoted] is still tested because the
+ * guest paths interpolated into the command use it.
  */
 class DesktopVncAuthProvisionerTest {
 
-    // ── Quoting ──────────────────────────────────────────────────────────
+    // ── Quoting (guest paths, not the secret) ────────────────────────────
 
     @Test
-    fun plainPasswordIsSingleQuotedVerbatim() {
-        assertEquals("'linexa'", DesktopVncAuthProvisioner.shellSingleQuoted("linexa"))
+    fun plainPathIsSingleQuotedVerbatim() {
+        assertEquals("'/home/linexa'", DesktopVncAuthProvisioner.shellSingleQuoted("/home/linexa"))
     }
 
     @Test
     fun embeddedQuoteCannotEscapeTheQuoting() {
         // The '\'' dance: a quote inside the value becomes quote-escaped-quote,
         // so the shell can never see the payload as syntax.
-        assertEquals("'ab'\\''cd'", DesktopVncAuthProvisioner.shellSingleQuoted("ab'cd"))
+        assertEquals("'/a'\\''b'", DesktopVncAuthProvisioner.shellSingleQuoted("/a'b"))
+    }
+
+    // ── Finding 031: the password travels on stdin only ─────────────────
+
+    @Test
+    fun provisionRequestKeepsThePasswordOutOfTheCommand() {
+        val request = DesktopVncAuthProvisioner.provisionRequest("secret1")
+        assertFalse("the secret must never be an argv token", request.command.contains("secret1"))
+        assertEquals("secret1\n", request.stdin)
     }
 
     @Test
-    fun shellMetacharactersStayLiteralInsideTheQuotes() {
-        val wrapped = DesktopVncAuthProvisioner.shellSingleQuoted("$(reboot) `rm` ; | &&")
-        assertTrue(wrapped.startsWith("'") && wrapped.endsWith("'"))
-        assertTrue(!wrapped.contains("`rm`'"))
-    }
-
-    @Test
-    fun provisionCommandCarriesThePasswordQuotedAndGuardsVncpasswd() {
-        val command = DesktopVncAuthProvisioner.provisionCommand("secret1")
-        assertTrue(command.contains("'secret1'"))
+    fun provisionRequestGuardsVncpasswdAndUsesTheHardenedTempFileShape() {
+        val command = DesktopVncAuthProvisioner.provisionRequest("secret1").command
         assertTrue(command.contains("command -v vncpasswd >/dev/null 2>&1"))
-        assertTrue(command.contains("> ${DesktopVncAuthProvisioner.PASSWD_PATH}"))
-        assertTrue(command.contains("chmod 600 ${DesktopVncAuthProvisioner.PASSWD_PATH}"))
+        assertTrue("mode must be restrictive before the file exists", command.contains("umask 077"))
+        assertTrue("the temp open must be O_EXCL via noclobber", command.contains("set -C"))
+        assertTrue(command.contains("chmod 600"))
+        assertTrue("the destination must be replaced atomically", command.contains("mv -f"))
+        assertTrue(command.contains("'${DesktopVncAuthProvisioner.PASSWD_PATH}'"))
+        assertTrue(command.contains("'${DesktopVncAuthProvisioner.PASSWD_PATH}.tmp'"))
+        assertFalse("the old printf-in-argv transport must be gone", command.contains("printf"))
     }
 
     @Test
-    fun provisionCommandSurvivesAQuotedPassword() {
-        val command = DesktopVncAuthProvisioner.provisionCommand("ab'cd")
-        // The escaped quote must appear; the raw unescaped sequence must not.
-        assertTrue(command.contains("'ab'\\''cd'"))
-    }
-
-    // ── Pre-release audit regression pins (2026-09-02, finding S1) ──────
-    //
-    // The old template wrapped shellSingleQuoted's output in a SECOND quote
-    // pair (''…''), leaving the payload segments UNQUOTED: passwords with
-    // ';'/$()/backticks executed as shell syntax in the guest, and a
-    // password containing ' terminated the parse (unterminated string →
-    // provisioning failure → unauthenticated desktop). These tests pin the
-    // fixed single-wrapping contract.
-
-    @Test
-    fun provisionCommandInterpolatesTheQuotedTokenBarely() {
-        // The template must NOT add its own quotes around the
-        // shellSingleQuoted output: the only quoting in the command is the
-        // token's own.
-        val pw = "a;b\$(id)`rm`"
-        val command = DesktopVncAuthProvisioner.provisionCommand(pw)
-        val expectedToken = DesktopVncAuthProvisioner.shellSingleQuoted(pw)
-        assertTrue(
-            "the command must contain exactly the single-quoted token",
-            command.contains(expectedToken)
+    fun provisionRequestSurvivesHostilePasswordsWithoutInterpolatingThem() {
+        // Every hostile password is prefixed with a sentinel that cannot occur
+        // in the fixed command, so "contains" can only mean interpolation.
+        val hostile = listOf(
+            "a'b", "a;b$(id)", "x`whoami`y", "p|q", "p&q", "p\nq", "$(reboot)",
+            "&& rm -rf /", "'; reboot; '"
         )
-        // And the double-wrapped shape must be gone: ''<token>'' never appears.
-        assertTrue(
-            "the payload must not be double-wrapped",
-            !command.contains("''" + expectedToken.drop(1) + "''")
-        )
-    }
-
-    @Test
-    fun provisionedPayloadIsFullyInsideSingleQuotesForHostilePasswords() {
-        // For every hostile password, everything between the printf prefix and
-        // the vncpasswd pipe must be exactly the safe single-quoted token —
-        // no bare shell-visible segment in between.
-        val hostile = listOf("a'b", "a;b$(id)", "x`whoami`y", "p|q", "p&q", "p\nq", "\$(reboot)")
-        for (pw in hostile) {
-            val command = DesktopVncAuthProvisioner.provisionCommand(pw)
-            val token = DesktopVncAuthProvisioner.shellSingleQuoted(pw)
-            val marker = "printf '%s\\n' "
-            val start = command.indexOf(marker) + marker.length
-            val end = command.indexOf(" | vncpasswd")
-            assertEquals(
-                "payload region must be exactly the quoted token for password ${pw.replace("\n", "\\n")}",
-                token,
-                command.substring(start, end)
+        for (raw in hostile) {
+            val password = "sentinel-$raw"
+            val request = DesktopVncAuthProvisioner.provisionRequest(password)
+            assertFalse(
+                "password ${raw.replace("\n", "\\n")} leaked into argv",
+                request.command.contains("sentinel")
             )
+            assertEquals(password + "\n", request.stdin)
         }
+    }
+
+    @Test
+    fun provisionRequestQuotesADeclaredGuestHome() {
+        val request = DesktopVncAuthProvisioner.provisionRequest("secret1", "/home/a b")
+        assertTrue(
+            "a home with a space must remain one shell word",
+            request.command.contains("'/home/a b/.vnc/linexa-vnc-passwd'")
+        )
+    }
+
+    @Test
+    fun aTraversingDeclaredHomeFallsBackToTheStandardPath() {
+        // A `..` segment in metadata must not let provisioning escape the home
+        // it names.
+        assertEquals(
+            DesktopVncAuthProvisioner.PASSWD_PATH,
+            DesktopVncAuthProvisioner.passwdPathFor("/home/../../etc")
+        )
     }
 
     // ── Security args ────────────────────────────────────────────────────
@@ -137,47 +128,90 @@ class DesktopVncAuthProvisionerTest {
         assertTrue(draws.size > 1)
     }
 
-    // ── Phase 07 (OPT-SEC-004): unauthenticated-start refusal (Step B2) ──
+    // ── Phase 07 (OPT-SEC-004) + finding 007: no-auth refusal (Step B2) ──
 
     @Test
-    fun anUnauthenticatedStartOnAnXvncWithoutLocalhostSupportIsBlocked() {
-        // The server could be neither restricted to loopback (-localhost
-        // unsupported, TigerVNC < 1.11) nor authenticated (no password):
-        // reachable by any local app with no credential — refuse the start.
+    fun aNoPasswordStartIsBlockedWithoutExplicitConsent() {
+        // Finding 007: Android has no per-app loopback isolation, so a
+        // `-SecurityTypes None` server is reachable by any local app no matter
+        // how it binds. The start must fail closed until the user consents.
         assertTrue(
             DesktopVncAuthProvisioner.unauthenticatedStartBlocked(
-                localhostSupported = false,
-                securityArgs = DesktopVncAuthProvisioner.securityArgs(hasPassword = false)
+                securityArgs = DesktopVncAuthProvisioner.securityArgs(hasPassword = false),
+                allowUnauthenticated = false
             )
         )
     }
 
     @Test
-    fun anAuthenticatedStartIsNeverBlockedEvenWithoutLocalhostSupport() {
+    fun aNoPasswordStartIsAllowedOnlyWithExplicitConsent() {
+        assertFalse(
+            DesktopVncAuthProvisioner.unauthenticatedStartBlocked(
+                securityArgs = DesktopVncAuthProvisioner.securityArgs(hasPassword = false),
+                allowUnauthenticated = true
+            )
+        )
+    }
+
+    @Test
+    fun anAuthenticatedStartIsNeverBlocked() {
         // With a password the server is safe on any interface — the password
         // is the control (and the only same-device one, per Step B4).
         assertFalse(
             DesktopVncAuthProvisioner.unauthenticatedStartBlocked(
-                localhostSupported = false,
-                securityArgs = DesktopVncAuthProvisioner.securityArgs(hasPassword = true)
+                securityArgs = DesktopVncAuthProvisioner.securityArgs(hasPassword = true),
+                allowUnauthenticated = false
+            )
+        )
+        assertFalse(
+            DesktopVncAuthProvisioner.unauthenticatedStartBlocked(
+                securityArgs = DesktopVncAuthProvisioner.securityArgs(hasPassword = true),
+                allowUnauthenticated = true
+            )
+        )
+    }
+
+    // ── Finding 007: secure default on desktop enable ────────────────────
+
+    @Test
+    fun enablingWithoutAPasswordGeneratesOne() {
+        val generated = DesktopVncAuthProvisioner.passwordToGenerateOnEnable(
+            password = "",
+            unreadable = false,
+            allowUnauthenticated = false
+        )
+        assertNotNull("first enable must produce a password", generated)
+        assertEquals(DesktopVncAuthProvisioner.GENERATED_PASSWORD_LENGTH, generated!!.length)
+    }
+
+    @Test
+    fun enablingNeverOverwritesAChosenOrUnreadablePassword() {
+        assertNull(
+            "a chosen password must survive an enable",
+            DesktopVncAuthProvisioner.passwordToGenerateOnEnable(
+                password = "chosen-password",
+                unreadable = false,
+                allowUnauthenticated = false
+            )
+        )
+        assertNull(
+            "an unreadable secret must stay fail-closed until the user replaces it",
+            DesktopVncAuthProvisioner.passwordToGenerateOnEnable(
+                password = "",
+                unreadable = true,
+                allowUnauthenticated = false
             )
         )
     }
 
     @Test
-    fun aLocalhostCapableXvncIsNeverBlockedByTheRefusalPolicy() {
-        // -localhost yes restricts the server to loopback, so the deliberate
-        // no-password opt-in (P11) stays available on TigerVNC ≥ 1.11.
-        assertFalse(
-            DesktopVncAuthProvisioner.unauthenticatedStartBlocked(
-                localhostSupported = true,
-                securityArgs = DesktopVncAuthProvisioner.securityArgs(hasPassword = false)
-            )
-        )
-        assertFalse(
-            DesktopVncAuthProvisioner.unauthenticatedStartBlocked(
-                localhostSupported = true,
-                securityArgs = DesktopVncAuthProvisioner.securityArgs(hasPassword = true)
+    fun enablingRespectsExplicitNoAuthConsent() {
+        assertNull(
+            "an explicit no-auth choice must not be silently replaced",
+            DesktopVncAuthProvisioner.passwordToGenerateOnEnable(
+                password = "",
+                unreadable = false,
+                allowUnauthenticated = true
             )
         )
     }
@@ -257,5 +291,79 @@ class DesktopVncAuthProvisionerTest {
         assertNull(DesktopVncAuthProvisioner.loopbackBindViolation(null, 5901))
         assertNull(DesktopVncAuthProvisioner.loopbackBindViolation("", 5901))
         assertNull(DesktopVncAuthProvisioner.loopbackBindViolation("   \n  ", 5901))
+    }
+
+    // ── Finding 016: tri-state bind proof ────────────────────────────────
+
+    @Test
+    fun aLoopbackListenerIsTheOnlyStateThatCountsAsVerified() {
+        assertEquals(
+            DesktopVncAuthProvisioner.LoopbackProof.Verified,
+            DesktopVncAuthProvisioner.loopbackProof("LISTEN 0 5 127.0.0.1:5901 0.0.0.0:*", 5901)
+        )
+        assertEquals(
+            DesktopVncAuthProvisioner.LoopbackProof.Verified,
+            DesktopVncAuthProvisioner.loopbackProof("LISTEN 0 5 [::1]:5901 [::]:*", 5901)
+        )
+    }
+
+    @Test
+    fun blankOutputIsUnverified() {
+        assertEquals(
+            DesktopVncAuthProvisioner.LoopbackProof.Unverified,
+            DesktopVncAuthProvisioner.loopbackProof(null, 5901)
+        )
+        assertEquals(
+            DesktopVncAuthProvisioner.LoopbackProof.Unverified,
+            DesktopVncAuthProvisioner.loopbackProof("   \n ", 5901)
+        )
+    }
+
+    @Test
+    fun aListingWithoutThePortIsUnverifiedNotVerified() {
+        // A non-blank listing that never mentions the server's port proves
+        // nothing about that server — e.g. a probe race or a tool that printed
+        // only a header. Treating it as verified is exactly finding 016.
+        assertEquals(
+            DesktopVncAuthProvisioner.LoopbackProof.Unverified,
+            DesktopVncAuthProvisioner.loopbackProof(
+                "LISTEN 0 5 127.0.0.1:22 0.0.0.0:*\nLISTEN 0 5 127.0.0.1:8022 0.0.0.0:*",
+                5901
+            )
+        )
+        // A different port sharing the leading digits is still not this port.
+        assertEquals(
+            DesktopVncAuthProvisioner.LoopbackProof.Unverified,
+            DesktopVncAuthProvisioner.loopbackProof("LISTEN 0 5 0.0.0.0:59011 0.0.0.0:*", 5901)
+        )
+    }
+
+    @Test
+    fun aRoutableListenerIsAViolationWithTheOffendingAddresses() {
+        val proof = DesktopVncAuthProvisioner.loopbackProof(
+            "LISTEN 0 5 127.0.0.1:5901 0.0.0.0:*\nLISTEN 0 5 0.0.0.0:5901 0.0.0.0:*",
+            5901
+        )
+        assertTrue("expected a violation, got $proof", proof is DesktopVncAuthProvisioner.LoopbackProof.Violation)
+        assertEquals("0.0.0.0", (proof as DesktopVncAuthProvisioner.LoopbackProof.Violation).offenders)
+    }
+
+    @Test
+    fun theNarrowViolationHelperStillProjectsOnlyViolations() {
+        // The pre-tri-state API is retained for callers/tests that only need
+        // the offender string; Unverified must still project to null.
+        assertNull(
+            DesktopVncAuthProvisioner.loopbackBindViolation(
+                "LISTEN 0 5 127.0.0.1:22 0.0.0.0:*",
+                5901
+            )
+        )
+        assertEquals(
+            "0.0.0.0",
+            DesktopVncAuthProvisioner.loopbackBindViolation(
+                "LISTEN 0 5 0.0.0.0:5901 0.0.0.0:*",
+                5901
+            )
+        )
     }
 }

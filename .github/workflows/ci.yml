@@ -1,0 +1,73 @@
+# Phase 10F (OPT-BUILD-002): CI for a fresh checkout — assembleDebug plus the
+# JVM unit-test suite.
+#
+# Notes:
+# - The app uses prebuilt jniLibs; no NDK/CMake build happens here. The SDK
+#   setup installs only the compile SDK / build-tools the project uses
+#   (compileSdk 34; AGP's default build-tools 34.0.0).
+# - The JVM suite's Conscrypt-environment exclusion (Phase 10A) is conditional
+#   on aarch64 hosts; GitHub's ubuntu runners are x86_64, so the default
+#   `testDebugUnitTest` task runs the full suite there.
+# - Dependency-verification metadata is committed at
+#   `gradle/verification-metadata.xml`; Gradle fails the build on a hash or
+#   signature mismatch, which is what protects the fresh checkout.
+# - `mapping.txt` exists only for release (minified) builds; `assembleDebug`
+#   produces none, so the artifacts uploaded here are the unit-test report
+#   and the debug APK.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0'
+
+      - name: Assemble debug, run the JVM unit tests and lint
+        env:
+          # F-016: gradle.properties is tuned for a 4 GB Termux host (one
+          # worker, no daemon, 1.5 GB heap). CI runners are larger, so override
+          # the constraint here instead of weakening the local profile.
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8"
+        run: |
+          chmod +x gradlew
+          ./gradlew --daemon --parallel --max-workers=4 \
+            :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
+
+      - name: Upload lint report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-report
+          path: app/build/reports/lint-results-*.html
+
+      - name: Upload unit-test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report
+          path: app/build/reports/tests/
+
+      - name: Upload debug APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk

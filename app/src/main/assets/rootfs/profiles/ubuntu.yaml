@@ -35,7 +35,10 @@ detection:
     - bin/bash
     - usr/bin/bash
 
-supported_architectures: [arm64, armv7l, x86_64]
+# Linexa-hosted architectures only (arm64/armv7 PRoot is packaged); Ubuntu's
+# x86_64 archives are detected and rejected by ArchitectureCompatibility
+# rather than advertised as runnable here (finding 029).
+supported_architectures: [arm64, armv7l]
 
 layout:
   required_directories: [bin, etc, lib, usr, var]

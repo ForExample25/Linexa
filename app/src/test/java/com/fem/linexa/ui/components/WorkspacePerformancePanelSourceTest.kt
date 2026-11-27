@@ -58,6 +58,25 @@ class WorkspacePerformancePanelSourceTest {
     // ── rule 1: the sampler must not outlive the UI ───────────────────────────
 
     @Test
+    fun theSamplerIsForegroundGated() {
+        assertTrue(
+            "P0-5: composition alone runs while the app is backgrounded — the panel must read the lifecycle flag",
+            panel.contains("rememberIsForeground()")
+        )
+        assertTrue(
+            "start/pause must be keyed on the foreground flag",
+            Regex(
+                "LaunchedEffect\\([^)]*foreground[^)]*\\)\\s*\\{[^}]*if \\(foreground\\) viewModel\\.start\\(workspaceId, pid\\) else viewModel\\.pause\\(\\)",
+                RegexOption.DOT_MATCHES_ALL
+            ).containsMatchIn(panel)
+        )
+        assertTrue(
+            "the disposal hook must still stop the poll",
+            Regex("onDispose\\s*\\{[^}]*viewModel\\.pause\\(\\)").containsMatchIn(panel)
+        )
+    }
+
+    @Test
     fun theSamplerIsStartedAndStoppedByADisposableEffect() {
         assertTrue(
             "the panel must drive sampling from a DisposableEffect so it can stop on dispose",
@@ -82,37 +101,20 @@ class WorkspacePerformancePanelSourceTest {
     }
 
     @Test
-    fun theRefreshIntervalIsBoundedAndNamed() {
+    fun theRefreshIntervalIsNamedAndDelegatedToTheSharedConstant() {
+        // 10D: the ≥1s bound on the interval's VALUE moved to ProcessPollingTest,
+        // asserted behaviourally against the real constant (this test used to
+        // re-parse `INTERVAL_MS` out of ProcessPolling.kt's source text). What
+        // stays here is the wiring half: the VM must declare the interval as a
+        // named constant delegating to the ONE shared cadence, never its own
+        // literal.
         assertTrue(
             "the poll interval must be a named constant, not a literal delay",
             viewModel.contains("POLL_INTERVAL_MS")
         )
-        // Phase 08 (OPT-PERF-004): the VM may declare the literal itself or
-        // delegate to the one shared ProcessPolling constant — either way the
-        // effective value must be resolvable and at least 1 s.
-        val interval = Regex("POLL_INTERVAL_MS\\s*=\\s*([0-9_]+)L")
-            .find(viewModel)
-            ?.groupValues
-            ?.get(1)
-            ?.replace("_", "")
-            ?.toLongOrNull()
-            ?: run {
-                assertTrue(
-                    "POLL_INTERVAL_MS must be numeric or delegate to ProcessPolling",
-                    viewModel.contains("POLL_INTERVAL_MS = ProcessPolling.INTERVAL_MS")
-                )
-                val shared = File(moduleRoot, "src/main/java/com/fem/linexa/ui/misc/ProcessPolling.kt").readText()
-                Regex("INTERVAL_MS\\s*=\\s*([0-9_]+)L")
-                    .find(shared)
-                    ?.groupValues
-                    ?.get(1)
-                    ?.replace("_", "")
-                    ?.toLongOrNull()
-            }
-        assertTrue("POLL_INTERVAL_MS must be declared with a numeric value", interval != null)
         assertTrue(
-            "a refresh faster than 1s is not the 'low, controlled rate' this panel requires (was ${interval}ms)",
-            interval!! >= 1_000L
+            "POLL_INTERVAL_MS must delegate to the shared ProcessPolling cadence",
+            viewModel.contains("POLL_INTERVAL_MS = ProcessPolling.INTERVAL_MS")
         )
     }
 
@@ -245,28 +247,27 @@ class WorkspacePerformancePanelSourceTest {
         }
     }
 
-    // ── wiring: the panel must actually be on screen (§1.19) ──────────────────
+    // ── wiring: no sampler without a consumer (PERF-015) ──────────────────────
 
     /**
-     * §1.19's rule: a component nothing calls compiles perfectly. `XServerManager`
-     * was fully implemented and never injected; this asserts the panel has a real
-     * caller and that its predecessor is gone.
+     * PERF-015 (2026-11-25): the screen used to drive this sampler even though
+     * nothing rendered its output — `WorkspacePerformancePanel` has no
+     * production call site. That kept a `/proc` walk running every 2 s while a
+     * workspace was running and a rootfs size read on every workspace entry,
+     * for data no composable read. The sampler belongs to the surface that
+     * renders it; the screen must not start one on its own.
      */
     @Test
-    fun theWorkspaceScreenStillConsumesTheWorkspaceScopedSampler() {
-        // HAVEN rebuild: the old card is gone, but the workspace-scoped data
-        // pipeline is not — WorkspaceScreen now drives the same ViewModel and
-        // renders its content through the Haven `.pnums` row.
-        assertTrue(
-            "WorkspaceScreen must drive WorkspacePerformanceViewModel",
-            workspaceScreen.contains("WorkspacePerformanceViewModel") &&
-                workspaceScreen.contains("performanceViewModel.start(workspace.id")
+    fun theWorkspaceScreenDoesNotRunAnUnconsumedWorkspaceSampler() {
+        assertFalse(
+            "WorkspaceScreen must not start a workspace-scoped /proc poller whose result it never renders",
+            workspaceScreen.contains("performanceViewModel.start(") ||
+                workspaceScreen.contains("WorkspacePerformanceContent.from(")
         )
         assertTrue(
-            "and map its state through the pure content type",
-            workspaceScreen.contains("WorkspacePerformanceContent.from(") &&
-                workspaceScreen.contains("sample = performanceState.sample") &&
-                workspaceScreen.contains("storage = performanceState.storage")
+            "the panel that renders the metrics must still own its start/pause wiring",
+            panel.contains("viewModel.start(workspaceId, pid)") &&
+                Regex("onDispose\\s*\\{[^}]*viewModel\\.pause\\(\\)").containsMatchIn(panel)
         )
     }
 

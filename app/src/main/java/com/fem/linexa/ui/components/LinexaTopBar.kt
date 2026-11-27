@@ -17,7 +17,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.fem.linexa.R
 import com.fem.linexa.ui.components.haven.HIconCircle
@@ -79,7 +78,7 @@ fun LinexaTopBar(
                 .fillMaxWidth()
                 .padding(start = HavenDim.hdrH, end = HavenDim.hdrH, top = HavenDim.hdrV, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+            horizontalArrangement = Arrangement.spacedBy(HavenDim.headerActionGap)
         ) {
         if (onNavigationClick != null && navigationContent == null && navigationIconRes != 0) {
             HIconCircle(
@@ -93,15 +92,16 @@ fun LinexaTopBar(
         }
         Column(
             modifier = Modifier
-                .weight(1f, fill = false)
+                .weight(1f, fill = true)
                 .padding(horizontal = 4.dp)
         ) {
+            // Localized titles and subtitles wrap; the bar grows downward so a
+            // longer Persian translation stays readable instead of ending in
+            // an ellipsis. Trailing actions keep their weight and stay on-screen.
             Text(
                 text = title,
                 style = titleStyle ?: HavenType.h3.copy(fontSize = androidx.compose.ui.unit.TextUnit(20f, androidx.compose.ui.unit.TextUnitType.Sp)),
-                color = titleColor,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                color = titleColor
             )
             if (subtitle != null) {
                 Text(
@@ -110,9 +110,7 @@ fun LinexaTopBar(
                         fontSize = androidx.compose.ui.unit.TextUnit(12.5f, androidx.compose.ui.unit.TextUnitType.Sp)
                     ),
                     color = h.text2,
-                    modifier = Modifier.padding(top = 2.dp),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    modifier = Modifier.padding(top = 2.dp)
                 )
             }
         }

@@ -4,6 +4,8 @@ import com.fem.linexa.core.filesystem.RootfsWriteLock
 import com.fem.linexa.core.filesystem.RootfsWriteWindow
 import com.fem.linexa.core.logging.DebugCapture
 import com.fem.linexa.core.logging.Logger
+import com.fem.linexa.core.perf.PerfCounters
+import com.fem.linexa.core.perf.PerfTrace
 import com.fem.linexa.domain.hostinfo.HostInfoCategory
 import com.fem.linexa.domain.hostinfo.HostInfoKey
 import com.fem.linexa.domain.hostinfo.HostInfoKeyResolver
@@ -22,6 +24,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
@@ -96,6 +101,17 @@ class HostInfoRuntimeBridge(
     private var tickerJob: Job? = null
     private var tickerScope: CoroutineScope? = null
 
+    /**
+     * LINEXA-PERF-001: last content successfully written per workspace. A tick
+     * regenerates every overlay; most of them (version, vmstat, cpuinfo,
+     * meminfo, network subtree) are byte-identical because their source only
+     * changes on its own slow tier. Comparing against this map avoids the
+     * previous read-the-whole-file-back verification for those entries. A
+     * missing file still forces a write, so the memo can never mask an
+     * externally deleted overlay.
+     */
+    private val lastOverlayContent = java.util.concurrent.ConcurrentHashMap<String, Map<String, String>>()
+
     /** One-time readability verdicts; SELinux policy does not flip mid-boot. */
     private val nativeReadableCache = HashMap<String, Boolean>()
 
@@ -109,102 +125,145 @@ class HostInfoRuntimeBridge(
      * [com.fem.linexa.service.installer.GuestRootfsInitializer.ensureProcSnapshots]'s
      * contract so both call-site styles behave identically.
      */
-    suspend fun refreshProcOverlays(rootfs: File, workspaceId: String): String? {
-        val procDir = File(rootfs, "proc")
-        val procIsSymlink = runCatching { Files.isSymbolicLink(procDir.toPath()) }.getOrDefault(false)
-        if (procIsSymlink) {
-            Logger.w(TAG, "rootfs /proc is a symlink for $workspaceId — refusing to write overlays through it")
-        }
-        val hasProcDir = !procIsSymlink && procDir.isDirectory
+    suspend fun refreshProcOverlays(
+        rootfs: File,
+        workspaceId: String,
+        includeFeed: Boolean = true
+    ): String? {
+        // Phase M0-A: one async section per refresh (the snapshot provider and
+        // the write lock make this cross-thread). Duration/files are counted
+        // when capture is on; the finally still runs on every return path.
+        val overlayTrace = PerfTrace.beginAsync("Linexa:hostInfoOverlay")
+        val tickStartNanos = if (DebugCapture.isEnabled()) PerfTrace.nowNanos() else -1L
+        var filesWritten = 0
+        try {
+            val procDir = File(rootfs, "proc")
+            val procIsSymlink = runCatching { Files.isSymbolicLink(procDir.toPath()) }.getOrDefault(false)
+            if (procIsSymlink) {
+                Logger.w(TAG, "rootfs /proc is a symlink for $workspaceId — refusing to write overlays through it")
+            }
+            val hasProcDir = !procIsSymlink && procDir.isDirectory
 
-        // The full-feed pull runs EVEN without a /proc dir so the conf feed
-        // still updates (Phase 15 contract); category TTLs keep repeats cheap.
-        val snapshot = hostSystemInfoProvider.snapshotOf(BRIDGE_CATEGORIES)
-
-        val needEnvironmentMode = snapshot.cpu.totalStatTicks == null
-        val envSnapshot = if (needEnvironmentMode) {
-            envTickSampler?.sampleOnce(
-                snapshot.cpu.affinityCoreIndices
-                    ?: List(snapshot.cpu.environmentVisibleCores) { it }
+            // LINEXA-PERF-001: the TIMER path must never bypass the provider
+            // cache. `cachedSnapshotOf` collects only categories whose TTL has
+            // expired; on the 2 s tick that is normally CPU alone. Categories
+            // that only feed `/run/linexa/hostinfo.conf` are requested on feed
+            // ticks (see FEED_REFRESH_EVERY_N_TICKS), not on every overlay tick.
+            val overlayCategories = buildSet {
+                add(HostInfoCategory.CPU)
+                // meminfo/swaps overlays only exist where native passthrough
+                // is denied; asking for them unconditionally would pay for a
+                // meminfo collection the overlay does not consume.
+                if (hasProcDir && !isNativeReadable("/proc/meminfo")) {
+                    add(HostInfoCategory.MEMORY)
+                    add(HostInfoCategory.SWAP)
+                }
+            }
+            val snapshot = hostSystemInfoProvider.cachedSnapshotOf(
+                if (includeFeed) BRIDGE_CATEGORIES else overlayCategories
             )
-        } else {
-            null
-        }
 
-        if (hasProcDir) {
-            val meminfoReadable = isNativeReadable("/proc/meminfo")
-            val cpuinfoReadable = isNativeReadable("/proc/cpuinfo")
-            val netDevReadable = isNativeReadable("/proc/net/dev")
-
-            // Issue #9: the workspace's own uptime, from the real recorded
-            // session start. Only a session that is actually running reports
-            // it (an exec-path refresh has no session → host uptime stays).
-            val workspaceStartedAt = sessionStartProvider(workspaceId)
-            val workspaceUptimeSeconds = workspaceStartedAt?.let { started ->
-                java.time.Duration.between(started, java.time.Instant.now()).seconds
-                    .coerceAtLeast(0L)
+            val needEnvironmentMode = snapshot.cpu.totalStatTicks == null
+            val envSnapshot = if (needEnvironmentMode) {
+                envTickSampler?.sampleOnce(
+                    snapshot.cpu.affinityCoreIndices
+                        ?: List(snapshot.cpu.environmentVisibleCores) { it }
+                )
+            } else {
+                null
             }
 
-            val contents = LinkedHashMap<String, String>()
-            contents["stat"] = ProcSnapshotContentFactory.statContent(
-                cpu = snapshot.cpu,
-                device = snapshot.device,
-                envTicks = envSnapshot
-            )
-            contents["uptime"] = ProcSnapshotContentFactory.uptimeContent(
-                snapshot.device,
-                workspaceUptimeSeconds
-            )
-            contents["loadavg"] = ProcSnapshotContentFactory.loadavgContent(snapshot.cpu, envSnapshot)
-            contents["version"] = ProcSnapshotContentFactory.versionContent()
-            contents["vmstat"] = ProcSnapshotContentFactory.vmstatContent()
+            if (hasProcDir) {
+                val meminfoReadable = isNativeReadable("/proc/meminfo")
+                val cpuinfoReadable = isNativeReadable("/proc/cpuinfo")
+                val netDevReadable = isNativeReadable("/proc/net/dev")
 
-            // Conditional fallbacks — native richer ⇒ never shadowed.
-            if (!meminfoReadable) {
-                ProcSnapshotContentFactory.meminfoContent(snapshot.memory, snapshot.swap)
-                    .takeIf { it.isNotEmpty() }?.let { contents["meminfo"] = it }
-                ProcSnapshotContentFactory.swapsContent(snapshot.swap, snapshot.memory.zram)
-                    .takeIf { it.isNotEmpty() }?.let { contents["swaps"] = it }
-            }
-            if (!cpuinfoReadable) {
-                ProcSnapshotContentFactory.cpuinfoContent(snapshot.cpu)
-                    .takeIf { it.isNotEmpty() }?.let { contents["cpuinfo"] = it }
-            }
-            // Network telemetry follows the SAME policy ladder as
-            // meminfo/swaps/cpuinfo: passthrough stays authoritative when the
-            // kernel serves it; synthesis covers only the denied case.
-            if (!netDevReadable) {
-                contents["net/dev"] = ProcSnapshotContentFactory.netDevContent(snapshot.network)
-                contents["net/route"] = ProcSnapshotContentFactory.netRouteContent(snapshot.network)
-                if (snapshot.network.interfaces.any { it.ipv6WithPrefix.isNotEmpty() }) {
-                    contents["net/if_inet6"] = ProcSnapshotContentFactory.ifInet6Content(snapshot.network)
+                // Issue #9: the workspace's own uptime, from the real recorded
+                // session start. Only a session that is actually running reports
+                // it (an exec-path refresh has no session → host uptime stays).
+                val workspaceStartedAt = sessionStartProvider(workspaceId)
+                val workspaceUptimeSeconds = workspaceStartedAt?.let { started ->
+                    java.time.Duration.between(started, java.time.Instant.now()).seconds
+                        .coerceAtLeast(0L)
+                }
+
+                val contents = LinkedHashMap<String, String>()
+                contents["stat"] = ProcSnapshotContentFactory.statContent(
+                    cpu = snapshot.cpu,
+                    device = snapshot.device,
+                    envTicks = envSnapshot
+                )
+                contents["uptime"] = ProcSnapshotContentFactory.uptimeContent(
+                    snapshot.device,
+                    workspaceUptimeSeconds
+                )
+                contents["loadavg"] = ProcSnapshotContentFactory.loadavgContent(snapshot.cpu, envSnapshot)
+                contents["version"] = ProcSnapshotContentFactory.versionContent()
+                contents["vmstat"] = ProcSnapshotContentFactory.vmstatContent()
+
+                // Conditional fallbacks — native richer ⇒ never shadowed.
+                if (!meminfoReadable) {
+                    ProcSnapshotContentFactory.meminfoContent(snapshot.memory, snapshot.swap)
+                        .takeIf { it.isNotEmpty() }?.let { contents["meminfo"] = it }
+                    ProcSnapshotContentFactory.swapsContent(snapshot.swap, snapshot.memory.zram)
+                        .takeIf { it.isNotEmpty() }?.let { contents["swaps"] = it }
+                }
+                if (!cpuinfoReadable) {
+                    ProcSnapshotContentFactory.cpuinfoContent(snapshot.cpu)
+                        .takeIf { it.isNotEmpty() }?.let { contents["cpuinfo"] = it }
+                }
+                // Network telemetry follows the SAME policy ladder as
+                // meminfo/swaps/cpuinfo: passthrough stays authoritative when the
+                // kernel serves it; synthesis covers only the denied case.
+                if (!netDevReadable) {
+                    contents["net/dev"] = ProcSnapshotContentFactory.netDevContent(snapshot.network)
+                    contents["net/route"] = ProcSnapshotContentFactory.netRouteContent(snapshot.network)
+                    if (snapshot.network.interfaces.any { it.ipv6WithPrefix.isNotEmpty() }) {
+                        contents["net/if_inet6"] = ProcSnapshotContentFactory.ifInet6Content(snapshot.network)
+                    }
+                }
+
+                // Guard against drift between THIS factory's names and the
+                // launcher's authoritative set: an extra/missing name here would
+                // silently break the bind pairing ("keys MUST be a subset"
+                // invariant of R-6, extended verbatim to the net subtree).
+                val knownNames = PRootLauncher.PROC_BIND_OVER_RELATIVE_PATHS
+                require(contents.keys.all { key ->
+                    key in knownNames || "net/${key.removePrefix("net/")}" in knownNames
+                }) {
+                    "proc overlay names diverged from PRootLauncher.PROC_BIND_OVER_RELATIVE_PATHS"
+                }
+
+                val writeFailure = synchronized(RootfsWriteLock.monitor) {
+                    // Phase M0-A: same-thread synchronous section around the
+                    // hidden-bind-source write set (no suspension inside).
+                    val writeTrace = PerfTrace.beginSync("Linexa:hostInfoOverlayWrite")
+                    try {
+                        writeProcOverlaysLocked(procDir, contents, workspaceId)
+                    } finally {
+                        PerfTrace.endSync(writeTrace)
+                    }
+                }
+                if (writeFailure != null) return writeFailure
+                filesWritten += contents.size
+
+                if (DebugCapture.isEnabled()) {
+                    Logger.d(TAG, "host /proc overlays refreshed for $workspaceId (${contents.size} files)")
                 }
             }
 
-            // Guard against drift between THIS factory's names and the
-            // launcher's authoritative set: an extra/missing name here would
-            // silently break the bind pairing ("keys MUST be a subset"
-            // invariant of R-6, extended verbatim to the net subtree).
-            val knownNames = PRootLauncher.PROC_BIND_OVER_RELATIVE_PATHS
-            require(contents.keys.all { key ->
-                key in knownNames || "net/${key.removePrefix("net/")}" in knownNames
-            }) {
-                "proc overlay names diverged from PRootLauncher.PROC_BIND_OVER_RELATIVE_PATHS"
+            if (includeFeed) {
+                val feedFailure = writeHostInfoFeed(rootfs, workspaceId, snapshot)
+                if (feedFailure != null) return feedFailure
+                filesWritten += 1
             }
-
-            val writeFailure = synchronized(RootfsWriteLock.monitor) {
-                writeProcOverlaysLocked(procDir, contents, workspaceId)
-            }
-            if (writeFailure != null) return writeFailure
-
-            if (DebugCapture.isEnabled()) {
-                Logger.d(TAG, "host /proc overlays refreshed for $workspaceId (${contents.size} files)")
+            return null
+        } finally {
+            PerfTrace.endAsync("Linexa:hostInfoOverlay", overlayTrace)
+            if (tickStartNanos >= 0L) {
+                PerfCounters.overlayTick(PerfTrace.nowNanos() - tickStartNanos, filesWritten)
             }
         }
-
-        val feedFailure = writeHostInfoFeed(rootfs, workspaceId, snapshot)
-        if (feedFailure != null) return feedFailure
-        return null
     }
 
     /**
@@ -261,7 +320,14 @@ class HostInfoRuntimeBridge(
             }
 
             if (!skipWrites) {
-                for ((relativeName, content) in contents) {
+                // LINEXA-PERF-001: write only the overlays whose content moved
+                // (or that are missing on disk); identical ones are verified
+                // with a single metadata check instead of a full read-back.
+                val previous = lastOverlayContent[workspaceId].orEmpty()
+                val pending = contents.entries.filter { (name, content) ->
+                    previous[name] != content || !File(procDir, ".$name").isFile
+                }
+                for ((relativeName, content) in pending) {
                     try {
                         ReadOnlyOverlayFile.write(File(procDir, ".$relativeName"), content)
                     } catch (e: Exception) {
@@ -270,6 +336,9 @@ class HostInfoRuntimeBridge(
                         )
                         break
                     }
+                }
+                if (failure == null) {
+                    lastOverlayContent[workspaceId] = contents
                 }
             }
         } catch (e: Exception) {
@@ -327,7 +396,12 @@ class HostInfoRuntimeBridge(
                     append("uptime.workspace.seconds=$seconds\n")
                 }
             }
-            ReadOnlyOverlayFile.write(File(runLinexa, HOSTINFO_FEED_NAME), body)
+            val feedTrace = PerfTrace.beginSync("Linexa:hostInfoOverlayWrite")
+            try {
+                ReadOnlyOverlayFile.write(File(runLinexa, HOSTINFO_FEED_NAME), body)
+            } finally {
+                PerfTrace.endSync(feedTrace)
+            }
             null
         } catch (e: Exception) {
             val msg = "could not write hostinfo feed for workspace: ${e.message}"
@@ -342,30 +416,74 @@ class HostInfoRuntimeBridge(
      * to [OVERLAY_REFRESH_MS] so guest-side delta tools (htop samples every
      * ~1.5 s over two consecutive WRITES) see moving counters instead of
      * frozen ones — the exact mechanical cause of the audited "CPU% = N/A".
-     * Cost stays bounded: category TTLs gate re-collection, and the tick
-     * work itself is a handful of small atomic file writes.
+     *
+     * **PERF-013 (2026-11-23):** the refresh loop is driven by the session
+     * state itself, not by an unconditional `while (true)`. The job suspends on
+     * [sessionStates] and only starts ticking when the set of `Running`
+     * workspaces becomes non-empty; when the last one stops, `collectLatest`
+     * cancels the loop and the job is idle again. `collectLatest` also means a
+     * state change (a second workspace starting, or one stopping) cancels the
+     * in-flight pass and restarts from the new set immediately rather than
+     * waiting out the delay.
+     *
+     * **LINEXA-PERF-001 (2026-11-26):** three bounded changes to the same
+     * mechanism, because the audit measured this loop as the app's entire
+     * idle cost (~4.5–6.7 % of one core, background included):
+     *
+     *  1. [foreground] (when supplied) selects [BACKGROUND_REFRESH_MS] while
+     *     no Linexa activity is visible. Guest `/proc` remains readable and
+     *     consistent — counters are cumulative, so a moved window never
+     *     fabricates a value — but the app no longer pays 2 s cadence for a
+     *     guest nobody can see. Returning to the foreground restarts the loop
+     *     through `collectLatest` and refreshes immediately.
+     *  2. The structured `/run/linexa/hostinfo.conf` feed (which needs every
+     *     host category) is rewritten once per
+     *     [FEED_REFRESH_EVERY_N_TICKS] ticks instead of on every tick; the
+     *     `/proc` files that guest tools actually diff stay on the fast
+     *     cadence.
+     *  3. Collection is TTL-gated (`cachedSnapshotOf`) and byte-identical
+     *     overlays are skipped without a read-back, so a tick no longer
+     *     performs a full host collection plus eight file reads.
      */
     @JvmOverloads
-    fun startOverlayTicker(sessionStates: StateFlow<Map<String, RuntimeState>>, refreshMs: Long = OVERLAY_REFRESH_MS) {
+    fun startOverlayTicker(
+        sessionStates: StateFlow<Map<String, RuntimeState>>,
+        refreshMs: Long = OVERLAY_REFRESH_MS,
+        foreground: StateFlow<Boolean>? = null
+    ) {
         synchronized(tickerLock) {
             if (tickerJob?.isActive == true) return
             val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
             tickerScope = scope
+            val runningFlow = sessionStates
+                .map { states -> states.filterValues { it is RuntimeState.Running }.keys.toSet() }
+                .distinctUntilChanged()
+            val gated = if (foreground == null) {
+                runningFlow.map { running -> running to true }
+            } else {
+                kotlinx.coroutines.flow.combine(
+                    runningFlow,
+                    foreground
+                ) { running, visible -> running to visible }
+            }
             tickerJob = scope.launch {
-                while (true) {
-                    // Single read per tick: consecutive .value reads could race
-                    // a state flip and mix keys across two maps.
-                    val states = sessionStates.value
-                    val runningWorkspaces = states.keys.filter { id ->
-                        states[id] is RuntimeState.Running
+                gated.collectLatest { (runningWorkspaces, visible) ->
+                    if (runningWorkspaces.isEmpty()) return@collectLatest
+                    val cadence = if (visible) refreshMs else BACKGROUND_REFRESH_MS
+                    var tick = 0L
+                    while (true) {
+                        // Feed ticks pay the full host collection; overlay-only
+                        // ticks collect just what their files render.
+                        val includeFeed = tick % FEED_REFRESH_EVERY_N_TICKS == 0L
+                        for (workspaceId in runningWorkspaces) {
+                            val rootfs = fileManager.getRootfsPath(workspaceId)
+                            if (!rootfs.isDirectory) continue
+                            runCatching { refreshProcOverlays(rootfs, workspaceId, includeFeed) }
+                                .onFailure { Logger.w(TAG, "overlay refresh failed for $workspaceId: ${it.message}") }
+                        }
+                        tick++
+                        delay(cadence)
                     }
-                    for (workspaceId in runningWorkspaces) {
-                        val rootfs = fileManager.getRootfsPath(workspaceId)
-                        if (!rootfs.isDirectory) continue
-                        runCatching { refreshProcOverlays(rootfs, workspaceId) }
-                            .onFailure { Logger.w(TAG, "overlay refresh failed for $workspaceId: ${it.message}") }
-                    }
-                    delay(refreshMs)
                 }
             }
         }
@@ -380,6 +498,7 @@ class HostInfoRuntimeBridge(
             tickerScope = null
         }
         // Drop accumulated pass state — the next session re-seeds cleanly.
+        lastOverlayContent.clear()
         envTickSampler?.reset()
     }
 
@@ -493,6 +612,25 @@ class HostInfoRuntimeBridge(
          * here ("no unnecessary background polling" rule).
          */
         const val OVERLAY_REFRESH_MS = 2_000L
+
+        /**
+         * LINEXA-PERF-001: cadence while no Linexa activity is visible. The
+         * guest keeps receiving monotonic counters; only the visible-window
+         * resolution changes. 15 s is still far inside every guest tool's
+         * tolerance (fifteen consecutive htop refreshes share one window and
+         * the average is identical), while cutting background wake-ups by
+         * 7.5×.
+         */
+        const val BACKGROUND_REFRESH_MS = 15_000L
+
+        /**
+         * LINEXA-PERF-001: `/run/linexa/hostinfo.conf` carries slow-moving
+         * identity/capacity facts; rewriting it (and paying the full host
+         * collection it needs) every tenth of a second is waste. It is
+         * refreshed on the first tick and every 5th tick thereafter (10 s at
+         * the foreground cadence).
+         */
+        const val FEED_REFRESH_EVERY_N_TICKS = 5L
     }
 }
 
@@ -507,6 +645,10 @@ class HostInfoRuntimeBridge(
  */
 internal object ReadOnlyOverlayFile {
     fun write(target: File, content: String) {
+        // P0-1: the overlay ticker re-renders the same small files every two
+        // seconds; a byte-equal, correctly-moded file needs no write/rename
+        // pair. Content that actually changed (uptime, counters) still writes.
+        if (isCurrent(target, content)) return
         val tmp = File(target.parentFile, "${target.name}.hinfo-tmp")
         tmp.writeText(content)
         if (!tmp.renameTo(target)) {
@@ -522,6 +664,21 @@ internal object ReadOnlyOverlayFile {
                 target.toPath(),
                 setOf(PosixFilePermission.OWNER_READ)
             )
+        }
+    }
+
+    private fun isCurrent(target: File, content: String): Boolean {
+        return try {
+            if (!target.isFile || Files.isSymbolicLink(target.toPath())) return false
+            val expected = content.toByteArray(Charsets.UTF_8)
+            if (target.length() != expected.size.toLong() ||
+                !target.readBytes().contentEquals(expected)
+            ) {
+                return false
+            }
+            Files.getPosixFilePermissions(target.toPath()) == setOf(PosixFilePermission.OWNER_READ)
+        } catch (_: Exception) {
+            false
         }
     }
 }

@@ -89,6 +89,7 @@ class TarRootFsExporterTest {
         embeddedConfig: ByteArray? = null,
         expectedBytes: Long? = null,
         verifyInput: (() -> InputStream?)? = null,
+        credentialPolicy: ExportCredentialPolicy = ExportCredentialPolicy.REMOVE_CREDENTIALS,
         onProgress: suspend (ExportProgress) -> Unit = {},
     ): Pair<ExportResult, ByteArray> {
         val output = ByteArrayOutputStream()
@@ -100,6 +101,7 @@ class TarRootFsExporterTest {
                     verifyInput = verifyInput,
                     embeddedConfig = embeddedConfig,
                     expectedBytes = expectedBytes,
+                    credentialPolicy = credentialPolicy,
                 ),
                 onProgress
             )
@@ -568,6 +570,105 @@ class TarRootFsExporterTest {
         assertEquals(0L, result.entryCount)
         assertTrue("even an empty archive has a gzip container", bytes.size > 20)
         assertTrue(readBack(bytes).isEmpty())
+    }
+
+    // ── credential policy (finding 022) ─────────────────────────────────────
+
+    /** A guest tree carrying every credential shape and its near-misses. */
+    private fun populateCredentialTree() {
+        write("home/linexa/.vnc/linexa-vnc-passwd", "vnc-secret\n", "rw-------")
+        write("home/linexa/.vnc/config", "geometry=1280x720\n", "rw-r--r--")
+        write("home/linexa/.vnc/notes.txt", "keep\n", "rw-r--r--")
+        write("home/linexa/.ssh/id_ed25519", "PRIVATE KEY\n", "rw-------")
+        write("home/linexa/.ssh/id_ed25519.pub", "ssh-ed25519 AAAA\n", "rw-r--r--")
+        write("home/linexa/.ssh/known_hosts", "host key\n", "rw-r--r--")
+        write("home/linexa/.gnupg/pubring.kbx", "keyring\n", "rw-r--r--")
+        write("home/linexa/.gnupg/private-keys-v1.d/key.key", "private\n", "rw-------")
+        write("home/linexa/notes/vnc-passwd.txt", "not a credential\n", "rw-r--r--")
+    }
+
+    @Test
+    fun removeCredentialsPolicyOmitsVncSshPrivateKeysAndGnupg() {
+        populateCredentialTree()
+        val (result, bytes) = export(credentialPolicy = ExportCredentialPolicy.REMOVE_CREDENTIALS)
+
+        assertTrue("expected Success, got $result", result is ExportResult.Success)
+        result as ExportResult.Success
+        val names = readBack(bytes).map { it.name }.toSet()
+
+        assertFalse(
+            "the VNC password must not be in the archive",
+            "home/linexa/.vnc/linexa-vnc-passwd" in names
+        )
+        assertFalse(
+            "the SSH private key must not be in the archive",
+            "home/linexa/.ssh/id_ed25519" in names
+        )
+        assertFalse(
+            "the GnuPG home directory must not be in the archive",
+            "home/linexa/.gnupg/" in names
+        )
+        assertFalse(
+            "no descendant of the GnuPG home may be in the archive",
+            names.any { it.startsWith("home/linexa/.gnupg/") }
+        )
+
+        // Near-misses survive: remove mode is not a blanket name filter.
+        assertTrue("home/linexa/.vnc/config" in names)
+        assertTrue("home/linexa/.vnc/notes.txt" in names)
+        assertTrue("the SSH public key is not a secret", "home/linexa/.ssh/id_ed25519.pub" in names)
+        assertTrue("home/linexa/.ssh/known_hosts" in names)
+        assertTrue("a file whose name merely contains passwd stays", "home/linexa/notes/vnc-passwd.txt" in names)
+
+        assertEquals(
+            setOf(
+                "home/linexa/.vnc/linexa-vnc-passwd",
+                "home/linexa/.ssh/id_ed25519",
+                "home/linexa/.gnupg",
+            ),
+            result.removedCredentials.toSet()
+        )
+        assertTrue(
+            "intentional omissions are not failures: ${result.skippedEntries}",
+            result.skippedEntries.isEmpty()
+        )
+    }
+
+    @Test
+    fun includeCredentialsPolicyKeepsEveryCredentialFile() {
+        populateCredentialTree()
+        val (result, bytes) = export(credentialPolicy = ExportCredentialPolicy.INCLUDE_CREDENTIALS)
+
+        assertTrue("expected Success, got $result", result is ExportResult.Success)
+        result as ExportResult.Success
+        val names = readBack(bytes).map { it.name }.toSet()
+
+        assertTrue("home/linexa/.vnc/linexa-vnc-passwd" in names)
+        assertTrue("home/linexa/.ssh/id_ed25519" in names)
+        assertTrue("home/linexa/.ssh/id_ed25519.pub" in names)
+        assertTrue("home/linexa/.gnupg/" in names)
+        assertTrue("home/linexa/.gnupg/private-keys-v1.d/key.key" in names)
+        assertTrue(
+            "as-is mode removes nothing",
+            result.removedCredentials.isEmpty()
+        )
+    }
+
+    @Test
+    fun anExportRequestWithNoPolicyRemovesCredentialsByDefault() {
+        // The UI always decides explicitly, but a future non-UI caller that
+        // forgets must still fail safe rather than leak guest secrets.
+        populateCredentialTree()
+        val output = ByteArrayOutputStream()
+        val result = runBlocking {
+            exporter.export(ExportRequest(rootfs = rootfs, output = output))
+        }
+
+        assertTrue("expected Success, got $result", result is ExportResult.Success)
+        val names = readBack(output.toByteArray()).map { it.name }.toSet()
+        assertFalse("home/linexa/.vnc/linexa-vnc-passwd" in names)
+        assertFalse("home/linexa/.ssh/id_ed25519" in names)
+        assertFalse(names.any { it.startsWith("home/linexa/.gnupg/") })
     }
 
     // ── helpers ─────────────────────────────────────────────────────────────

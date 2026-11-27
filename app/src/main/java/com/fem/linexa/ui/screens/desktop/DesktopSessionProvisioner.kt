@@ -91,11 +91,16 @@ object DesktopSessionProvisioner {
     )
 
     /**
-     * Probe that locates a desktop session inside the guest. `which` is given
-     * every candidate at once (one exec, same shape as
-     * [com.fem.linexa.domain.packagemanager.PackageManagerDetector.PROBE_COMMAND])
-     * and prints one absolute path per hit; [parseSessionPath] applies the
-     * preference order, so the probe deliberately does **not** `head -1`.
+     * Probe that locates a desktop session inside the guest. One
+     * `command -v` per candidate runs in a single loop, and prints one
+     * absolute path per hit; [parseSessionPath] applies the preference order,
+     * so the probe deliberately does **not** stop at the first hit.
+     *
+     * `command -v` is a POSIX builtin (BusyBox and dash both have it), and
+     * POSIX only defines it for one name at a time — the loop is required,
+     * not stylistic. A declared session binary is shell-quoted even though
+     * §1.14 validation already rejects whitespace, so no value can ever alter
+     * the command's structure.
      *
      * This is the no-declaration form of [detectSessionCommand] — that
      * function is the single source of truth so a declared session binary and
@@ -107,10 +112,10 @@ object DesktopSessionProvisioner {
      * The preferred session's absolute guest path from [DETECT_SESSION_COMMAND]'s
      * stdout, or null when the guest has no usable X client.
      *
-     * Ordering comes from [SESSION_CANDIDATES], never from the order `which`
-     * happened to print — `which` echoes results in *argument* order, which is
-     * the same list, but a guest whose `which` reorders or whose PATH yields
-     * duplicates must still produce a deterministic answer.
+     * Ordering comes from [SESSION_CANDIDATES], never from the order the
+     * probe happened to print — the probe emits paths in candidate order, which
+     * is the same list, but a guest whose PATH yields duplicates must still
+     * produce a deterministic answer.
      *
      * A line that is not an absolute path, or that contains whitespace, is
      * ignored rather than returned: it would be handed to the daemon host as a
@@ -143,20 +148,25 @@ object DesktopSessionProvisioner {
      * session binary. A declared `linexa.desktop.session` may name something
      * outside [SESSION_CANDIDATES] entirely (a custom session script is a
      * legitimate thing for a rootfs author to ship), so it has to be added to
-     * the `which` argument list or the probe would never see it.
+     * the probe list or the probe would never see it.
      *
      * [declaredSession] is validated by [RootFsMetadataValidator] to a single
      * whitespace-free token before it ever reaches here (§1.14) — this function
-     * re-checks that rather than assuming, because it is the point where the
-     * value enters a command string.
+     * re-checks that rather than assuming, and then single-quotes every token,
+     * because it is the point where the value enters a command string.
      */
     fun detectSessionCommand(declaredSession: String? = null): String {
         val extra = declaredSession
             ?.takeIf { it.isNotBlank() && it.none { ch -> ch.isWhitespace() } && it !in SESSION_CANDIDATES }
             ?.let { listOf(it) }
             .orEmpty()
-        return "which ${(extra + SESSION_CANDIDATES).joinToString(" ")} 2>/dev/null"
+        val names = (extra + SESSION_CANDIDATES).joinToString(" ") { shellQuote(it) }
+        return "for linexa_session in $names; do command -v \"\$linexa_session\"; done 2>/dev/null"
     }
+
+    /** POSIX single-quote a token, including embedded quotes. */
+    private fun shellQuote(value: String): String =
+        "'" + value.replace("'", "'\\''") + "'"
 
     /**
      * §1.118: the basenames a declared `linexa.desktop` block prefers, most

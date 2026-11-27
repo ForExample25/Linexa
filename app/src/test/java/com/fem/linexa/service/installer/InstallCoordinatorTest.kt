@@ -433,6 +433,45 @@ class InstallCoordinatorTest {
             repository.getByIdSync(workspaceId)!!.attributes.containsKey(DownloadService.ATTR_DISTRO_ID)
         )
     }
+
+    @Test
+    fun cancellingDuringInstallingStopsTheJobAndDeletesTheUncommittedWorkspace() {
+        setUpCoordinator()
+        val workspaceId = prepareToReady()
+        val gate = CompletableDeferred<Unit>()
+        installer.installGate = gate
+
+        coordinator.confirm("CancelDistro")
+        runBlocking {
+            awaitState { it is InstallFlowState.Installing }
+            // The installer is now blocked inside install(); cancel must
+            // reach it and the coordinator must leave the running state at
+            // once (a spinner that keeps running after Cancel is the bug).
+            coordinator.cancel()
+            assertEquals(
+                "the flow must return to Idle immediately after Cancel",
+                InstallFlowState.Idle,
+                coordinator.state.value
+            )
+            // RF-011: the workspace tree and row are removed only after the
+            // cancelled job has actually stopped.
+            withTimeout(10_000) {
+                while (fileManager.getWorkspaceBasePath(workspaceId).exists() ||
+                    repository.getByIdSync(workspaceId) != null
+                ) {
+                    delay(10)
+                }
+            }
+            assertFalse(
+                "the uncommitted workspace directory must be gone",
+                fileManager.getWorkspaceBasePath(workspaceId).exists()
+            )
+            assertTrue(
+                "the uncommitted workspace row must be gone",
+                repository.getByIdSync(workspaceId) == null
+            )
+        }
+    }
 }
 
 /** In-memory [WorkspaceRepository] for coordinator tests. */
@@ -503,6 +542,13 @@ private class FakeRootFsInstaller(
     var analyzeGate: CompletableDeferred<Unit>? = null
 
     /**
+     * RF-010/RF-011: suspends [install] so a test can cancel while the job is
+     * genuinely in flight. `await()` is a cancellation point, which is the
+     * same cooperation point the real extractor now has.
+     */
+    var installGate: CompletableDeferred<Unit>? = null
+
+    /**
      * §1.118/§1.119: what the archive declared about itself. Defaults to
      * `UNDECLARED`, the shape of every third-party rootfs tarball, so the
      * pre-existing tests keep exercising the probe path.
@@ -551,6 +597,7 @@ private class FakeRootFsInstaller(
         analysis: AnalyzeResult.Success,
         onProgress: suspend (InstallProgress) -> Unit
     ): InstallResult {
+        installGate?.await()
         // §1.88: checkpoint-driven extraction fractions (0→1), then the
         // byte-less phase transitions for the fixed final bands. Small delays
         // so a StateFlow collector observes each distinct value.
@@ -566,7 +613,10 @@ private class FakeRootFsInstaller(
             for (dir in listOf("bin", "etc", "lib", "usr", "var")) {
                 File(rootfs, dir).mkdirs()
             }
-            File(rootfs, "bin/sh").writeText("#!/bin/sh\n")
+            File(rootfs, "bin/sh").apply {
+                writeText("#!/bin/sh\n")
+                setExecutable(true)
+            }
         }
         return InstallResult.Success(analysis.sha256)
     }

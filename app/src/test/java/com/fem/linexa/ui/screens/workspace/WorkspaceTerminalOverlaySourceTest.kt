@@ -127,13 +127,13 @@ class WorkspaceTerminalOverlaySourceTest {
         assertTrue(
             "and the panel must paint the surface opaque, keyboard-aware, always dark",
             panel.contains(".background(h.term)") &&
-                panel.contains(".imePadding()")
+                panel.contains(".windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))")
         )
         assertTrue(
-            "the shared Haven surface keeps its own opaque/IME contract for the " +
-                "other terminal host",
+            "the shared Haven surface keeps its own opaque/bottom-inset contract for " +
+                "the other terminal host",
             havenTerminal.contains(".background(h.term)") &&
-                havenTerminal.contains(".imePadding()")
+                havenTerminal.contains(".windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))")
         )
     }
 
@@ -289,8 +289,37 @@ class WorkspaceTerminalOverlaySourceTest {
             panel.contains("terminalsViewModel.consumeCreatedTerminal()")
         )
         assertTrue(
-            "a closed-but-with-siblings terminal must fall back to a live one",
+            "the ViewModel, not a Compose fallback effect, owns live-sibling fallback",
+            source("src/main/java/com/fem/linexa/ui/screens/terminal/TerminalsViewModel.kt")
+                .contains("TerminalSelectionSource.FallbackSelection")
+        )
+    }
+
+    /**
+     * P0 regression: the two Compose effects used to mirror the desktop's
+     * active id into the hoisted id and restore it back on every change. With
+     * stale snapshots they formed a stable ~30 Hz oscillation between the
+     * previous terminal and a newly requested Root Shell. Selection now has
+     * ONE writer (the ViewModel) and the hoisted id is a one-way save mirror.
+     */
+    @Test
+    fun thePanelHasNoFocusFeedbackEffect() {
+        assertFalse(
+            "the panel must not restore a focus request from the hoisted id",
+            panel.contains("restoreTerminal(activeTerminalId)")
+        )
+        assertFalse(
+            "the old sibling-fallback writer is gone",
             panel.contains("Rendered terminal")
+        )
+        val panelCode = codeOnly(panel)
+        assertTrue(
+            "the hoisted id is written only from the rendered-window mirror",
+            panelCode.contains("onActiveTerminalIdChange(focused)")
+        )
+        assertFalse(
+            "no panel effect may call restoreTerminal with a hoisted value",
+            panelCode.contains("restoreTerminal(")
         )
     }
 }

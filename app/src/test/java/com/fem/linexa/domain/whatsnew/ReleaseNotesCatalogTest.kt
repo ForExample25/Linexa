@@ -6,6 +6,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.LocalDate
+import java.time.format.DateTimeParseException
 
 /**
  * The shipped changelog itself, as data.
@@ -20,14 +22,16 @@ class ReleaseNotesCatalogTest {
 
     @Test
     fun theRunningBuildHasAChangelogEntry() {
-        // The whole feature is inert without this. `BuildConfig` IS available to unit
+        // The versionCode is pinned per release (1002 for 0.2.0), so both variants
+        // carry the same code and this check is meaningful in debug unit tests too.
+        // The whole feature is inert without it: `BuildConfig` IS available to unit
         // tests for the values it holds as constants — it is the *variant-generated
         // resource ids* that are not meaningfully testable — so this is the one place
         // the catalog can be checked against the real build number rather than a
         // hardcoded one that would drift on the next bump.
         assertNotNull(
             "versionCode ${BuildConfig.VERSION_CODE} ships no release notes — bump the " +
-                "catalog in ReleaseNotesCatalog.kt when bumping versionCode",
+                "catalog in ReleaseNotesCatalog.kt (and LINEXA_VERSION_CODE) when bumping versionCode",
             ReleaseNotesCatalog.forVersion(BuildConfig.VERSION_CODE)
         )
     }
@@ -88,6 +92,71 @@ class ReleaseNotesCatalogTest {
                 )
             }
         }
+    }
+
+    @Test
+    fun everyEntryCarriesAValidOptionalReleaseDate() {
+        // A malformed date is tolerated at render time, but it is still a catalog
+        // mistake: the card would silently omit the row the author meant to show.
+        ReleaseNotesCatalog.entries.forEach { notes ->
+            notes.releaseDate?.let { raw ->
+                try {
+                    LocalDate.parse(raw)
+                } catch (e: DateTimeParseException) {
+                    throw AssertionError(
+                        "versionCode ${notes.versionCode} has an invalid releaseDate '$raw'",
+                        e
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun everyBetaNamedEntryIsMarkedBeta() {
+        // 0.2.0 is deliberately named exactly "0.2.0" while still being a beta, so
+        // beta-ness cannot be inferred from the name alone. What must hold is the
+        // one-way rule: a name that says beta may never be displayed without the badge.
+        ReleaseNotesCatalog.entries
+            .filter { it.versionName.contains("beta", ignoreCase = true) }
+            .forEach { notes ->
+                assertTrue(
+                    "versionCode ${notes.versionCode} names itself '${notes.versionName}' " +
+                        "but is not marked beta",
+                    notes.isBeta
+                )
+            }
+    }
+
+    @Test
+    fun theRunningEntryIsBetaExactlyWhenTheBuildIs() {
+        // BuildConfig.IS_BETA is the source of truth for 0.2.0 (its name has no
+        // suffix), and the badge must not contradict it.
+        val running = ReleaseNotesCatalog.forVersion(BuildConfig.VERSION_CODE) ?: return
+        assertEquals(BuildConfig.IS_BETA, running.isBeta)
+    }
+
+    @Test
+    fun previousVersionsAreOlderAndNewestFirst() {
+        val current = ReleaseNotesCatalog.entries.maxOf { it.versionCode }
+        val previous = ReleaseNotesCatalog.previousVersions(current)
+        assertTrue("the catalog must retain at least one earlier release", previous.isNotEmpty())
+        assertTrue(previous.all { it.versionCode < current })
+        assertEquals(
+            previous.sortedByDescending { it.versionCode },
+            previous
+        )
+        assertEquals(
+            "the running release must never appear in its own history",
+            null,
+            previous.firstOrNull { it.versionCode == current }
+        )
+    }
+
+    @Test
+    fun anUnknownVersionHasNoPreviousVersions() {
+        assertEquals(emptyList<ReleaseNotes>(), ReleaseNotesCatalog.previousVersions(0))
+        assertEquals(emptyList<ReleaseNotes>(), ReleaseNotesCatalog.previousVersions(-1))
     }
 
     @Test

@@ -173,16 +173,29 @@ class DistroAvatarPreviewSourceTest {
     }
 
     @Test
-    fun theHomeViewModelResolvesThePreviewOffTheMainThread() {
+    fun theHomePipelineDoesNotResolveAnUnrenderedPreview() {
+        // PERF-005 (performance remediation 2026-11-23): `Workspace.previewImage`
+        // was populated on every enrichment pass but no composable ever read it —
+        // `HavenWorkspaceCard` renders the distro glyph. One canonicalize +
+        // `exists()` per workspace, on IO, on every Home visit, for a `File` that
+        // was immediately discarded. The field and its resolution were deleted.
+        //
+        // Reintroducing either is only legitimate together with a consumer, so
+        // this guard is deliberately about the *absence* of the wasted work, not
+        // about the (still shipped, still tested) store API.
         val vm = source("src/main/java/com/fem/linexa/ui/screens/home/HomeViewModel.kt")
-        assertTrue(
-            "the ViewModel must resolve the preview through the store, per workspace id",
-            vm.contains("rootFsMetadata.previewImage(workspaceId)")
+        assertFalse(
+            "HomeViewModel must not resolve a preview nothing renders (PERF-005)",
+            vm.contains("rootFsMetadata.previewImage(")
         )
-        assertTrue(
-            "resolution must stay inside an IO block — the staged emission (§1.124 " +
-                "transformLatest) resolves the preview per workspace item, still off the main thread",
-            vm.contains("val preview = withContext(Dispatchers.IO) { declaredPreview(metadata.id) }")
+        assertFalse(
+            "HomeViewModel must not carry a declaredPreview() helper (PERF-005)",
+            vm.contains("declaredPreview")
+        )
+        val models = source("src/main/java/com/fem/linexa/data/Models.kt")
+        assertFalse(
+            "Workspace.previewImage must stay deleted until a card renders it (PERF-005)",
+            models.contains("val previewImage")
         )
     }
 }

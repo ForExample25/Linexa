@@ -130,19 +130,19 @@ class DesktopSessionProvisionerDeclaredTest {
 
     @Test
     fun aDeclaredSessionOutsideTheCandidateListIsAddedToTheProbe() {
-        // A custom session script is legitimate; without adding it to `which`
-        // the probe could never find it.
+        // A custom session script is legitimate; without adding it to the
+        // probe list the probe could never find it.
         val command = DesktopSessionProvisioner.detectSessionCommand("my-session")
-        assertTrue(command.contains(" my-session"))
+        assertTrue(command.contains("'my-session'"))
         DesktopSessionProvisioner.SESSION_CANDIDATES.forEach {
-            assertTrue("must still probe $it", command.contains(" $it"))
+            assertTrue("must still probe $it", command.contains("'$it'"))
         }
     }
 
     @Test
     fun aDeclaredSessionAlreadyInTheListIsNotDuplicated() {
         val command = DesktopSessionProvisioner.detectSessionCommand("openbox")
-        assertEquals(1, command.split(" ").count { it == "openbox" })
+        assertEquals(1, Regex("'openbox'").findAll(command).count())
     }
 
     @Test

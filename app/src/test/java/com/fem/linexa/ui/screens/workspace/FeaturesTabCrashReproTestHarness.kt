@@ -68,6 +68,11 @@ internal class FakeGuestFeatureHost : GuestFeatureHost {
     override fun hasActiveSession(workspaceId: String): Boolean = false
     override suspend fun execCommand(workspaceId: String, command: String): CommandResult =
         CommandResult(0, "", "")
+    override suspend fun execCommandWithInput(
+        workspaceId: String,
+        command: String,
+        stdin: String
+    ): CommandResult = execCommand(workspaceId, command)
     override suspend fun startDaemon(workspaceId: String, name: String, command: String): Boolean = false
     override suspend fun stopDaemon(workspaceId: String, name: String) = Unit
     override fun isDaemonAlive(workspaceId: String, name: String): Boolean = false

@@ -8,6 +8,8 @@ import android.content.Intent
 import android.net.Uri
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import com.fem.linexa.R
+import com.fem.linexa.core.i18n.linexaString
 import com.fem.linexa.core.logging.Logger
 import com.fem.linexa.data.WorkspaceContent
 import com.fem.linexa.data.resolveFeatureToggles
@@ -169,7 +171,17 @@ class ImportService : Service() {
                         val pre = repository.getById(workspaceId)
                         if (pre != null) {
                             val mirrored = mirrorLaunchConfig(workspaceId, pre.runtimeConfig)
-                            val initialToggles = resolveInitialFeatureToggles(workspaceId)
+                            val declaredFeatures = readDeclaredFeatureOverrides(workspaceId)
+                            val initialToggles = resolveFeatureToggles(
+                                defaults = WorkspaceContent.builtinFeatureDefaults,
+                                overrides = declaredFeatures
+                            )
+                            // Explicit `linexa.features.desktop` in the archive
+                            // is a real choice and must survive the
+                            // defaults-merged toggle map (see
+                            // WorkspaceCapabilities.ATTR_DESKTOP_INTENT).
+                            val desktopIntent = WorkspaceCapabilities
+                                .desktopIntentAttribute(declaredFeatures)
                             val desktopCapable = RootFsCapabilityProbe
                                 .hasDesktopCapability(fileManager.getRootfsPath(workspaceId))
                             val distroAttrs = importDistroIdAttributes(workspaceId)
@@ -180,6 +192,9 @@ class ImportService : Service() {
                                     attributes = current.attributes +
                                         ("sha256" to result.sha256) +
                                         (WorkspaceCapabilities.ATTR_DESKTOP to desktopCapable.toString()) +
+                                        (desktopIntent?.let {
+                                            mapOf(WorkspaceCapabilities.ATTR_DESKTOP_INTENT to it)
+                                        } ?: emptyMap()) +
                                         distroAttrs
                                 )
                             }
@@ -269,29 +284,29 @@ class ImportService : Service() {
     }
 
     /**
-     * §1.81: resolves the workspace's initial feature-toggle defaults from the
-     * archive's `config.yaml` `linexa.features` block (built-in defaults
-     * overlaid by config overrides — [resolveFeatureToggles]). Fail-open: a
-     * missing or unparseable config yields the plain built-in defaults; a
+     * §1.81: reads the archive's `config.yaml` `linexa.features` block — the
+     * **raw** declared overrides, before the built-in defaults are merged.
+     * Keeping the raw map is what lets the caller tell an explicit desktop
+     * choice from the default (see
+     * [WorkspaceCapabilities.desktopIntentAttribute]).
+     *
+     * Fail-open: a missing or unparseable config yields no overrides; a
      * merge failure must not fail an otherwise-successful import.
      */
-    private fun resolveInitialFeatureToggles(workspaceId: String): Map<String, Boolean> {
+    private fun readDeclaredFeatureOverrides(workspaceId: String): Map<String, Boolean> {
         return try {
             val config = configParser.load(File(fileManager.getWorkspaceBasePath(workspaceId), "config.yaml"))
-            resolveFeatureToggles(
-                defaults = WorkspaceContent.builtinFeatureDefaults,
-                overrides = config?.features.orEmpty()
-            )
+            config?.features.orEmpty()
         } catch (e: Exception) {
-            Logger.w("ImportService", "Could not resolve feature defaults for $workspaceId: ${e.message}")
-            resolveFeatureToggles(defaults = WorkspaceContent.builtinFeatureDefaults, overrides = emptyMap())
+            Logger.w("ImportService", "Could not read declared feature overrides for $workspaceId: ${e.message}")
+            emptyMap()
         }
     }
 
     private fun startForegroundNotification() {
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Linexa Import")
-            .setContentText("Importing workspace...")
+            .setContentTitle(linexaString(R.string.import_notification_title))
+            .setContentText(linexaString(R.string.import_notification_text))
             .setSmallIcon(android.R.drawable.ic_menu_upload)
             .setOngoing(true)
             .build()
@@ -301,10 +316,10 @@ class ImportService : Service() {
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "Import Service",
+            linexaString(R.string.import_channel_name),
             NotificationManager.IMPORTANCE_LOW
         ).apply {
-            description = "Shows when importing a workspace"
+            description = linexaString(R.string.import_channel_description)
         }
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(channel)

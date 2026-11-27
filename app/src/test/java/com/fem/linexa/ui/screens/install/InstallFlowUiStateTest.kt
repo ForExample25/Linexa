@@ -127,13 +127,17 @@ class InstallFlowUiStateTest {
     }
 
     @Test
-    fun onlyUncommittedPhasesAreCancellable() {
+    fun uncommittedAndInstallingPhasesAreCancellable() {
         val cancellable = listOf(
             InstallFlowState.Preparing(InstallStep.ANALYZING, null),
-            InstallFlowState.Ready(summary())
+            InstallFlowState.Ready(summary()),
+            // UX-001/RF-010: extraction is cancellable end-to-end. Cancelling
+            // joins the extraction child's teardown and deletes the
+            // uncommitted workspace, so `Installing` no longer "owns real
+            // work" that leaving must preserve.
+            InstallFlowState.Installing(InstallStep.EXTRACTING, null)
         )
         val committed = listOf(
-            InstallFlowState.Installing(InstallStep.EXTRACTING, null),
             InstallFlowState.Completed("ws-1"),
             InstallFlowState.Failed("boom"),
             InstallFlowState.Idle
@@ -143,7 +147,7 @@ class InstallFlowUiStateTest {
             assertTrue("$it must be abandonable", InstallFlowUiState.from(it, null).cancellable)
         }
         committed.forEach {
-            assertFalse("$it owns real work and must not be cancelled by leaving", InstallFlowUiState.from(it, null).cancellable)
+            assertFalse("$it owns committed work and must not be cancelled by leaving", InstallFlowUiState.from(it, null).cancellable)
         }
     }
 

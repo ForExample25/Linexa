@@ -48,7 +48,12 @@ import javax.inject.Singleton
  *    extraction survive byte-for-byte), and modification times are preserved.
  *    uid/gid are written as 0/root:root: Android app-private storage has a
  *    single uid, so extraction never performs a chown and no other value
- *    would survive the round-trip anyway.
+ *    would survive the round-trip anyway;
+ *  - under [ExportCredentialPolicy.REMOVE_CREDENTIALS] the walk omits guest
+ *    VNC passwords, SSH private keys and the GnuPG home (finding 022) before
+ *    opening or stat-ing them, and reports each omission in
+ *    [ExportResult.Success.removedCredentials]. The live workspace is never
+ *    modified.
  *
  * Streaming and memory: the tree is walked without ever following symlinks
  * (cycle-safe by construction — the same discipline
@@ -127,7 +132,13 @@ class TarRootFsExporter @Inject constructor(
             // Deliberate, and only for in-process callers that already hold the
             // bytes (tests); the coordinator always supplies a verify opener.
             Logger.w(TAG, "export(): no verify input supplied — archive accepted without re-read")
-            return ExportResult.Success(done.sha256, done.outputBytes, done.entryCount, walk.skipped.toList())
+            return ExportResult.Success(
+                done.sha256,
+                done.outputBytes,
+                done.entryCount,
+                walk.skipped.toList(),
+                walk.removedCredentials.toList()
+            )
         }
 
         onProgress(ExportProgress(0L, done.outputBytes.takeIf { it > 0 }, null, ExportPhase.VERIFYING))
@@ -138,7 +149,13 @@ class TarRootFsExporter @Inject constructor(
                     "export(): verified ${done.entryCount} entries / ${done.outputBytes} bytes, " +
                         "sha256=${done.sha256.take(12)}…"
                 )
-                ExportResult.Success(done.sha256, done.outputBytes, done.entryCount, walk.skipped.toList())
+                ExportResult.Success(
+                    done.sha256,
+                    done.outputBytes,
+                    done.entryCount,
+                    walk.skipped.toList(),
+                    walk.removedCredentials.toList()
+                )
             }
             is VerifyOutcome.Mismatch -> {
                 Logger.w(TAG, "export(): verification failed: ${verification.reason}")
@@ -155,6 +172,7 @@ class TarRootFsExporter @Inject constructor(
         /** The caller's size estimate — the packing fraction's denominator. */
         var totalBytes: Long? = null
         val skipped = mutableListOf<String>()
+        val removedCredentials = mutableListOf<String>()
     }
 
     private sealed interface PackOutcome {
@@ -211,7 +229,7 @@ class TarRootFsExporter @Inject constructor(
                             walk.entryCount++
                         }
 
-                        val abortReason = walkTree(rootfs, tar, walk, onProgress)
+                        val abortReason = walkTree(rootfs, request.credentialPolicy, tar, walk, onProgress)
                         if (abortReason != null) return PackOutcome.Aborted(abortReason)
 
                         // finish() writes tar's two 512-byte EOF blocks; the
@@ -255,6 +273,7 @@ class TarRootFsExporter @Inject constructor(
      */
     private suspend fun walkTree(
         rootfs: File,
+        credentialPolicy: ExportCredentialPolicy,
         tar: TarArchiveOutputStream,
         walk: WalkState,
         onProgress: suspend (ExportProgress) -> Unit
@@ -291,6 +310,18 @@ class TarRootFsExporter @Inject constructor(
                     child.name
                 } else {
                     task.relativePath + "/" + child.name
+                }
+
+                // Decided from the path alone, before any stat/open: a
+                // credential file is never even touched when the user asked
+                // for removal, and a `.gnupg` directory is pruned without
+                // being descended. This is an intentional omission, not a
+                // failure, so it is reported separately from `skipped`.
+                if (credentialPolicy == ExportCredentialPolicy.REMOVE_CREDENTIALS &&
+                    ExportCredentialPaths.matches(name)
+                ) {
+                    recordRemovedCredential(walk, name)
+                    continue
                 }
 
                 val attrs = try {
@@ -611,6 +642,16 @@ class TarRootFsExporter @Inject constructor(
     private fun recordSkipped(walk: WalkState, name: String, cause: String) {
         Logger.w(TAG, "export(): skipping '$name' ($cause)")
         walk.skipped.add("$name ($cause)")
+    }
+
+    /**
+     * Records an intentional credential omission. Logged at info level — the
+     * user asked for it, so it is not a warning — and surfaced on success so
+     * the backup never claims to be byte-complete when it is not.
+     */
+    private fun recordRemovedCredential(walk: WalkState, name: String) {
+        Logger.i(TAG, "export(): removing credential entry '$name'")
+        walk.removedCredentials.add(name)
     }
 
     /**

@@ -10,6 +10,7 @@ import com.fem.linexa.domain.packagemanager.InstalledPkg
 import com.fem.linexa.domain.packagemanager.OperationEvent
 import com.fem.linexa.domain.packagemanager.PackageManagerDetector
 import com.fem.linexa.domain.packagemanager.PackageManagerRegistry
+import com.fem.linexa.domain.packagemanager.PackageLockDiagnostics
 import com.fem.linexa.domain.packagemanager.PackageOperation
 import com.fem.linexa.domain.packagemanager.PackageOperationCoordinator
 import com.fem.linexa.domain.packagemanager.PackageProvider
@@ -431,7 +432,16 @@ class PackageManagerViewModel @Inject constructor(
 
                         }
                         is OperationEvent.Failure -> setOperation(
-                            OperationUi(operation, packageName, event.output.takeLast(MAX_OUTPUT_CHARS), OperationStatus.FAILED)
+                            OperationUi(
+                                operation = operation,
+                                packageName = packageName,
+                                output = event.output.takeLast(MAX_OUTPUT_CHARS),
+                                status = OperationStatus.FAILED,
+                                // Finding 021: the app cannot queue a package
+                                // command the user typed into a terminal. Name
+                                // the holder when apt/dpkg did; never kill it.
+                                lockContention = PackageLockDiagnostics.detect(event.output)
+                            )
                         )
                     }
                 }
@@ -446,7 +456,15 @@ class PackageManagerViewModel @Inject constructor(
                 throw e
             } catch (e: Exception) {
                 Logger.e(TAG, "Operation $operation failed", e)
-                setOperation(OperationUi(operation, packageName, e.message.orEmpty(), OperationStatus.FAILED))
+                setOperation(
+                    OperationUi(
+                        operation = operation,
+                        packageName = packageName,
+                        output = e.message.orEmpty(),
+                        status = OperationStatus.FAILED,
+                        lockContention = PackageLockDiagnostics.detect(e.message.orEmpty())
+                    )
+                )
             }
         }
     }
@@ -514,7 +532,13 @@ data class OperationUi(
     val operation: PackageOperation,
     val packageName: String?,
     val output: String,
-    val status: OperationStatus
+    val status: OperationStatus,
+    /**
+     * Finding 021: set only when a failed operation's output names a package
+     * lock held by another process. The UI explains it; nothing is killed or
+     * queued after the fact.
+     */
+    val lockContention: PackageLockDiagnostics.Holder? = null
 )
 
 // ── pure installed-tab transitions (JVM-tested) ─────────────────────────────

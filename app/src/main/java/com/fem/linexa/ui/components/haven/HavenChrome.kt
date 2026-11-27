@@ -30,14 +30,20 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.res.colorResource
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.fem.linexa.R
 import com.fem.linexa.ui.theme.haven.HavenDim
 import com.fem.linexa.ui.theme.haven.HavenType
 import com.fem.linexa.ui.theme.haven.HavenTheme
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.semantics.Role
 
 /**
  * HAVEN chrome — page headers, screen scaffold, bottom navigation.
@@ -50,8 +56,9 @@ import com.fem.linexa.ui.theme.haven.HavenTheme
  *    (pushed screens: Files, Packages, viewer, About…).
  *
  * [HavenScreen] paints the bg + status-bar inset + optional toast host.
- * [HBottomNav] is the 3-destination bar from the concept: 22dp icon + 10sp
- * label, selected in primary, on `bg` — no indicator, no elevation.
+ * [HBottomNav] is the 3-destination bar: a hairline-topped `bg` strip with a
+ * sliding tint capsule behind the selected destination, 22dp icon + 10sp
+ * label, and primary/muted selection tints.
  */
 
 /** The Workspaces/Activity/Settings header. */
@@ -81,12 +88,15 @@ fun HPageHeader(
                 )
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                // Page titles carry the screen's identity: let a longer Persian
+                // translation wrap and grow the header instead of cutting it
+                // off with an ellipsis. The weight keeps a trailing count
+                // visible even when the title spans the available width.
                 Text(
                     text = title,
                     style = HavenType.h1,
                     color = h.text,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    modifier = Modifier.weight(1f, fill = false)
                 )
                 if (count != null) {
                     Text(
@@ -105,16 +115,14 @@ fun HPageHeader(
                     text = subtitle,
                     style = HavenType.desc,
                     color = h.text2,
-                    modifier = Modifier.padding(top = 4.dp),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    modifier = Modifier.padding(top = 4.dp)
                 )
             }
         }
         if (trailing != null) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(HavenDim.headerActionGap)
             ) {
                 trailing()
             }
@@ -150,15 +158,13 @@ fun HTopBar(
         }
         Column(
             modifier = Modifier
-                .weight(1f, fill = false)
+                .weight(1f, fill = true)
                 .padding(horizontal = 4.dp)
         ) {
             Text(
                 text = title,
                 style = HavenType.h3.copy(fontSize = androidx.compose.ui.unit.TextUnit(20f, androidx.compose.ui.unit.TextUnitType.Sp)),
-                color = h.text,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                color = h.text
             )
             if (subtitle != null) {
                 Text(
@@ -168,8 +174,10 @@ fun HTopBar(
                     ),
                     color = if (subtitleMono) h.muted else h.text2,
                     modifier = Modifier.padding(top = 2.dp),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    // Mono subtitles are paths/IDs: one line with an ellipsis is
+                    // correct for technical content. Prose wraps in full.
+                    maxLines = if (subtitleMono) 1 else Int.MAX_VALUE,
+                    overflow = if (subtitleMono) TextOverflow.Ellipsis else TextOverflow.Clip
                 )
             }
         }
@@ -218,9 +226,7 @@ fun HSubHeader(
             Text(
                 text = title,
                 style = HavenType.h3,
-                color = h.text,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                color = h.text
             )
             if (subtitle != null) {
                 Text(
@@ -228,15 +234,15 @@ fun HSubHeader(
                     style = if (subtitleMono) HavenType.descMono else HavenType.desc,
                     color = if (subtitleMono) h.muted else h.text2,
                     modifier = Modifier.padding(top = 2.dp),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    maxLines = if (subtitleMono) 1 else Int.MAX_VALUE,
+                    overflow = if (subtitleMono) TextOverflow.Ellipsis else TextOverflow.Clip
                 )
             }
         }
         if (trailing != null) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalArrangement = Arrangement.spacedBy(HavenDim.headerActionGap),
                 content = trailing
             )
         }
@@ -297,40 +303,78 @@ fun HBottomNav(
         modifier = modifier
             .fillMaxWidth()
             .background(h.bg)
+            // Haven has no elevation; a single hairline is the only divider
+            // between the bar and the content that scrolls under it.
+            .drawBehind {
+                val stroke = HavenDim.hairline.toPx()
+                drawLine(
+                    color = h.border,
+                    start = androidx.compose.ui.geometry.Offset(0f, stroke / 2f),
+                    end = androidx.compose.ui.geometry.Offset(size.width, stroke / 2f),
+                    strokeWidth = stroke
+                )
+            }
             .navigationBarsPadding()
             .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 10.dp)
             .navSelectionPill(items.size, indicatorIndex, pillColor, pillRadius)
     ) {
         items.forEach { item ->
             val isOn = item.destination == selected
+            // Resolved per item in composition: a language switch re-renders the
+            // whole bar immediately because the root provides the localized
+            // context (and the same source drives the tablet sidebar labels).
+            val label = stringResource(item.labelRes)
             val tint by androidx.compose.animation.animateColorAsState(
                 targetValue = if (isOn) h.primary else h.muted,
                 animationSpec = motions.selection,
                 label = "nav-tint"
             )
+            // The selected icon lifts a touch (6%) while the tint settles;
+            // reduced motion collapses this to an instant switch. The scale is
+            // a draw-phase transform, so the label never reflows.
+            val iconScale by androidx.compose.animation.core.animateFloatAsState(
+                targetValue = if (isOn) 1.06f else 1f,
+                animationSpec = motions.selectionSpec(),
+                label = "nav-icon-scale"
+            )
+            val interactionSource = remember { MutableInteractionSource() }
             Column(
                 modifier = Modifier
                     .weight(1f)
                     .clip(RoundedCornerShape(HavenDim.rNav))
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null
-                    ) { onSelect(item.destination) }
+                    .havenPressScale(interactionSource, pressedScale = 0.96f)
+                    // selectable (not a bare clickable): TalkBack announces each
+                    // destination as a tab and reports which one is selected.
+                    .selectable(
+                        selected = isOn,
+                        interactionSource = interactionSource,
+                        indication = null,
+                        role = Role.Tab,
+                        onClick = { onSelect(item.destination) }
+                    )
                     .padding(vertical = 8.dp, horizontal = 4.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
+                // Decorative: the label below names the tab, so the icon must not
+                // be announced a second time.
                 Icon(
                     painter = painterResource(item.iconRes),
-                    contentDescription = item.label,
+                    contentDescription = null,
                     tint = tint,
-                    modifier = Modifier.size(22.dp)
+                    modifier = Modifier
+                        .size(22.dp)
+                        .graphicsLayer {
+                            scaleX = iconScale
+                            scaleY = iconScale
+                        }
                 )
                 Text(
-                    text = item.label,
+                    text = label,
                     style = HavenType.navLabel,
                     color = tint,
-                    maxLines = 1
+                    textAlign = TextAlign.Center,
+                    maxLines = 2
                 )
             }
         }
@@ -351,20 +395,32 @@ private fun Modifier.navSelectionPill(
     if (count <= 0) return@drawBehind
     val cell = size.width / count
     val r = radius.toPx()
+    // Inset the capsule inside its cell (and vertically) so the selection
+    // reads as a floating pill with breathing room instead of a full-height
+    // column fill. The horizontal inset is capped for very narrow bars.
+    val insetX = 6.dp.toPx().coerceAtMost(cell / 4f)
+    val insetY = 4.dp.toPx()
     drawRoundRect(
         color = color,
-        topLeft = androidx.compose.ui.geometry.Offset(index * cell, 0f),
-        size = androidx.compose.ui.geometry.Size(cell, size.height),
+        topLeft = androidx.compose.ui.geometry.Offset(index * cell + insetX, insetY),
+        size = androidx.compose.ui.geometry.Size(
+            cell - insetX * 2f,
+            size.height - insetY * 2f
+        ),
         cornerRadius = androidx.compose.ui.geometry.CornerRadius(r, r)
     )
 }
 
-private data class NavItem(val destination: HavenDestination, val iconRes: Int, val label: String)
+private data class NavItem(
+    val destination: HavenDestination,
+    val iconRes: Int,
+    @androidx.annotation.StringRes val labelRes: Int
+)
 
 private fun navItems(workspaceCount: Int?): List<NavItem> = listOf(
-    NavItem(HavenDestination.WORKSPACES, com.fem.linexa.R.drawable.ic_haven_grid, "Workspaces"),
-    NavItem(HavenDestination.ACTIVITY, com.fem.linexa.R.drawable.ic_haven_activity, "Activity"),
-    NavItem(HavenDestination.SETTINGS, com.fem.linexa.R.drawable.ic_haven_settings, "Settings")
+    NavItem(HavenDestination.WORKSPACES, R.drawable.ic_haven_grid, R.string.haven_nav_workspaces),
+    NavItem(HavenDestination.ACTIVITY, R.drawable.ic_haven_activity, R.string.haven_nav_activity),
+    NavItem(HavenDestination.SETTINGS, R.drawable.ic_haven_settings, R.string.haven_nav_settings)
 )
 
 /** `.footbrand` — the quiet version footer. */

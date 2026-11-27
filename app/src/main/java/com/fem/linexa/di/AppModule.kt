@@ -42,6 +42,7 @@ import com.fem.linexa.domain.workspace.WorkspaceRepository
 import com.fem.linexa.domain.settings.SettingsRepository
 import com.fem.linexa.domain.filemanager.FileManager
 import com.fem.linexa.domain.filemanager.WorkspaceFileManagerImpl
+import com.fem.linexa.domain.filemanager.WorkspaceRootfsLocator
 import com.fem.linexa.domain.distro.DistroSourceResolver
 import com.fem.linexa.service.distro.DistroDownloader
 import com.fem.linexa.service.distro.HttpDistroDownloader
@@ -54,9 +55,22 @@ import com.fem.linexa.service.installer.RootFsInstaller
 import com.fem.linexa.service.installer.StagedRootFsInstaller
 import com.fem.linexa.service.rootfs.profile.AssetRootFsProfileCatalog
 import com.fem.linexa.service.rootfs.profile.RootFsProfileCatalog
+import com.fem.linexa.service.update.AndroidApkMetadataReader
+import com.fem.linexa.service.update.AndroidUpdateInstaller
+import com.fem.linexa.service.update.ApkMetadataReader
+import com.fem.linexa.service.update.ApkUpdateDownloader
+import com.fem.linexa.service.update.ApkValidator
+import com.fem.linexa.service.update.AppUpdateCoordinator
+import com.fem.linexa.service.update.GithubReleaseApi
+import com.fem.linexa.service.update.HttpApkUpdateDownloader
+import com.fem.linexa.service.update.HttpGithubReleaseApi
+import com.fem.linexa.service.update.PrefsUpdatePreferences
+import com.fem.linexa.service.update.UpdateInstaller
+import com.fem.linexa.service.update.UpdatePreferences
 import com.fem.linexa.service.manager.DefaultLinexaManager
 import com.fem.linexa.service.manager.LinexaManager
 import com.fem.linexa.service.runtime.WorkspaceFileManager
+import com.fem.linexa.service.runtime.WorkspaceRootfsViewLocator
 import com.fem.linexa.domain.workspace.RootfsInspector
 import com.fem.linexa.service.runtime.RuntimeTrace
 import com.fem.linexa.service.runtime.WorkspaceHealthRegistry
@@ -187,6 +201,15 @@ abstract class AppModule {
     @Singleton
     abstract fun bindFileManager(impl: WorkspaceFileManagerImpl): FileManager
 
+    // F-003: the host-side read fast path needs the workspace rootfs and the
+    // guest paths that PRoot bind-mounts over it. The port keeps the file
+    // manager in the domain layer.
+    @Binds
+    @Singleton
+    abstract fun bindWorkspaceRootfsLocator(
+        impl: WorkspaceRootfsViewLocator
+    ): WorkspaceRootfsLocator
+
     // Phase 9A: WorkspaceLaunchValidator asks the file manager through the
     // domain port (domain.workspace.RootfsInspector), not the service type —
     // the second half of the domain→service import cycle. WorkspaceFileManager
@@ -228,6 +251,31 @@ abstract class AppModule {
     @Binds
     @Singleton
     abstract fun bindDistroDownloader(impl: HttpDistroDownloader): DistroDownloader
+
+    // In-app update checker (2026-11-16): GitHub Releases API, APK download,
+    // APK validation, Android install path. All interface/impl seams — the
+    // coordinator's state machine is JVM-testable against fakes, and each
+    // platform surface (HTTP, PackageManager archive reads, PackageInstaller,
+    // SharedPreferences) is swappable.
+    @Binds
+    @Singleton
+    abstract fun bindGithubReleaseApi(impl: HttpGithubReleaseApi): GithubReleaseApi
+
+    @Binds
+    @Singleton
+    abstract fun bindUpdatePreferences(impl: PrefsUpdatePreferences): UpdatePreferences
+
+    @Binds
+    @Singleton
+    abstract fun bindApkUpdateDownloader(impl: HttpApkUpdateDownloader): ApkUpdateDownloader
+
+    @Binds
+    @Singleton
+    abstract fun bindApkMetadataReader(impl: AndroidApkMetadataReader): ApkMetadataReader
+
+    @Binds
+    @Singleton
+    abstract fun bindUpdateInstaller(impl: AndroidUpdateInstaller): UpdateInstaller
 
     @Binds
     @IntoSet
@@ -295,6 +343,69 @@ abstract class AppModule {
             Logger.init(application)
             return Logger
         }
+
+        // ── In-app update checker (2026-11-16) ─────────────────────────────
+
+        /**
+         * The update coordinator's long-lived scope: a download started in
+         * Settings must survive screen recreation and navigation, so it can
+         * NOT live on a ViewModel scope. Same convention as the workspace
+         * supervisors above (§1.111–§1.113): dedicated
+         * `SupervisorJob() + Dispatchers.IO`, injected rather than built
+         * inside the coordinator so tests substitute a controllable scope.
+         */
+        @Provides
+        @UpdateScope
+        @Singleton
+        fun provideAppUpdateScope(): CoroutineScope =
+            CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+        /**
+         * The APK validator with the app's real identity: the package name
+         * from the Application (not a constant — the package IS the app) and
+         * the device's OS level, so a release built for a newer Android is
+         * rejected before Android's installer has to say no.
+         */
+        @Provides
+        @Singleton
+        fun provideApkValidator(
+            metadataReader: ApkMetadataReader,
+            @ApplicationContext context: Context
+        ): ApkValidator = ApkValidator(
+            metadataReader = metadataReader,
+            appPackageName = context.packageName,
+            deviceSdk = android.os.Build.VERSION.SDK_INT,
+            expectedSignerSha256 = com.fem.linexa.service.update.ReleaseSigningIdentity.ACCEPTED_SHA256
+        )
+
+        /**
+         * The coordinator itself. A @Provides factory (not constructor
+         * injection) because it needs the [UpdateScope] and its private
+         * updates directory (`filesDir/updates` — internal storage, no
+         * storage permission, and the only place a FileProvider-free
+         * PackageInstaller session can stream from).
+         */
+        @Provides
+        @Singleton
+        fun provideAppUpdateCoordinator(
+            api: GithubReleaseApi,
+            preferences: UpdatePreferences,
+            downloader: ApkUpdateDownloader,
+            validator: ApkValidator,
+            installer: UpdateInstaller,
+            appVersionProvider: AppVersionProvider,
+            @ApplicationContext context: Context,
+            @UpdateScope scope: CoroutineScope
+        ): AppUpdateCoordinator = AppUpdateCoordinator(
+            api = api,
+            prefs = preferences,
+            downloader = downloader,
+            validator = validator,
+            installer = installer,
+            appVersionProvider = appVersionProvider,
+            updatesDir = java.io.File(context.filesDir, "updates"),
+            scope = scope
+        )
 
         /**
          * UI/UX Phase 4: the read/clear half of the app log.

@@ -3,7 +3,8 @@
   Pre-release audit fix (2026-09-02, security finding S3): the app previously
   shipped android:allowBackup="true" with NO backup rules, so Android's
   Auto Backup uploaded the Room database (whose workspace `attributes` column
-  stores the desktop VNC password as plaintext), the per-workspace config
+  stores the desktop VNC password as an AES-GCM envelope; legacy plaintext is
+  migrated at app start), the per-workspace config
   files, and the runtime logs to the user's cloud backup.
 
   This file is the API ≤ 30 (fullBackupContent) half of the fix; the API 31+
@@ -19,5 +20,11 @@
     <exclude domain="file" path="workspaces" />
     <exclude domain="file" path="logs" />
     <exclude domain="file" path="bootstrap" />
+    <!-- F-034: every SharedPreferences file is listed explicitly. The
+         workspace database is excluded above, so restoring only some of the
+         app's preferences would leave settings that reference workspaces
+         which do not exist on the restored device. -->
     <exclude domain="sharedpref" path="linexa_settings.xml" />
+    <exclude domain="sharedpref" path="linexa_terminal.xml" />
+    <exclude domain="sharedpref" path="linexa_update_prefs.xml" />
 </full-backup-content>

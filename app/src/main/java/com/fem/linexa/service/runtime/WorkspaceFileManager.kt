@@ -5,15 +5,17 @@ import android.os.StatFs
 import com.fem.linexa.core.filesystem.deleteRecursivelyAllowingReadOnly
 import com.fem.linexa.data.repository.WorkspaceDiskStore
 import com.fem.linexa.domain.resource.WorkspaceStorage
+import com.fem.linexa.domain.workspace.RootfsCheck
 import com.fem.linexa.domain.workspace.RootfsInspector
+import com.fem.linexa.service.runtime.container.GuestShellValidator
 import java.io.File
 import java.io.IOException
 import java.nio.file.FileVisitResult
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.attribute.BasicFileAttributes
-import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -52,6 +54,65 @@ class WorkspaceFileManager @Inject constructor(
     fun getRootfsPath(workspaceId: String): File {
         return File(getWorkspaceBasePath(workspaceId), "rootfs")
     }
+
+    /** The launcher-owned config at the workspace root (`config.yaml`). */
+    fun getWorkspaceConfigPath(workspaceId: String): File =
+        File(getWorkspaceBasePath(workspaceId), "config.yaml")
+
+    /**
+     * RF-031: config is written here before activation and promoted only
+     * after the live rootfs exists, so a failed activation never leaves a
+     * `config.yaml` for a rootfs that was never installed. Dot-prefixed so
+     * no config reader can mistake it for the real file.
+     */
+    fun getStagedConfigPath(workspaceId: String): File =
+        File(getWorkspaceBasePath(workspaceId), ".config.yaml.staged")
+
+    /**
+     * RF-031: finish the post-activation config step. If the workspace has no
+     * live rootfs, the staged file is orphaned debris (activation never
+     * happened) and is removed. Symlinked or non-regular staged files are
+     * ignored — this path is only ever written by the installer.
+     *
+     * @return true when a staged config became `config.yaml`.
+     */
+    fun promoteStagedConfigIfPresent(workspaceId: String): Boolean {
+        val stagedPath = getStagedConfigPath(workspaceId).toPath()
+        if (!Files.isRegularFile(stagedPath, LinkOption.NOFOLLOW_LINKS)) return false
+        val staged = stagedPath.toFile()
+        val liveExists = Files.exists(
+            getRootfsPath(workspaceId).toPath(),
+            LinkOption.NOFOLLOW_LINKS
+        )
+        if (!liveExists) {
+            staged.delete()
+            return false
+        }
+        val target = getWorkspaceConfigPath(workspaceId)
+        if (staged.renameTo(target)) return true
+        // Rename within the same directory should not fail; copy is the
+        // conservative fallback so a valid rootfs is not left without config.
+        return runCatching {
+            staged.copyTo(target, overwrite = true)
+            staged.delete()
+        }.isSuccess
+    }
+
+    /**
+     * RF-031: drop a staged config whose activation never happened.
+     *
+     * Startup recovery uses this when a staging tree is still present: the
+     * staging rename is the activation, so the live rootfs (if any) is the
+     * PREVIOUS tree and the staged config describes the tree about to be
+     * discarded. Promoting it there would leave `config.yaml` describing a
+     * rootfs that is not installed.
+     *
+     * @return true when a staged file existed and was removed.
+     */
+    fun discardStagedConfigIfPresent(workspaceId: String): Boolean =
+        runCatching {
+            Files.deleteIfExists(getStagedConfigPath(workspaceId).toPath())
+        }.getOrDefault(false)
 
     /**
      * Staging directory an install extracts into (§1.20). Never the live
@@ -129,6 +190,109 @@ class WorkspaceFileManager @Inject constructor(
         return workspacesBase.listFiles { file -> file.isDirectory }?.map { it.name } ?: emptyList()
     }
 
+    // ── RF-021: crash-swap and containment debris ─────────────────────────
+
+    /**
+     * The old live rootfs trees left by [activateStagedRootfs]'s
+     * live→`rootfs.previous-<ms>` swap. Normally deleted immediately after a
+     * successful activation; a process death in the swap window leaves one
+     * behind, and a failed post-swap delete leaves a multi-gigabyte tree.
+     */
+    fun getPreviousRootfsPaths(workspaceId: String): List<File> =
+        debrisChildren(workspaceId, PREVIOUS_ROOTFS_PREFIX)
+
+    /**
+     * Trees the extractor renamed aside when it could not prove a timed-out
+     * or cancelled process tree was gone (`.staging-rootfs.quarantine-<ms>`).
+     * They are deliberately outside the installer's path; nothing will ever
+     * reuse or delete them on its own.
+     */
+    fun getQuarantinedStagingPaths(workspaceId: String): List<File> =
+        debrisChildren(workspaceId, STAGING_QUARANTINE_PREFIX)
+
+    /**
+     * RF-021: recover the activation swap window. If the live rootfs is gone
+     * but an older tree was already renamed to `rootfs.previous-*`, restore
+     * the newest one instead of leaving the workspace with nothing runnable.
+     *
+     * NOFOLLOW is deliberate: a dangling link still occupies the live name,
+     * and renaming over it would silently replace user-visible state.
+     *
+     * @return the restored live rootfs path, or null when nothing was done.
+     */
+    fun restorePreviousRootfsIfMissing(workspaceId: String): File? {
+        val live = getRootfsPath(workspaceId)
+        if (Files.exists(live.toPath(), LinkOption.NOFOLLOW_LINKS)) return null
+        val previous = getPreviousRootfsPaths(workspaceId)
+            .lastOrNull { it.isDirectory && !Files.isSymbolicLink(it.toPath()) }
+            ?: return null
+        if (!previous.renameTo(live)) return null
+        invalidateRootfsSize(workspaceId)
+        return live
+    }
+
+    /**
+     * RF-021: remove crash debris in a workspace. Intended for startup
+     * recovery, when no install can be running in this process; [minAgeMs]
+     * additionally protects fresh entries for callers that sweep while work
+     * may still be in flight.
+     *
+     * Guards, in order:
+     *  - only direct children whose name is the exact prefix plus a numeric
+     *    timestamp (no traversal, no user-chosen names);
+     *  - symlinks are never followed, and are only unlinked (RF-020's
+     *    deletion primitive);
+     *  - entries newer than [minAgeMs] are skipped;
+     *  - quarantines are skipped while a staging tree exists, because that
+     *    means a newer install is using the same workspace.
+     */
+    fun sweepInstallDebris(
+        workspaceId: String,
+        minAgeMs: Long = 0L,
+        nowMs: Long = System.currentTimeMillis()
+    ): InstallDebrisSweep {
+        val restored = restorePreviousRootfsIfMissing(workspaceId)
+        val cutoff = nowMs - minAgeMs
+
+        val deletedPrevious = getPreviousRootfsPaths(workspaceId)
+            .filter { it.timestampSuffix(PREVIOUS_ROOTFS_PREFIX) <= cutoff }
+            .filter { it.deleteRecursivelyAllowingReadOnly() }
+
+        val stagingActive = Files.exists(
+            getStagingRootfsPath(workspaceId).toPath(),
+            LinkOption.NOFOLLOW_LINKS
+        )
+        val deletedQuarantine =
+            if (stagingActive) {
+                emptyList()
+            } else {
+                getQuarantinedStagingPaths(workspaceId)
+                    .filter { it.timestampSuffix(STAGING_QUARANTINE_PREFIX) <= cutoff }
+                    .filter { it.deleteRecursivelyAllowingReadOnly() }
+            }
+
+        return InstallDebrisSweep(
+            restoredPrevious = restored,
+            deletedPrevious = deletedPrevious,
+            deletedStagingQuarantine = deletedQuarantine
+        )
+    }
+
+    private fun debrisChildren(workspaceId: String, prefix: String): List<File> {
+        val base = getWorkspaceBasePath(workspaceId)
+        return base.listFiles().orEmpty()
+            .filter { child ->
+                child.parentFile == base &&
+                    child.name.startsWith(prefix) &&
+                    child.name.length > prefix.length &&
+                    child.name.substring(prefix.length).all(Char::isDigit)
+            }
+            .sortedBy { it.timestampSuffix(prefix) }
+    }
+
+    private fun File.timestampSuffix(prefix: String): Long =
+        name.removePrefix(prefix).toLongOrNull() ?: Long.MAX_VALUE
+
     /**
      * Ensure the workspace directory structure exists.
      * Creates rootfs directory if it doesn't exist.
@@ -146,38 +310,136 @@ class WorkspaceFileManager @Inject constructor(
      * the repository re-checks existence to distinguish "never existed"
      * from "could not remove".
      */
-    override fun deleteWorkspaceTree(workspaceId: String): Boolean =
-        getWorkspaceBasePath(workspaceId).deleteRecursivelyAllowingReadOnly()
+    override fun deleteWorkspaceTree(workspaceId: String): Boolean {
+        val deleted = getWorkspaceBasePath(workspaceId).deleteRecursivelyAllowingReadOnly()
+        if (deleted) invalidateRootfsSize(workspaceId)
+        return deleted
+    }
 
     /**
      * Check if a workspace has a valid rootfs (contains essential Linux dirs).
      */
-    override fun hasValidRootfs(workspaceId: String): Boolean {
+    override fun checkRootfs(workspaceId: String): RootfsCheck {
         val rootfs = getRootfsPath(workspaceId)
-        if (!rootfs.exists()) return false
-        val essentialDirs = listOf("bin", "etc", "lib", "usr", "var")
-        return essentialDirs.all { File(rootfs, it).exists() }
+        if (!rootfs.isDirectory) {
+            return RootfsCheck.Missing("The rootfs directory is missing.")
+        }
+        // Layout requirements shared by all shipped profiles: Alpine omits
+        // `var`, and Arch/Fedora are usr-merged, so `bin`/`lib` are accepted
+        // either at the root or under `usr`.
+        val required = listOf("etc", "usr")
+        val missing = required.filter { !File(rootfs, it).exists() }
+        if (missing.isNotEmpty()) {
+            return RootfsCheck.Missing(
+                "The rootfs is missing required directories: ${missing.joinToString(", ")}."
+            )
+        }
+        if (!File(rootfs, "bin").exists() && !File(rootfs, "usr/bin").exists()) {
+            return RootfsCheck.Missing("The rootfs has no /bin or /usr/bin directory.")
+        }
+        if (!File(rootfs, "lib").exists() && !File(rootfs, "usr/lib").exists()) {
+            return RootfsCheck.Missing("The rootfs has no /lib or /usr/lib directory.")
+        }
+
+        // RF-003: presence of the directories only proves extraction reached
+        // its end. The installer also required a shell; package operations or
+        // storage faults can remove it afterwards, and the old check let such
+        // a rootfs reach PRoot and fail with a bare exit code. GuestShellValidator
+        // resolves absolute guest links against the rootfs (never the host)
+        // and checks the executable bit and interpreter.
+        val rejections = LAUNCH_SHELL_CANDIDATES.map { candidate ->
+            candidate to GuestShellValidator.validate(rootfs, "/$candidate")
+        }
+        if (rejections.any { it.second == null }) return RootfsCheck.Ready
+
+        // "does not exist inside the rootfs" is the validator's reason for a
+        // candidate that is absent. Every candidate being absent is the
+        // generic "no launch shell" case below. A candidate that *does* exist
+        // but names a missing ELF/shebang interpreter also contains "does not
+        // exist"; that is a specific failure and must keep its detail.
+        val specific = rejections.firstOrNull { (_, reason) ->
+            reason != null && reason != "does not exist inside the rootfs"
+        }
+        return if (specific == null) {
+            RootfsCheck.Damaged(
+                "The rootfs has no launch shell (looked for " +
+                    LAUNCH_SHELL_CANDIDATES.joinToString(", ") { "/$it" } + ")."
+            )
+        } else {
+            RootfsCheck.Damaged(
+                "The launch shell /${specific.first} cannot run: ${specific.second}."
+            )
+        }
+    }
+
+    override fun hasValidRootfs(workspaceId: String): Boolean =
+        checkRootfs(workspaceId) is RootfsCheck.Ready
+
+    /**
+     * P0-3 (2026-11-23): short-circuiting "is there at least one real file?"
+     * probe for launch readiness and post-install verification.
+     *
+     * The old gate was `getRootfsSize() <= 0`, which forced a full recursive
+     * walk of the whole rootfs (and, after P0-2, a whole-workspace walk) just
+     * to learn that the first file exists. This stops at the first regular
+     * file. Symlinks are never followed and never count, matching the size
+     * walk's accounting; a rootfs containing only directories or only
+     * symlinks is still rejected.
+     */
+    override fun hasAnyRegularFile(workspaceId: String): Boolean {
+        val rootfs = getRootfsPath(workspaceId)
+        if (!Files.isDirectory(rootfs.toPath(), LinkOption.NOFOLLOW_LINKS)) return false
+        var found = false
+        try {
+            Files.walkFileTree(
+                rootfs.toPath(),
+                object : SimpleFileVisitor<Path>() {
+                    override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+                        if (attrs.isRegularFile) {
+                            found = true
+                            return FileVisitResult.TERMINATE
+                        }
+                        return FileVisitResult.CONTINUE
+                    }
+
+                    override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult =
+                        FileVisitResult.CONTINUE
+                }
+            )
+        } catch (_: Exception) {
+            // Fail closed: a walk that could not start/continue proves nothing.
+            return false
+        }
+        return found
     }
 
     /**
-     * Per-workspace in-memory cache of rootfs sizes. Disk usage is expensive
-     * to compute (a full recursive walk of a multi-GB rootfs), and callers
-     * (Home screen, Workspace detail, the launch validator) ask for it
-     * frequently. Sizes only change when the live rootfs is promoted
-     * ([activateStagedRootfs]) or the workspace is deleted
-     * ([invalidateRootfsSize] from the repository), so a simple
-     * invalidate-on-mutation cache is both safe and correct.
+     * P0-2 (2026-11-23): per-workspace disk measurement. One traversal of the
+     * workspace base answers BOTH the rootfs and the whole-workspace totals;
+     * the cache is cancellable, single-flight and never stores a partial or
+     * failed walk (see [SizeMeasurementCache]).
      */
-    private val rootfsSizeCache = ConcurrentHashMap<String, Long>()
+    /**
+     * F-010/F-037: the last measured size survives process death, so the
+     * first Home paint after a cold start can show a number immediately and
+     * revalidate in the background instead of walking every workspace first.
+     */
+    private val sizeStore = SizeMeasurementStore(
+        File(application.filesDir, "workspace-sizes.properties")
+    )
+    private val sizeMeasurements = SizeMeasurementCache(
+        onMeasured = sizeStore::write,
+        warmDelayMs = WARM_DELAY_MS
+    )
 
     /**
-     * Same cache, for the *whole* workspace directory ([getWorkspaceSize]).
-     * Separate map rather than a second entry in the one above so the two
-     * measurements can never be confused for one another — they answer
-     * different questions and differ by however much the logs and the
-     * persisted `config.yaml` weigh.
+     * DRA-005 closure: workspaces whose stale-while-revalidate walk has already
+     * been started in this process. A stop/re-entry cycle must not launch the
+     * 2–7 s whole-tree walk again; the first read of a process still refreshes
+     * the persisted value, and [MIN_REVALIDATE_INTERVAL_MS] is the TTL after
+     * which a later read refreshes it again.
      */
-    private val workspaceSizeCache = ConcurrentHashMap<String, Long>()
+    private val revalidatedThisProcess = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     /**
      * Drop the cached sizes for [workspaceId] (e.g. after delete).
@@ -186,27 +448,73 @@ class WorkspaceFileManager @Inject constructor(
      * every mutation that changes one changes the other, and a caller that
      * remembered only one of two invalidation calls would leave a stale number
      * on screen — the exact class of bug the single entry point avoids.
+     * An in-flight walk is cancelled cooperatively and can never store its
+     * (possibly partial) result after this call.
      */
     override fun invalidateRootfsSize(workspaceId: String) {
-        rootfsSizeCache.remove(workspaceId)
-        workspaceSizeCache.remove(workspaceId)
+        sizeMeasurements.invalidate(workspaceId)
+        sizeStore.invalidate(workspaceId)
+    }
+
+    /**
+     * DEEP-AUDIT (2026-11-26): mark the cached size stale without making the
+     * last known value unreadable.
+     *
+     * A workspace runtime stop is NOT a size mutation and, crucially, it is not
+     * a request to read the size. The old stop path called
+     * [invalidateRootfsSize], which erased the persisted value — so the next
+     * entry into that workspace had no cached number and performed a blocking
+     * full-tree walk inside the state build that gates the first Success
+     * frame. Measured on the audited XFCE workspace: 74 377 files / 2.2 GB,
+     * **3 927 ms**.
+     *
+     * This marks only the in-memory generation stale. The persisted number is
+     * returned by the next reader, which then starts a background
+     * revalidation ([SizeMeasurementCache.warm]). Delete/install paths still
+     * call [invalidateRootfsSize], where the old number is genuinely
+     * meaningless.
+     */
+    fun markRootfsSizeStale(workspaceId: String) {
+        sizeMeasurements.markStale(workspaceId)
     }
 
     /**
      * Get the total size of a workspace's rootfs in bytes.
      *
-     * Cached: a full walk of a Debian/Ubuntu rootfs is thousands of files;
-     * the Home screen and the launch validator both query this per-workspace
-     * on every state emission. The cache is invalidated on every mutation
-     * path (rootfs promotion + workspace delete), so a cached value is never
-     * stale from the app's own writes.
+     * Measured by the shared workspace-base traversal in [SizeMeasurementCache]
+     * — the rootfs is a child of that base, so its bytes are attributed during
+     * the same walk the workspace total needs. Zero means "unknown/missing"
+     * exactly as before (missing rootfs, failed walk, cancelled walk).
      */
     override fun getRootfsSize(workspaceId: String): Long {
         val rootfs = getRootfsPath(workspaceId)
         if (!rootfs.exists()) return 0L
-        // computeIfAbsent keeps the walk single-flight per workspace even when
-        // Home and the detail screen (or validator) query simultaneously.
-        return rootfsSizeCache.computeIfAbsent(workspaceId) { calculateDirSize(rootfs) }
+        return measurementsFor(workspaceId)?.rootfsBytes ?: 0L
+    }
+
+    /**
+     * F-010/F-037: in-memory result → persisted result (while a background
+     * revalidation runs) → blocking walk. The last step only happens on a
+     * genuinely cold, never-measured workspace.
+     */
+    private fun measurementsFor(workspaceId: String): SizeMeasurementCache.Measurements? {
+        sizeMeasurements.cached(workspaceId)?.let { return it }
+        val base = getWorkspaceBasePath(workspaceId)
+        val rootfs = getRootfsPath(workspaceId)
+        val persisted = sizeStore.read(workspaceId)
+        if (persisted != null) {
+            // DRA-005 closure: serve the persisted answer and only start a
+            // background walk if this process has not refreshed this workspace
+            // yet, or the TTL expired. This is what keeps a stop/re-entry cycle
+            // from paying the measured 7.1 s CPU walk again.
+            val firstThisProcess = revalidatedThisProcess.add(workspaceId)
+            val age = sizeStore.ageMillis(workspaceId)
+            if (firstThisProcess || age == null || age >= MIN_REVALIDATE_INTERVAL_MS) {
+                sizeMeasurements.warm(workspaceId, base, rootfs)
+            }
+            return persisted
+        }
+        return sizeMeasurements.get(workspaceId, base, rootfs)
     }
 
     /**
@@ -232,7 +540,7 @@ class WorkspaceFileManager @Inject constructor(
     fun getWorkspaceSize(workspaceId: String): Long {
         val base = getWorkspaceBasePath(workspaceId)
         if (!base.exists()) return 0L
-        return workspaceSizeCache.computeIfAbsent(workspaceId) { calculateDirSize(base) }
+        return measurementsFor(workspaceId)?.workspaceBytes ?: 0L
     }
 
     /**
@@ -268,54 +576,53 @@ class WorkspaceFileManager @Inject constructor(
         return WorkspaceStorage(usedBytes = used, deviceFreeBytes = free)
     }
 
-    /**
-     * Sum of regular files under [root], **without following symlinks**.
-     *
-     * The old implementation used `File.isDirectory`/`File.length()`, both of
-     * which follow symlinks on Android. A Debian merged-usr rootfs ships
-     * `/bin -> usr/bin`, `/lib -> usr/lib`, `/sbin -> usr/sbin`,
-     * `/lib64 -> usr/lib64`, and §1.26's `proot --link2symlink` extraction
-     * turns hardlinks into more symlinks — so the naive walk recursed into
-     * the same shared subtree over and over (a real 2.6 GB rootfs displayed
-     * as ~30 GB) and, given a symlink cycle, could recurse without bound.
-     *
-     * `Files.walkFileTree` never follows symbolic links by default, so it
-     * (a) never descends into symlinked directories, (b) is cycle-safe by
-     * construction, and (c) counts only real regular files via the
-     * `BasicFileAttributes` size, so each inode contributes exactly once.
-     * Unreadable subtrees are skipped, never fatal.
-     *
-     * Used for both the rootfs-only and the whole-workspace measurement: the
-     * symlink rules that make a rootfs walk correct apply verbatim to its
-     * parent directory, which contains it.
-     */
-    private fun calculateDirSize(root: File): Long {
-        var size = 0L
-        try {
-            Files.walkFileTree(
-                root.toPath(),
-                object : SimpleFileVisitor<Path>() {
-                    override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
-                        // walkFileTree doesn't follow links, so a symlink
-                        // reaches us as the link itself (attrs.isRegularFile
-                        // == false) and is skipped here — no double counting,
-                        // no cycles.
-                        if (attrs.isRegularFile) {
-                            size += attrs.size()
-                        }
-                        return FileVisitResult.CONTINUE
-                    }
+    private companion object {
+        /**
+         * DRA-005 closure: how long a stale size is left to the persisted
+         * answer before the background revalidation walk starts. The measured
+         * walk on the XFCE workspace is 2–4 s; starting it 2 s after the first
+         * read keeps it out of the workspace entry + PRoot start window while
+         * still refreshing promptly.
+         */
+        const val WARM_DELAY_MS = 2_000L
 
-                    override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult {
-                        // Skip unreadable entries (permissions, broken links)
-                        // instead of aborting the whole walk.
-                        return FileVisitResult.CONTINUE
-                    }
-                }
-            )
-        } catch (_: Exception) {
-            // Best-effort: return whatever was accumulated so far.
-        }
-        return size
+        /**
+         * DRA-005 closure: how old a persisted size may be before the same
+         * process walks it again (the first read of a process always
+         * refreshes). The size is a cosmetic card figure; the walk is
+         * multi-second, so a 10-minute TTL is a deliberate freshness/CPU
+         * trade-off, not a correctness gate.
+         */
+        const val MIN_REVALIDATE_INTERVAL_MS = 10 * 60 * 1000L
+
+        /**
+         * Union of the shipped profiles' shell candidates, ordered so a
+         * POSIX shell wins before bash/busybox where both exist. Kept in the
+         * same guest-path form as the profile YAML.
+         */
+        val LAUNCH_SHELL_CANDIDATES = listOf(
+            "bin/sh",
+            "usr/bin/sh",
+            "bin/ash",
+            "usr/bin/ash",
+            "bin/bash",
+            "usr/bin/bash",
+            "bin/busybox"
+        )
+
+        /** RF-021: `rootfs.previous-<epoch-ms>` created by [activateStagedRootfs]. */
+        const val PREVIOUS_ROOTFS_PREFIX = "rootfs.previous-"
+
+        /** RF-021: `<staging>.quarantine-<epoch-ms>` created by the extractor. */
+        const val STAGING_QUARANTINE_PREFIX = ".staging-rootfs.quarantine-"
     }
+}
+
+/** What [WorkspaceFileManager.sweepInstallDebris] actually removed (RF-021). */
+data class InstallDebrisSweep(
+    val restoredPrevious: File?,
+    val deletedPrevious: List<File>,
+    val deletedStagingQuarantine: List<File>
+) {
+    val deletedCount: Int get() = deletedPrevious.size + deletedStagingQuarantine.size
 }

@@ -2,6 +2,8 @@ package com.fem.linexa.data.settings
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.fem.linexa.core.i18n.AppLocale
+import com.fem.linexa.domain.settings.AppLanguage
 import com.fem.linexa.domain.settings.ColorTheme
 import com.fem.linexa.domain.settings.RecentSessionsLayout
 import com.fem.linexa.domain.settings.SettingsRepository
@@ -58,6 +60,16 @@ class SettingsRepositoryImpl @Inject constructor(
         // both enum ordinals and Kotlin identifiers, and an unreadable value can
         // never crash the app's startup.
         ColorTheme.fromKey(prefs.getString(KEY_COLOR_THEME, null))
+    )
+
+    /**
+     * The app-language preference. Defaults to SYSTEM: a fresh install follows
+     * the device when it is English or Persian, and every other device language
+     * falls back to English. An explicit choice is written under a stable key,
+     * so it survives updates, reboots and every workspace lifecycle event.
+     */
+    private val appLanguageState = MutableStateFlow(
+        AppLanguage.fromKey(prefs.getString(KEY_APP_LANGUAGE, null))
     )
 
     private val recentSessionsLayoutState = MutableStateFlow(
@@ -128,6 +140,20 @@ class SettingsRepositoryImpl @Inject constructor(
         colorThemeState.value = theme
     }
 
+    // ── Language ───────────────────────────────────────────────────────────
+
+    override fun observeAppLanguage(): Flow<AppLanguage> = appLanguageState.asStateFlow()
+
+    override fun currentAppLanguage(): AppLanguage = appLanguageState.value
+
+    override suspend fun setAppLanguage(language: AppLanguage) {
+        // SYSTEM is stored explicitly too, so "follow the device" can be chosen
+        // after an override. Absence and SYSTEM therefore mean the same thing,
+        // and the selector can present a real selected row in both cases.
+        prefs.edit().putString(KEY_APP_LANGUAGE, language.key).apply()
+        appLanguageState.value = language
+    }
+
     // ── Terminal UI ────────────────────────────────────────────────────────
 
     override fun observeRecentSessionsLayout(): Flow<RecentSessionsLayout> =
@@ -163,10 +189,11 @@ class SettingsRepositoryImpl @Inject constructor(
     }
 
     private companion object {
-        const val PREFS_FILE = "linexa_settings"
+        const val PREFS_FILE = AppLocale.PREFS_FILE
         const val KEY_DEBUG_ENABLED = "debug_enabled"
         const val KEY_THEME_MODE = "theme_mode"
         const val KEY_COLOR_THEME = "color_theme"
+        const val KEY_APP_LANGUAGE = AppLocale.KEY_APP_LANGUAGE
         const val KEY_RECENT_SESSIONS_LAYOUT = "recent_sessions_layout"
         const val KEY_TOOLBAR_PRESET = "terminal_toolbar_preset"
         const val KEY_TOOLBAR_ROW_MODE = "terminal_toolbar_row_mode"

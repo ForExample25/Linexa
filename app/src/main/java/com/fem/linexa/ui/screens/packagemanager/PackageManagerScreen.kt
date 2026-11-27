@@ -40,6 +40,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -89,6 +90,7 @@ import com.fem.linexa.ui.components.haven.HavenButtonSize
 import com.fem.linexa.ui.components.haven.HavenButtonVariant
 import com.fem.linexa.ui.theme.haven.HavenTheme
 import com.fem.linexa.ui.theme.haven.HavenType
+import kotlinx.coroutines.flow.drop
 
 private const val STORE_LOAD_MORE_THRESHOLD = 4
 
@@ -125,6 +127,17 @@ fun PackageManagerScreen(
     // Separate scroll state per tab so switching never resets the other tab's
     // position (the lists are lazy and hoisted above the AnimatedContent).
     val installedListState = rememberLazyListState()
+
+    // A sort change rewrites the Installed list's order, so keeping the old
+    // scroll offset would strand the user at an arbitrary row of a different
+    // ordering. Reset to the first item only when the sort value really
+    // changes: `drop(1)` skips snapshotFlow's initial emission, so returning
+    // to the tab or an unrelated refresh never moves the list.
+    LaunchedEffect(installedListState) {
+        snapshotFlow { installedSort }
+            .drop(1)
+            .collect { installedListState.scrollToItem(0) }
+    }
 
     // LX-4 (2026-09-01): the Installed/Store views read the SAME rootfs the
     // terminal writes to — dpkg's database and apt's lists are one shared
@@ -388,7 +401,7 @@ private fun InstalledToolbar(
                 text = stringResource(R.string.pkg_manager_sort),
                 style = HavenType.desc,
                 color = h.muted,
-                maxLines = 1
+                maxLines = 2
             )
             HChipRow {
                 InstalledSort.entries.forEach { option ->
@@ -689,8 +702,7 @@ private fun PackageRow(
                 text = name,
                 style = HavenType.rowTitle,
                 color = h.text,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
+                maxLines = 2
             )
             if (metadata.isNotEmpty()) {
                 Text(
@@ -707,9 +719,7 @@ private fun PackageRow(
                     text = description,
                     style = HavenType.desc.copy(fontSize = 12.5.sp),
                     color = h.text2,
-                    modifier = Modifier.padding(top = 4.dp),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+                    modifier = Modifier.padding(top = 4.dp)
                 )
             }
         }
@@ -768,8 +778,7 @@ private fun PackageQueueStrip(
                     text = stringResource(R.string.pkg_manager_queue_title),
                     style = HavenType.desc.copy(fontWeight = FontWeight.SemiBold),
                     color = h.text,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    maxLines = 2
                 )
                 Text(
                     text = activeCommand?.let {
@@ -786,7 +795,7 @@ private fun PackageQueueStrip(
                     text = pluralStringResource(R.plurals.pkg_manager_queue_waiting, waiting, waiting),
                     style = HavenType.mono12.copy(fontWeight = FontWeight.SemiBold),
                     color = h.primary,
-                    maxLines = 1
+                    maxLines = 2
                 )
             }
         }
@@ -860,6 +869,19 @@ private fun OperationPanel(
                     style = HavenType.mono12.copy(fontWeight = FontWeight.SemiBold),
                     color = h.primary,
                     modifier = Modifier.padding(top = 6.dp)
+                )
+            }
+            op.lockContention?.let { holder ->
+                val holderLabel = holder.process ?: holder.pid?.toString()
+                Text(
+                    text = if (holderLabel != null) {
+                        stringResource(R.string.pkg_manager_lock_hint_process, holderLabel)
+                    } else {
+                        stringResource(R.string.pkg_manager_lock_hint)
+                    },
+                    style = HavenType.desc,
+                    color = h.red,
+                    modifier = Modifier.padding(top = 8.dp)
                 )
             }
             if (op.status == OperationStatus.RUNNING) {

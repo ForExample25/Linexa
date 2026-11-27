@@ -3,6 +3,8 @@ package com.fem.linexa.core.filesystem
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -252,5 +254,36 @@ class ProcessContainmentTest {
         assertEquals(null, ProcessContainment.parseStat("700 S 1 700 700"))
         assertEquals(null, ProcessContainment.parseStat(""))
         assertEquals(null, ProcessContainment.parseStat("700 (proot) S 1 700 700 0 -1 0 0 0 0 0 0 0 0 0 0 20 0 1"))
+    }
+
+    @Test
+    fun `processHostPid resolves a live JVM child through the public Process class`() {
+        // Regression: the old `process.javaClass.getMethod("pid")` looked up
+        // the method on the package-private ProcessImpl and threw
+        // IllegalAccessException on JDK 17, so every identity capture was
+        // silently null. The public Process lookup must return the real pid.
+        val process = ProcessBuilder("/bin/sh", "-c", "sleep 30").start()
+        try {
+            val pid = processHostPid(process)
+            assertNotNull("a live child must expose its host pid", pid)
+            assertTrue("the pid must be a live /proc row", ProcessTableReader.readEntry(pid!!)?.isLive == true)
+        } finally {
+            process.destroyForcibly()
+            process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)
+        }
+    }
+
+    @Test
+    fun `hidden pid falls back to the runtime process description`() {
+        // Android's SDK omits java.lang.Process.pid(), so the app only sees
+        // libcore's description shape. The parser must recover the pid
+        // without any hidden-API lookup; captureProcessIdentity still verifies
+        // it against /proc before it can be used for signalling.
+        assertEquals(8445, parseHostPidFromDescription("Process[pid=8445, hasExited=false]"))
+        assertEquals(1234, parseHostPidFromDescription("Process[pid=1234, exitValue=0]"))
+        assertNull(parseHostPidFromDescription("java.lang.UNIXProcess@6f2b958e"))
+        assertNull(parseHostPidFromDescription("Process[pid=0, hasExited=false]"))
+        assertNull(parseHostPidFromDescription("Process[pid=-1, hasExited=false]"))
+        assertNull(parseHostPidFromDescription(""))
     }
 }

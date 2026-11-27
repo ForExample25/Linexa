@@ -81,12 +81,17 @@ class TerminalContainerTransformSourceTest {
     @Test
     fun selectingACardStillFocusesWithoutRestartingTheSession() {
         assertTrue(
-            "a card tap must restore/focus the existing window",
-            panel.contains("terminalsViewModel.restoreTerminal(terminalId)")
+            "a card tap must restore/focus the existing window through the ViewModel",
+            panel.contains("TerminalsViewModel") &&
+                panel.contains("TerminalSelectionSource.WindowRestore")
         )
         assertTrue(
-            "a card tap must retarget the hoisted active id",
-            panel.contains("onActiveTerminalIdChange(terminalId)")
+            "a card tap must go through the one authoritative selection path",
+            panel.contains("terminalsViewModel.requestActiveTerminal(")
+        )
+        assertTrue(
+            "the one-way mirror keeps the hoisted id pointing at the rendered window",
+            panel.contains("onActiveTerminalIdChange(focused)")
         )
         assertTrue(
             "a card tap must close the overview, running the transform backwards",

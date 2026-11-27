@@ -137,7 +137,10 @@ class AndroidHostSystemInfoProvider(
         collect(required = emptySet(), force = true)
 
     override suspend fun snapshotOf(categories: Set<HostInfoCategory>): HostSystemInfoSnapshot =
-        collect(required = categories, force = false)
+        collect(required = categories, force = false, honourTtlForRequired = false)
+
+    override suspend fun cachedSnapshotOf(categories: Set<HostInfoCategory>): HostSystemInfoSnapshot =
+        collect(required = categories, force = false, honourTtlForRequired = true)
 
     override fun lastSnapshot(): HostSystemInfoSnapshot? = lastAssembled
 
@@ -157,25 +160,26 @@ class AndroidHostSystemInfoProvider(
      */
     private suspend fun collect(
         required: Set<HostInfoCategory>,
-        force: Boolean
+        force: Boolean,
+        honourTtlForRequired: Boolean = false
     ): HostSystemInfoSnapshot = withContext(ioDispatcher) {
         refreshMutex.withLock {
-            refreshOne(HostInfoCategory.BATTERY, required, force)
-            refreshOne(HostInfoCategory.MEMORY, required, force)
-            refreshOne(HostInfoCategory.SWAP, required, force)
-            refreshOne(HostInfoCategory.CPU, required, force)
-            refreshOne(HostInfoCategory.GPU, required, force)
-            refreshOne(HostInfoCategory.STORAGE, required, force)
-            refreshOne(HostInfoCategory.SYSTEM, required, force)
+            refreshOne(HostInfoCategory.BATTERY, required, force, honourTtlForRequired)
+            refreshOne(HostInfoCategory.MEMORY, required, force, honourTtlForRequired)
+            refreshOne(HostInfoCategory.SWAP, required, force, honourTtlForRequired)
+            refreshOne(HostInfoCategory.CPU, required, force, honourTtlForRequired)
+            refreshOne(HostInfoCategory.GPU, required, force, honourTtlForRequired)
+            refreshOne(HostInfoCategory.STORAGE, required, force, honourTtlForRequired)
+            refreshOne(HostInfoCategory.SYSTEM, required, force, honourTtlForRequired)
 
             synchronized(entryLock) {
                 entries[HostInfoCategory.THERMAL]?.collector = {
                     sources.collectThermal(batteryTemperatureNow())
                 }
             }
-            refreshOne(HostInfoCategory.THERMAL, required, force)
-            refreshOne(HostInfoCategory.NETWORK, required, force)
-            refreshOne(HostInfoCategory.PROCESSES, required, force)
+            refreshOne(HostInfoCategory.THERMAL, required, force, honourTtlForRequired)
+            refreshOne(HostInfoCategory.NETWORK, required, force, honourTtlForRequired)
+            refreshOne(HostInfoCategory.PROCESSES, required, force, honourTtlForRequired)
 
             assemble(wallClockMs())
         }
@@ -186,17 +190,25 @@ class AndroidHostSystemInfoProvider(
             (entries[HostInfoCategory.BATTERY]?.value as? HostBatteryInfo)?.temperatureC
         }
 
-    private fun refreshOne(category: HostInfoCategory, required: Set<HostInfoCategory>, force: Boolean) {
+    private fun refreshOne(
+        category: HostInfoCategory,
+        required: Set<HostInfoCategory>,
+        force: Boolean,
+        honourTtlForRequired: Boolean = false
+    ) {
         synchronized(entryLock) {
             val entry = entries[category] ?: return
             val nowMs = wallClockMs()
             // Three orthogonal reasons to pay for a collection:
             //  - force: caller demanded fresh data (rate-guarded);
-            //  - selective: the caller NAMED this category — always honored;
+            //  - selective: the caller NAMED this category — honored unless the
+            //    caller is a timer (honourTtlForRequired), in which case the
+            //    cache TTL is authoritative and polling cannot defeat it;
             //  - standard pass: nothing named, refill whatever expired.
             val shouldCollect = when {
                 force -> entry.eligibleForForce(nowMs)
                 required.isEmpty() -> entry.isExpired(nowMs)
+                honourTtlForRequired -> category in required && entry.isExpired(nowMs)
                 else -> category in required
             }
             if (!shouldCollect) return

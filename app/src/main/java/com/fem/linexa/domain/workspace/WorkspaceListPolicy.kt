@@ -116,13 +116,27 @@ object WorkspaceListPolicy {
         entryOf: (T) -> WorkspaceListEntry
     ): List<T> {
         val tokens = WorkspaceSearch.tokens(options.query)
+        // The normalized name is only a sort key for NAME. NEWEST and OLDEST order by
+        // createdAt, so producing it there would run `Normalizer.normalize` (plus its
+        // per-character loop) for every item on every emission and never read it — and
+        // this function runs on Main for each list/option emission. A blank query is
+        // the common case, and `WorkspaceSearch.rank` already returns without touching
+        // the name there, so NAME-only normalization removes the whole default-path
+        // normalization cost rather than shifting it.
+        val needsSortName = options.sort == WorkspaceSort.NAME
         val candidates = ArrayList<Candidate<T>>(items.size)
         items.forEachIndexed { index, item ->
             val entry = entryOf(item)
             if (!options.filter.matches(entry.status)) return@forEachIndexed
             val rank = WorkspaceSearch.rank(WorkspaceSearchEntry(entry.name, entry.extras), tokens)
                 ?: return@forEachIndexed
-            candidates += Candidate(item, entry, index, rank, WorkspaceSearch.normalize(entry.name))
+            candidates += Candidate(
+                item,
+                entry,
+                index,
+                rank,
+                sortName = if (needsSortName) WorkspaceSearch.normalize(entry.name) else null
+            )
         }
         return candidates.sortedWith(comparatorFor(options.sort)).map { it.item }
     }
@@ -132,7 +146,8 @@ object WorkspaceListPolicy {
         val entry: WorkspaceListEntry,
         val index: Int,
         val rank: WorkspaceSearchRank,
-        val sortName: String
+        /** Non-null exactly when [WorkspaceSort.NAME] was requested. */
+        val sortName: String?
     )
 
     private fun <T> comparatorFor(sort: WorkspaceSort): Comparator<Candidate<T>> {
@@ -146,7 +161,9 @@ object WorkspaceListPolicy {
             WorkspaceSort.OLDEST ->
                 byRank.thenBy { it.entry.createdAt }.thenByDescending { it.index }
             WorkspaceSort.NAME ->
-                byRank.thenBy { it.sortName }.thenByDescending { it.entry.createdAt }.thenBy { it.index }
+                // `apply` fills sortName for every surviving candidate when (and only
+                // when) this branch is selected; the filter/rank drops happen before.
+                byRank.thenBy { it.sortName!! }.thenByDescending { it.entry.createdAt }.thenBy { it.index }
         }
     }
 }

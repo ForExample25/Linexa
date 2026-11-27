@@ -20,6 +20,10 @@ import org.junit.Test
  *
  * Same technique and rationale as `AboutWiringSourceTest` (§1.130),
  * `SettingsWiringSourceTest` (§1.129) and `DebugInfoWiringSourceTest` (§1.137).
+ *
+ * 2026-11-13 (10D): the MotionEvent action→kind mapping moved to `VncTouchKind`
+ * and its totality is asserted behaviourally in VncTouchKindTest; the tests
+ * here keep the view-side wiring.
  */
 class DesktopInputWiringSourceTest {
 
@@ -75,20 +79,22 @@ class DesktopInputWiringSourceTest {
     }
 
     @Test
-    fun everyMotionEventKindIsTranslated() {
-        // A missing ACTION_POINTER_UP silently removes the right click; a missing
-        // ACTION_CANCEL leaves the remote button held after the window takes the
-        // gesture away.
-        listOf(
-            "ACTION_DOWN",
-            "ACTION_MOVE",
-            "ACTION_POINTER_DOWN",
-            "ACTION_POINTER_UP",
-            "ACTION_UP",
-            "ACTION_CANCEL"
-        ).forEach {
-            assertTrue("$it must be translated to a VncTouch", surfaceView.contains(it))
-        }
+    fun theViewDispatchesThroughTheSharedTouchKindMapping() {
+        // 10D: the action→kind mapping moved into VncTouchKind.kt and its
+        // totality is asserted behaviourally in VncTouchKindTest (MotionEvent
+        // constants are compile-time values, safe on the JVM). The wiring half
+        // stays: the view must classify through that one function, so a kind
+        // added to the enum without a view branch no longer compiles (the when
+        // is exhaustive), and a device action the mapping does not recognize
+        // lands in `Other`, which the view refuses rather than mistranslates.
+        assertTrue(
+            "VncSurfaceView must dispatch through the shared action→kind mapping",
+            surfaceView.contains("when (vncTouchKindOf(event.actionMasked))")
+        )
+        assertFalse(
+            "the view must not re-classify MotionEvent actions inline",
+            Regex("MotionEvent\\.ACTION_[A-Z_]+ ->").containsMatchIn(surfaceView)
+        )
     }
 
     @Test
@@ -206,8 +212,8 @@ class DesktopInputWiringSourceTest {
     fun contactAloneDoesNotMoveTheCursor() {
         // Touching the glass must leave the cursor exactly where the user left it;
         // ACTION_DOWN only records an origin to measure movement from.
-        val down = surfaceView.substringAfter("MotionEvent.ACTION_DOWN ->")
-            .substringBefore("MotionEvent.ACTION_MOVE")
+        val down = surfaceView.substringAfter("VncTouchKind.Down ->")
+            .substringBefore("VncTouchKind.Move")
         assertTrue("ACTION_DOWN must only begin a gesture: $down", down.contains("beginTouch("))
         assertFalse(
             "ACTION_DOWN must not flush movement: $down",
@@ -220,8 +226,8 @@ class DesktopInputWiringSourceTest {
         // The reported primary position jumps when a second finger lands, which as a
         // delta would fling the cursor across the desktop.
         assertTrue(surfaceView.contains("fun resyncTouchOrigin("))
-        val pointerDown = surfaceView.substringAfter("MotionEvent.ACTION_POINTER_DOWN ->")
-            .substringBefore("MotionEvent.ACTION_POINTER_UP")
+        val pointerDown = surfaceView.substringAfter("VncTouchKind.SecondaryDown ->")
+            .substringBefore("VncTouchKind.SecondaryUp")
         assertTrue(
             "ACTION_POINTER_DOWN must resync: $pointerDown",
             pointerDown.contains("resyncTouchOrigin(")

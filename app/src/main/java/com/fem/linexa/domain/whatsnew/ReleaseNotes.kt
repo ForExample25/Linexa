@@ -37,6 +37,21 @@ data class ReleaseNotes(
      */
     val versionName: String,
     /**
+     * Publication date in ISO-8601 form (`2026-11-27`), or null when unknown.
+     *
+     * Stored as a plain date string rather than an epoch so the catalog is readable
+     * in source review and locale formatting stays in the UI layer. A malformed
+     * value is treated as absent by the formatter, never as a crash.
+     */
+    val releaseDate: String? = null,
+    /**
+     * Whether this is a beta / pre-release build.
+     *
+     * The update checker already distinguishes pre-releases from GitHub metadata;
+     * this flag lets the in-app changelog say the same thing without a network call.
+     */
+    val isBeta: Boolean = false,
+    /**
      * One line stating what the release is *for*, or null when there is nothing to
      * say beyond the changes themselves.
      *
@@ -81,7 +96,7 @@ data class ReleaseChange(
 )
 
 /**
- * The four kinds of change a release can contain.
+ * The five kinds of change a release can contain.
  *
  * **No `@StringRes` label on the enum, on purpose.** Putting one here would drag `R`
  * into `domain/` and, more importantly, would make this type un-instantiable in a
@@ -107,5 +122,8 @@ enum class ChangeCategory {
     FIXED,
 
     /** Something that behaves differently than it used to — including removals. */
-    CHANGED
+    CHANGED,
+
+    /** A measured speed, memory, startup, or application-size improvement. */
+    PERFORMANCE
 }

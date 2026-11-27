@@ -35,8 +35,20 @@ internal object PacmanOutputParser {
      * `-Ss` output, so they stay null (see [parseAvailableInfo] for the
      * enrichment that does carry them).
      */
-    fun parseSearch(output: String): List<AvailablePkg> {
-        val result = ArrayList<AvailablePkg>()
+    fun parseSearch(output: String): List<AvailablePkg> =
+        parseSearchInternal(output, offset = 0, limit = Int.MAX_VALUE).packages
+
+    /**
+     * F-038 / R-27: page while parsing. `pacman -Ss` output is a block per
+     * package, so the walk still visits every block to count them, but only
+     * the requested rows are retained.
+     */
+    fun parseSearchPage(output: String, offset: Int, limit: Int): SearchPage =
+        parseSearchInternal(output, offset.coerceAtLeast(0), limit.coerceAtLeast(0))
+
+    private fun parseSearchInternal(output: String, offset: Int, limit: Int): SearchPage {
+        val page = ArrayList<AvailablePkg>(limit.coerceAtMost(64))
+        var total = 0
         val lines = output.lines()
         var i = 0
         while (i < lines.size) {
@@ -62,8 +74,8 @@ internal object PacmanOutputParser {
                     i++
                 }
             }
-            result.add(
-                AvailablePkg(
+            if (total >= offset && page.size < limit) {
+                page += AvailablePkg(
                     name = name,
                     latestVersion = version,
                     downloadSizeBytes = null,
@@ -71,10 +83,14 @@ internal object PacmanOutputParser {
                     repository = repo,
                     description = description.takeIf { it.isNotEmpty() }
                 )
-            )
+            }
+            total++
         }
-        return result
+        return SearchPage(total, page)
     }
+
+    /** One page of search results plus the full count (F-038). */
+    data class SearchPage(val total: Int, val packages: List<AvailablePkg>)
 
     /**
      * Parse `pacman -Qi` blocks into name → (size, description).

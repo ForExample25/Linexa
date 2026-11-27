@@ -119,8 +119,8 @@ class TerminalOverviewSourceTest {
         // The panel isolates IME padding to the terminal column; the overview
         // is its sibling, so the keyboard cannot resize a card.
         assertTrue(
-            "IME padding is applied to the terminal column, not the layer",
-            panel.contains(".imePadding()")
+            "the bottom (nav ∪ IME) inset is applied to the terminal column, not the layer",
+            panel.contains(".windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))")
         )
         val layerCall = panel.substringAfter("TerminalOverviewLayer(")
             .substringBefore("val pendingClose")

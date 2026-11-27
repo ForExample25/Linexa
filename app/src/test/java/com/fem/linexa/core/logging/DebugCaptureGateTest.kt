@@ -1,5 +1,6 @@
 package com.fem.linexa.core.logging
 
+import com.fem.linexa.domain.settings.AppLanguage
 import com.fem.linexa.domain.settings.ColorTheme
 import com.fem.linexa.domain.settings.RecentSessionsLayout
 import com.fem.linexa.domain.settings.SettingsRepository
@@ -159,6 +160,11 @@ class DebugCaptureGateTest {
         override fun observeColorTheme(): Flow<ColorTheme> = MutableStateFlow(ColorTheme.ALPINE_BLUE)
         override fun currentColorTheme(): ColorTheme = ColorTheme.ALPINE_BLUE
         override suspend fun setColorTheme(theme: ColorTheme) = Unit
+        // Language is not exercised by the capture gate; the default keeps the
+        // fake faithful to a fresh install.
+        override fun observeAppLanguage(): Flow<AppLanguage> = MutableStateFlow(AppLanguage.SYSTEM)
+        override fun currentAppLanguage(): AppLanguage = AppLanguage.SYSTEM
+        override suspend fun setAppLanguage(language: AppLanguage) = Unit
         // Terminal UI preferences are not exercised by the capture gate.
         override fun observeRecentSessionsLayout(): Flow<RecentSessionsLayout> =
             MutableStateFlow(RecentSessionsLayout.DEFAULT)

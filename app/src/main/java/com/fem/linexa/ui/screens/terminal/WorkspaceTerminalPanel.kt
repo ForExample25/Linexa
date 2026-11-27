@@ -18,20 +18,29 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.union
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -49,6 +58,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.res.painterResource
@@ -56,13 +66,16 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.fem.linexa.R
 import com.fem.linexa.core.logging.Logger
+import com.fem.linexa.domain.runtime.TerminalErrorReport
 import com.fem.linexa.domain.runtime.TerminalState
 import com.fem.linexa.domain.settings.RecentSessionsLayout
 import com.fem.linexa.domain.terminal.TerminalChromePolicy
@@ -72,9 +85,12 @@ import com.fem.linexa.service.runtime.RuntimeBinder
 import com.fem.linexa.service.runtime.pty.PtySession
 import com.fem.linexa.ui.components.LinexaAlertDialog
 import com.fem.linexa.ui.components.haven.HButton
+import com.fem.linexa.ui.components.haven.HCard
+import com.fem.linexa.ui.components.haven.HDialog
 import com.fem.linexa.ui.components.haven.HDot
 import com.fem.linexa.ui.components.haven.HIconGhost
 import com.fem.linexa.ui.components.haven.HSpinner
+import com.fem.linexa.ui.components.haven.HavenButtonSize
 import com.fem.linexa.ui.components.haven.HavenButtonVariant
 import com.fem.linexa.ui.components.haven.HavenExtraKeys
 import com.fem.linexa.ui.components.haven.HavenTerminalModifiers
@@ -94,18 +110,17 @@ import com.fem.linexa.ui.theme.haven.HavenType
  * windows never recreates or closes a session.
  *
  * 2026-11 Settings pass — IME independence:
- * `imePadding()` applies to the TERMINAL column only. The Recent Sessions
- * layer is a sibling of that column, so it always measures against the full
- * window and a card's geometry can never change when the keyboard opens or
- * closes. The panel dismisses the keyboard on entry anyway, but the layout no
- * longer depends on that timing.
+ * The bottom inset (`navigationBars ∪ ime`) applies to the TERMINAL column
+ * only. The Recent Sessions layer is a sibling of that column, so it always
+ * measures against the full window and a card's geometry can never change
+ * when the keyboard opens or closes. The panel dismisses the keyboard on
+ * entry anyway, but the layout no longer depends on that timing.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun WorkspaceTerminalPanel(
     workspaceId: String,
     workspaceName: String,
-    activeTerminalId: String,
     onActiveTerminalIdChange: (String) -> Unit,
     showOverview: Boolean,
     onShowOverviewChange: (Boolean) -> Unit,
@@ -113,17 +128,21 @@ fun WorkspaceTerminalPanel(
     onDismiss: () -> Unit,
     onGoHome: () -> Unit = onDismiss,
     modifier: Modifier = Modifier,
+    runtimeTraceText: String = "",
     viewModel: TerminalViewModel = hiltViewModel(),
     terminalsViewModel: TerminalsViewModel = hiltViewModel(),
     uiSettingsViewModel: TerminalUiSettingsViewModel = hiltViewModel()
 ) {
     val h = HavenTheme.colors
     val ptySession by viewModel.ptySession.collectAsState()
+    val ptyTerminalId by viewModel.ptyTerminalId.collectAsState()
+    val boundTerminalId by viewModel.boundTerminalId.collectAsState()
     val terminalState by viewModel.terminalState.collectAsState()
-    val terminalItems by terminalsViewModel.items.collectAsState()
+    val noOutputWarning by viewModel.noOutputWarning.collectAsState()
     val desktop by terminalsViewModel.desktop.collectAsState()
     val isCreating by terminalsViewModel.isCreating.collectAsState()
     val createdTerminalId by terminalsViewModel.createdTerminal.collectAsState()
+    val restartFailure by terminalsViewModel.restartFailure.collectAsState()
     val recentSessionsLayout by uiSettingsViewModel.recentSessionsLayout.collectAsState()
     val toolbarSettings by uiSettingsViewModel.toolbarSettings.collectAsState()
 
@@ -136,8 +155,21 @@ fun WorkspaceTerminalPanel(
 
     val keyboard = LocalSoftwareKeyboardController.current
     val focusManager = LocalFocusManager.current
+    val clipboard = LocalClipboardManager.current
+
+    // Finding 011: the Diagnostics action is a read-only dialog fed from the
+    // same report as Copy. It is deliberately not a screen or a modal error —
+    // the terminal surface stays exactly where it was.
+    var diagnosticsReport by remember { mutableStateOf<String?>(null) }
 
     val activeWindow = desktop.activeWindow
+    // What the panel may actually paint: the window the per-terminal
+    // ViewModel is bound to (so header and pty always share one identity),
+    // falling back to the desktop's active window on the first frame.
+    val rendered = TerminalRenderPolicy.select(desktop, boundTerminalId, ptyTerminalId, ptySession)
+    val renderedWindow = rendered.window
+    val renderedTerminalState = terminalState.takeIf { rendered.identityMatches }
+    val renderedNoOutputWarning = noOutputWarning.takeIf { rendered.identityMatches }
     val terminalModifiers = remember { HavenTerminalModifiers() }
     val terminalHandleRef = remember { mutableStateOf<TerminalHandle?>(null) }
     val motions = LocalHavenMotions.current
@@ -163,44 +195,42 @@ fun WorkspaceTerminalPanel(
         }
     }
 
-    // A create/replacement publishes its id: focus that window immediately.
+    // A create/replacement publishes its id: close the overview so it is
+    // visible. The ViewModel already remembered it as the authoritative
+    // selection; the panel must not write a second, competing focus here.
     LaunchedEffect(createdTerminalId) {
         val createdId = createdTerminalId
         if (createdId != null) {
+            Logger.i(
+                "TerminalChain",
+                "CHAIN: created terminal surfaced ws=$workspaceId tid=$createdId " +
+                    "source=ExternalOpenRequest"
+            )
             terminalsViewModel.consumeCreatedTerminal()
-            terminalsViewModel.activateTerminal(createdId)
-            onActiveTerminalIdChange(createdId)
             onShowOverviewChange(false)
         }
     }
 
-    // External open intents (app launch, notification deep link, hoisted state)
-    // focus the matching window. If the window list has not caught up yet the
-    // ViewModel remembers the id and applies it on its next sync.
-    LaunchedEffect(workspaceId, binder, activeTerminalId) {
-        if (binder != null) terminalsViewModel.restoreTerminal(activeTerminalId)
-    }
-
-    // The desktop's focused window is the source of truth for what is rendered;
-    // mirror it back to the hoisted id so deep links and process-death restore
-    // keep pointing at the window the user actually sees.
-    LaunchedEffect(activeWindow?.terminalId) {
-        val focused = activeWindow?.terminalId
-        if (focused != null && focused != activeTerminalId) {
+    // ONE-WAY save mirror: the window the panel is actually rendering is
+    // written back to the hoisted id so notification deep links and
+    // process-death restore point at it. This effect never calls back into the
+    // ViewModel — the old bidirectional mirror restored a stale hoisted id
+    // into the desktop and oscillated with this write (~2 frames forever).
+    LaunchedEffect(workspaceId, renderedWindow?.terminalId) {
+        val focused = renderedWindow?.terminalId
+        if (focused != null) {
+            Logger.i(
+                "TerminalChain",
+                "CHAIN: desktop active window ws=$workspaceId tid=$focused " +
+                    "source=DesktopActiveWindowUpdate"
+            )
             onActiveTerminalIdChange(focused)
         }
     }
 
-    // The previously rendered terminal disappeared -> focus a live sibling.
-    LaunchedEffect(terminalItems, activeTerminalId) {
-        if (terminalItems.isNotEmpty() && terminalItems.none { it.terminalId == activeTerminalId }) {
-            val fallback = desktop.activeWindow?.terminalId ?: terminalItems.first().terminalId
-            Logger.i("TerminalChain", "Rendered terminal $activeTerminalId is gone — switching to $fallback")
-            onActiveTerminalIdChange(fallback)
-        }
-    }
-
     // Attach the one rendered TerminalView to exactly the active window.
+    // The desktop (TerminalsViewModel) is the authority; this effect only
+    // follows it.
     LaunchedEffect(workspaceId, activeWindow?.terminalId, binder) {
         val terminalId = activeWindow?.terminalId
         if (binder == null) {
@@ -214,7 +244,12 @@ fun WorkspaceTerminalPanel(
             viewModel.detachBinder()
             return@LaunchedEffect
         }
-        Logger.d("TerminalChain", "Terminal attaching binder for $workspaceId/$terminalId")
+        Logger.i(
+            "TerminalChain",
+            "CHAIN: attach view ws=$workspaceId tid=$terminalId " +
+                "rendered=${renderedWindow?.terminalId ?: "none"} " +
+                "bound=${boundTerminalId ?: "none"} source=DesktopActiveWindowUpdate"
+        )
         viewModel.attachBinder(workspaceId, terminalId, binder)
         binder.markTerminalActive(workspaceId, terminalId)
     }
@@ -261,11 +296,20 @@ fun WorkspaceTerminalPanel(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                // IME padding belongs to the TERMINAL column only — never to
+                // Paint the whole column, including the bottom inset band, in
+                // the terminal color. The inset is consumed below, so without
+                // this the navigation-bar strip would be transparent and the
+                // light workspace behind the overlay would show through under
+                // a dark terminal.
+                .background(h.term)
+                // Bottom inset belongs to the TERMINAL column only — never to
                 // the overview sibling below. The keyboard re-flows the
                 // terminal and its shortcut bar; it cannot change the size of
-                // a Recent Sessions card.
-                .imePadding()
+                // a Recent Sessions card. The navigationBars ∪ ime union is
+                // consumed once here, so the extra-keys row's own
+                // navigationBarsPadding resolves to zero while the IME is up
+                // (applying both separately double-padded the shortcut bar).
+                .windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))
                 .graphicsLayer {
                     val progress = overviewProgress
                     val scale = 1f - 0.14f * progress
@@ -281,7 +325,7 @@ fun WorkspaceTerminalPanel(
             // ONE merged bar: window identity + live state on the left,
             // Minimize / Recents / Close on the right.
             TerminalWindowTopBar(
-                window = activeWindow,
+                window = renderedWindow,
                 workspaceName = workspaceName,
                 windowCount = desktop.windows.size,
                 // Minimize = go home. The window is deliberately left ACTIVE in
@@ -296,16 +340,78 @@ fun WorkspaceTerminalPanel(
                     keyboard?.hide()
                     onShowOverviewChange(true)
                 },
-                onClose = { activeWindow?.let { requestClose(it.terminalId) } }
+                onClose = { renderedWindow?.let { requestClose(it.terminalId) } }
             )
 
             Box(modifier = Modifier.weight(1f)) {
-                if (activeWindow != null) {
+                if (renderedWindow != null) {
+                    val errorState = renderedTerminalState as? TerminalState.Error
+                    val errorActions: (@Composable () -> Unit)? = if (errorState != null) {
+                        {
+                            val terminalId = renderedWindow.terminalId
+                            TerminalErrorActions(
+                                onRestart = { terminalsViewModel.restartTerminal(terminalId) },
+                                onDiagnostics = {
+                                    val error = renderedTerminalState as? TerminalState.Error
+                                    if (error != null) {
+                                        diagnosticsReport = TerminalErrorReport.diagnosticsText(
+                                            workspaceId = workspaceId,
+                                            terminalId = terminalId,
+                                            error = error,
+                                            lastOutput = binder
+                                                ?.terminalLastOutput(workspaceId, terminalId)
+                                                .orEmpty(),
+                                            runtimeTrace = runtimeTraceText
+                                        )
+                                    }
+                                },
+                                onCopy = {
+                                    val error = renderedTerminalState as? TerminalState.Error
+                                    if (error != null) {
+                                        clipboard.setText(
+                                            AnnotatedString(
+                                                TerminalErrorReport.copyText(
+                                                    workspaceId = workspaceId,
+                                                    terminalId = terminalId,
+                                                    error = error,
+                                                    lastOutput = binder
+                                                        ?.terminalLastOutput(workspaceId, terminalId)
+                                                        .orEmpty()
+                                                )
+                                            )
+                                        )
+                                    }
+                                }
+                            )
+                        }
+                    } else {
+                        null
+                    }
                     TerminalWindowSurface(
-                        ptySession = ptySession,
-                        terminalState = terminalState,
+                        ptySession = rendered.ptySession,
+                        terminalState = renderedTerminalState,
                         terminalModifiers = terminalModifiers,
-                        onViewReady = { terminalHandleRef.value = it }
+                        onViewReady = { terminalHandleRef.value = it },
+                        errorActions = errorActions,
+                        noOutputWarning = renderedNoOutputWarning,
+                        onNoOutputDiagnostics = {
+                            val warning = renderedNoOutputWarning
+                            if (warning != null) {
+                                diagnosticsReport = TerminalErrorReport.noOutputDiagnostics(
+                                    workspaceId = workspaceId,
+                                    terminalId = renderedWindow.terminalId,
+                                    pid = warning.pid,
+                                    silentMs = warning.elapsedMs,
+                                    runtimeTrace = runtimeTraceText
+                                )
+                            }
+                        },
+                        onNoOutputRestart = {
+                            terminalsViewModel.restartTerminal(
+                                renderedWindow.terminalId,
+                                allowRunning = true
+                            )
+                        }
                     )
                 } else {
                     TerminalDesktopIdle(
@@ -317,7 +423,7 @@ fun WorkspaceTerminalPanel(
                 }
             }
 
-            if (activeWindow != null) {
+            if (renderedWindow != null) {
                 HavenExtraKeys(
                     modifiers = terminalModifiers,
                     config = toolbarSettings.config,
@@ -341,15 +447,19 @@ fun WorkspaceTerminalPanel(
         TerminalOverviewLayer(
             visible = showOverview,
             windows = desktop.windows,
-            activeTerminalId = activeWindow?.terminalId,
+            activeTerminalId = renderedWindow?.terminalId,
             isCreating = isCreating,
             layout = recentSessionsLayout,
             gridState = overviewGridState,
             pagerState = overviewPagerState,
             onSelectWindow = { terminalId ->
-                terminalsViewModel.restoreTerminal(terminalId)
-                onActiveTerminalIdChange(terminalId)
-                onShowOverviewChange(false)
+                if (terminalsViewModel.requestActiveTerminal(
+                        terminalId,
+                        TerminalSelectionSource.WindowRestore
+                    )
+                ) {
+                    onShowOverviewChange(false)
+                }
             },
             onCreateTerminal = terminalsViewModel::createTerminal,
             onCloseWindow = requestClose,
@@ -358,6 +468,15 @@ fun WorkspaceTerminalPanel(
     }
 
     val pendingClose = pendingCloseTerminalId?.let { desktop.window(it) }
+    if (restartFailure != null) {
+        LinexaAlertDialog(
+            title = stringResource(R.string.sessions_restart),
+            message = stringResource(R.string.sessions_restart_failed, restartFailure.orEmpty()),
+            confirmLabel = stringResource(R.string.common_dismiss),
+            onConfirm = terminalsViewModel::clearRestartFailure,
+            onDismiss = terminalsViewModel::clearRestartFailure
+        )
+    }
     if (pendingCloseTerminalId != null && pendingClose != null) {
         LinexaAlertDialog(
             title = stringResource(R.string.terminal_window_close_title),
@@ -370,6 +489,49 @@ fun WorkspaceTerminalPanel(
                 if (terminalId != null) performClose(terminalId)
             },
             onDismiss = { pendingCloseTerminalId = null }
+        )
+    }
+
+    // Finding 011 — terminal-scoped diagnostics. The existing
+    // DiagnosticViewerScreen is a blocked-workspace screen (WorkspaceReadiness,
+    // Retry, Delete); reusing it here would fake a readiness state and offer
+    // actions that do not apply to a running workspace. This dialog carries the
+    // same evidence the viewer would show — workspace id, terminal id, exit
+    // status, reason, hint, retained output, and the workspace runtime trace —
+    // scoped to exactly the terminal the user clicked.
+    val report = diagnosticsReport
+    if (report != null) {
+        HDialog(
+            title = stringResource(R.string.terminal_diagnostics_title),
+            onDismiss = { diagnosticsReport = null },
+            content = {
+                Text(
+                    text = report,
+                    style = androidx.compose.ui.text.TextStyle(
+                        fontFamily = HavenType.mono,
+                        fontSize = 11.sp
+                    ),
+                    color = h.text2,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 320.dp)
+                        .verticalScroll(rememberScrollState())
+                )
+            },
+            actions = {
+                HButton(
+                    label = stringResource(R.string.common_copy),
+                    onClick = { clipboard.setText(AnnotatedString(report)) },
+                    variant = HavenButtonVariant.SECONDARY,
+                    size = HavenButtonSize.SMALL
+                )
+                HButton(
+                    label = stringResource(R.string.common_close),
+                    onClick = { diagnosticsReport = null },
+                    variant = HavenButtonVariant.PRIMARY,
+                    size = HavenButtonSize.SMALL
+                )
+            }
         )
     }
 }
@@ -528,7 +690,11 @@ private fun TerminalWindowSurface(
     ptySession: PtySession?,
     terminalState: TerminalState?,
     terminalModifiers: HavenTerminalModifiers,
-    onViewReady: (TerminalHandle?) -> Unit
+    onViewReady: (TerminalHandle?) -> Unit,
+    errorActions: (@Composable () -> Unit)? = null,
+    noOutputWarning: TerminalViewModel.NoOutputWarning? = null,
+    onNoOutputDiagnostics: () -> Unit = {},
+    onNoOutputRestart: () -> Unit = {}
 ) {
     val h = HavenTheme.colors
     Column(
@@ -565,15 +731,37 @@ private fun TerminalWindowSurface(
                         modifier = Modifier.fillMaxSize()
                     )
                 }
+                // Finding 019: an overlay, not a replacement. A slow shell keeps
+                // the full-size terminal below it; the banner only explains why
+                // the surface is still blank and offers diagnostics/restart.
+                if (noOutputWarning != null) {
+                    TerminalNoOutputBanner(
+                        warning = noOutputWarning,
+                        onDiagnostics = onNoOutputDiagnostics,
+                        onRestart = onNoOutputRestart,
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(8.dp)
+                    )
+                }
             } else {
+                val errorState = terminalState as? TerminalState.Error
                 TerminalStatusPlaceholder(
                     message = placeholderMessage(terminalState),
                     modifier = Modifier.fillMaxSize(),
-                    footer = if ((terminalState as? TerminalState.Error)?.killedBySigkill == true) {
+                    footer = if (errorState?.killedBySigkill == true) {
                         { TerminalKilledNotice() }
                     } else {
                         null
                     },
+                    // Finding 027: the exit-code hint. Suppressed for SIGKILL,
+                    // where TerminalKilledNotice already carries the same
+                    // guidance plus the battery action.
+                    hint = errorState?.takeUnless { it.killedBySigkill }?.hint,
+                    // Finding 011: Restart / Diagnostics / Copy. Rendered for
+                    // every Error, including SIGKILL, where it sits above the
+                    // retained battery notice.
+                    actions = errorActions,
                     showProgress = terminalState is TerminalState.Starting ||
                         terminalState is TerminalState.Running
                 )
@@ -818,6 +1006,8 @@ private fun TerminalStatusPlaceholder(
     message: String,
     modifier: Modifier,
     footer: (@Composable () -> Unit)? = null,
+    hint: String? = null,
+    actions: (@Composable () -> Unit)? = null,
     showProgress: Boolean = true
 ) {
     val h = HavenTheme.colors
@@ -842,9 +1032,130 @@ private fun TerminalStatusPlaceholder(
             ),
             color = h.termDim
         )
+        // Finding 027: the actionable half of the exit diagnosis. Kept under
+        // the reason so the raw code and the conventional meaning stay
+        // together; nothing here claims a cause the status cannot prove.
+        if (hint != null) {
+            Spacer(modifier = Modifier.size(8.dp))
+            Text(
+                text = hint,
+                style = androidx.compose.ui.text.TextStyle(
+                    fontFamily = HavenType.mono,
+                    fontSize = 12.sp
+                ),
+                color = h.termDim,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .widthIn(max = 420.dp)
+                    .padding(horizontal = 24.dp)
+            )
+        }
+        // Finding 011: recovery actions belong to the error card, between the
+        // diagnosis and any footer guidance (the SIGKILL battery notice).
+        if (actions != null) {
+            Spacer(modifier = Modifier.size(14.dp))
+            actions()
+        }
         if (footer != null) {
             Spacer(modifier = Modifier.size(TerminalKilledNoticeSpacing))
             footer()
         }
+    }
+}
+
+/**
+ * Finding 019 — the non-blocking first-output warning.
+ *
+ * It floats over the top of a live terminal instead of replacing the terminal
+ * view: a shell that is merely slow must still be able to paint its first
+ * frame underneath. Both actions are user-initiated; the watchdog itself never
+ * kills the pty.
+ */
+@Composable
+private fun TerminalNoOutputBanner(
+    warning: TerminalViewModel.NoOutputWarning,
+    onDiagnostics: () -> Unit,
+    onRestart: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val h = HavenTheme.colors
+    HCard(tight = true, color = h.surface2, modifier = modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp)) {
+            Text(
+                text = stringResource(R.string.terminal_no_output_title),
+                style = HavenType.desc.copy(fontWeight = FontWeight.SemiBold),
+                color = h.text
+            )
+            Text(
+                text = stringResource(
+                    R.string.terminal_no_output_body,
+                    (warning.elapsedMs / 1000L).toInt()
+                ),
+                style = HavenType.desc,
+                color = h.muted,
+                modifier = Modifier.padding(top = 2.dp)
+            )
+            Row(
+                modifier = Modifier.padding(top = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                HButton(
+                    label = stringResource(R.string.terminal_error_diagnostics),
+                    onClick = onDiagnostics,
+                    variant = HavenButtonVariant.SECONDARY,
+                    size = HavenButtonSize.SMALL
+                )
+                HButton(
+                    label = stringResource(R.string.terminal_error_restart),
+                    onClick = onRestart,
+                    variant = HavenButtonVariant.PRIMARY,
+                    size = HavenButtonSize.SMALL
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Finding 011 — the three recovery actions of a dead terminal.
+ *
+ * This is intentionally an inline row, not a modal: the workspace and its
+ * siblings stay visible and running, matching the per-terminal error model
+ * (a dead terminal is not a dead workspace). The actions never mutate terminal
+ * state themselves beyond calling the supplied callbacks, so a failed restart
+ * cannot be hidden by this layer.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun TerminalErrorActions(
+    onRestart: () -> Unit,
+    onDiagnostics: () -> Unit,
+    onCopy: () -> Unit
+) {
+    FlowRow(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 24.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        HButton(
+            label = stringResource(R.string.terminal_error_restart),
+            onClick = onRestart,
+            variant = HavenButtonVariant.PRIMARY,
+            size = HavenButtonSize.SMALL
+        )
+        HButton(
+            label = stringResource(R.string.terminal_error_diagnostics),
+            onClick = onDiagnostics,
+            variant = HavenButtonVariant.SECONDARY,
+            size = HavenButtonSize.SMALL
+        )
+        HButton(
+            label = stringResource(R.string.terminal_error_copy),
+            onClick = onCopy,
+            variant = HavenButtonVariant.SECONDARY,
+            size = HavenButtonSize.SMALL
+        )
     }
 }

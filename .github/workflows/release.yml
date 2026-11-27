@@ -1,0 +1,210 @@
+# Signed release build for Linexa.
+#
+# This workflow is inert until the repository owner:
+#   1. commits it to the public repository, and
+#   2. adds the four signing secrets described in
+#      docs/engineering/BUILD_AND_DEVELOPMENT.md (Signing).
+#
+# It builds the release APK and AAB with the EXISTING keystore. Do not create a
+# new signing key: the published APK is already signed with the project key, and
+# Android will reject updates signed by a different key.
+#
+# Trigger: a v* tag push, or a manual run with an existing tag.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing git tag to build (for example v0.1.0-beta)"
+        required: true
+        type: string
+      publish:
+        description: "Create or update the GitHub Release after a successful build"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build signed APK and AAB
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      - name: Set up JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools platforms;android-34 build-tools;34.0.0"
+
+      - name: Check signing secrets
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in ANDROID_KEYSTORE_BASE64 SIGNING_STORE_PASSWORD SIGNING_KEY_ALIAS SIGNING_KEY_PASSWORD; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::Missing repository secret: $name"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::Add the four signing secrets; see docs/engineering/BUILD_AND_DEVELOPMENT.md (Signing)"
+            exit 1
+          fi
+          echo "Signing secrets are present (values are not printed)."
+
+      - name: Decode the existing keystore into the runner temp directory
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/linexa-release.jks"
+          test -s "$RUNNER_TEMP/linexa-release.jks"
+          echo "Keystore decoded to the runner temp directory."
+
+      - name: Write temporary signing properties
+        env:
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          def escape(value: str) -> str:
+              return (
+                  value.replace("\\", "\\\\")
+                  .replace(":", "\\:")
+                  .replace("=", "\\=")
+                  .replace("\n", "\\n")
+                  .replace("\r", "\\r")
+              )
+
+          props = {
+              "signing.storeFile": os.environ["RUNNER_TEMP"] + "/linexa-release.jks",
+              "signing.storePassword": os.environ["SIGNING_STORE_PASSWORD"],
+              "signing.keyAlias": os.environ["SIGNING_KEY_ALIAS"],
+              "signing.keyPassword": os.environ["SIGNING_KEY_PASSWORD"],
+          }
+          text = "".join(f"{key}={escape(value)}\n" for key, value in props.items())
+          Path("local.properties").write_text(text, encoding="utf-8")
+          print("Wrote local.properties without printing its values.")
+          PY
+          chmod 600 local.properties
+
+      - name: Run the unit tests and lint before signing
+        env:
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8"
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --daemon --parallel --max-workers=4 \
+            :app:testDebugUnitTest :app:lintRelease
+          # The versionCode is pinned per release, so the running-build
+          # changelog check runs in both variants; the release-variant pass
+          # below is kept as the tag-time gate.
+          ./gradlew --daemon --parallel --max-workers=4 \
+            :app:testReleaseUnitTest \
+            --tests 'com.fem.linexa.domain.whatsnew.ReleaseNotesCatalogTest'
+
+      - name: Build release APK and AAB
+        env:
+          GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx3g -Dfile.encoding=UTF-8"
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon --parallel --max-workers=4 \
+            --stacktrace :app:assembleRelease :app:bundleRelease
+
+      - name: Verify the signed APK
+        run: |
+          set -euo pipefail
+          APKSIGNER="$ANDROID_HOME/build-tools/34.0.0/apksigner"
+          APK="app/build/outputs/apk/release/app-release.apk"
+          test -f "$APK"
+          "$APKSIGNER" verify --print-certs --verbose "$APK"
+          "$ANDROID_HOME/build-tools/34.0.0/zipalign" -c -v 4 "$APK"
+
+      - name: Write checksums
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          AAB="app/build/outputs/bundle/release/app-release.aab"
+          test -f "$AAB"
+          sha256sum "$APK" "$AAB" | sed 's#  .*/#  #' > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linexa-${{ github.event.inputs.tag || github.ref_name }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            app/build/outputs/apk/release/app-release.apk
+            app/build/outputs/bundle/release/app-release.aab
+            app/build/outputs/mapping/release/mapping.txt
+            SHA256SUMS
+
+      - name: Publish to the GitHub Release
+        # Tag pushes build and verify the artifact but do not publish: the
+        # release is created deliberately (with curated notes and the checksum
+        # that matches the uploaded APK) through a manual dispatch with
+        # `publish: true`. This avoids a tag-triggered CI build racing a
+        # manually published release and clobbering its asset.
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          APK="app/build/outputs/apk/release/app-release.apk"
+          AAB="app/build/outputs/bundle/release/app-release.aab"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" "$AAB" "SHA256SUMS" --clobber
+          else
+            gh release create "$TAG" "$APK" "$AAB" "SHA256SUMS" \
+              --title "Linexa $TAG" \
+              --verify-tag \
+              --generate-notes \
+              --prerelease
+          fi
+          echo "Published release assets for $TAG."
+
+      - name: Remove signing material
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/linexa-release.jks" local.properties
+          echo "Removed temporary signing material."

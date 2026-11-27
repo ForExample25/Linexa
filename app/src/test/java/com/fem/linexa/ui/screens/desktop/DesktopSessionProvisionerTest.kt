@@ -21,17 +21,19 @@ class DesktopSessionProvisionerTest {
     @Test
     fun probeAsksForEveryCandidateInOneExec() {
         val command = DesktopSessionProvisioner.DETECT_SESSION_COMMAND
-        assertTrue(command.startsWith("which "))
+        assertTrue(command.startsWith("for "))
+        assertTrue("must use the POSIX builtin, not which", command.contains("command -v "))
+        assertFalse("which may be absent on minimal images", command.contains("which "))
         DesktopSessionProvisioner.SESSION_CANDIDATES.forEach { candidate ->
-            assertTrue("probe is missing $candidate", command.contains(" $candidate"))
+            assertTrue("probe is missing $candidate", command.contains("'$candidate'"))
         }
     }
 
     @Test
     fun probeDoesNotHeadOneBecausePreferenceIsAppliedInKotlin() {
-        // `which` prints in argument order; truncating to the first line would
-        // move the preference decision into the guest's shell where it cannot
-        // be tested.
+        // The probe emits every hit in candidate order; truncating to the first
+        // line would move the preference decision into the guest's shell where
+        // it cannot be tested.
         assertFalse(DesktopSessionProvisioner.DETECT_SESSION_COMMAND.contains("head"))
     }
 

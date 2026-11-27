@@ -105,9 +105,10 @@ class PacmanProvider @Inject constructor() : PackageProvider {
         if (result.exitCode != 0) {
             return PackageSearchPage(total = 0, packages = emptyList())
         }
-        val all = PacmanOutputParser.parseSearch(result.output)
-        val page = all.drop(offset).take(limit)
-        if (page.isEmpty()) return PackageSearchPage(total = all.size, packages = page)
+        // F-038 / R-27: page while parsing.
+        val parsed = PacmanOutputParser.parseSearchPage(result.output, offset, limit)
+        val page = parsed.packages
+        if (page.isEmpty()) return PackageSearchPage(total = parsed.total, packages = page)
         // Enrich only the visible page with the sizes `-Ss` doesn't carry.
         // `-Si` exits 1 if any name is unresolvable yet still prints the rest,
         // so parse the output regardless of exit code.
@@ -121,7 +122,7 @@ class PacmanProvider @Inject constructor() : PackageProvider {
         }
         val byName = PacmanOutputParser.parseAvailableInfo(info.output)
         return PackageSearchPage(
-            total = all.size,
+            total = parsed.total,
             packages = page.map { pkg ->
                 val details = byName[pkg.name] ?: return@map pkg
                 pkg.copy(

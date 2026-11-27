@@ -74,7 +74,10 @@ class ExportCoordinator @Inject constructor(
      * Starts exporting [workspaceId]'s rootfs into the SAF document [targetUri]
      * the user created with the file picker. [suggestedFileName] is the name
      * the picker was launched with — the completion state falls back to it when
-     * the provider's own display name cannot be queried. Validation failures
+     * the provider's own display name cannot be queried. [credentialPolicy] is
+     * the user's answer to the pre-export credential warning (finding 022);
+     * it is required so no UI path can start an export without deciding.
+     * Validation failures
      * (workspace gone, not installed, still running, rootfs unusable) surface
      * as [ExportFlowState.Failed] with a user-presentable reason — the same
      * channel a mid-export I/O failure uses, so the UI needs exactly one
@@ -84,6 +87,7 @@ class ExportCoordinator @Inject constructor(
         workspaceId: String,
         workspaceName: String,
         targetUri: Uri,
+        credentialPolicy: ExportCredentialPolicy,
         suggestedFileName: String? = null,
     ) {
         val current = _state.value
@@ -99,7 +103,7 @@ class ExportCoordinator @Inject constructor(
 
         activeJob = scope.launch {
             try {
-                runExport(workspaceId, workspaceName, targetUri, suggestedFileName)
+                runExport(workspaceId, workspaceName, targetUri, credentialPolicy, suggestedFileName)
             } catch (e: CancellationException) {
                 Logger.i(TAG, "export($workspaceId): cancelled — cleaning up the partial output")
                 deletePartialOutput(targetUri)
@@ -142,6 +146,7 @@ class ExportCoordinator @Inject constructor(
         workspaceId: String,
         workspaceName: String,
         targetUri: Uri,
+        credentialPolicy: ExportCredentialPolicy,
         suggestedFileName: String?,
     ) {
         val failure: (String) -> Nothing = { reason ->
@@ -212,6 +217,7 @@ class ExportCoordinator @Inject constructor(
                 },
                 embeddedConfig = embeddedConfig,
                 expectedBytes = rootfsBytes,
+                credentialPolicy = credentialPolicy,
             )
         ) { progress ->
             val active = _state.value
@@ -235,11 +241,13 @@ class ExportCoordinator @Inject constructor(
                     fileName = fileName,
                     outputBytes = result.outputBytes,
                     skippedEntries = result.skippedEntries,
+                    removedCredentials = result.removedCredentials,
                 )
                 Logger.i(
                     TAG,
                     "export($workspaceId): completed — ${result.entryCount} entries, " +
-                        "${result.outputBytes} bytes, sha256=${result.sha256.take(12)}…"
+                        "${result.outputBytes} bytes, sha256=${result.sha256.take(12)}…, " +
+                        "${result.removedCredentials.size} credential entries removed"
                 )
             }
 
@@ -422,6 +430,8 @@ sealed interface ExportFlowState {
         val fileName: String,
         val outputBytes: Long,
         val skippedEntries: List<String> = emptyList(),
+        /** Credential paths intentionally left out of the archive (finding 022). */
+        val removedCredentials: List<String> = emptyList(),
     ) : ExportFlowState
 
     /**

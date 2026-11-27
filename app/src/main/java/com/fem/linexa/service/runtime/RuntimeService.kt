@@ -12,6 +12,8 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import com.fem.linexa.MainActivity
+import com.fem.linexa.R
+import com.fem.linexa.core.i18n.linexaString
 import com.fem.linexa.core.logging.DiagnosticLogManager
 import com.fem.linexa.core.logging.Logger
 import com.fem.linexa.domain.runtime.RuntimeState
@@ -29,6 +31,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.collect
@@ -139,6 +142,36 @@ class RuntimeService : Service(), WorkspaceSessionSupervisor.Host {
     val events: SharedFlow<RuntimeEvent> = _events.asSharedFlow()
 
     /**
+     * LINEXA-PERF-001: is any Linexa activity started (visible)? The runtime
+     * overlay ticker uses this only to choose its cadence — foreground 2 s,
+     * background [HostInfoRuntimeBridge.BACKGROUND_REFRESH_MS] — so the
+     * always-on cost no longer follows a backgrounded app forever.
+     *
+     * Initialised `true` on purpose: the service can be created after
+     * `MainActivity.onStart`, and guessing "background" would degrade the
+     * first visible interval. The first `onActivityStopped` settles it.
+     */
+    private val appForeground = MutableStateFlow(true)
+    private var startedActivities = 0
+    private val activityVisibilityCallbacks = object : android.app.Application.ActivityLifecycleCallbacks {
+        override fun onActivityStarted(activity: android.app.Activity) {
+            startedActivities++
+            appForeground.value = true
+        }
+
+        override fun onActivityStopped(activity: android.app.Activity) {
+            startedActivities = (startedActivities - 1).coerceAtLeast(0)
+            if (startedActivities == 0) appForeground.value = false
+        }
+
+        override fun onActivityCreated(activity: android.app.Activity, savedInstanceState: android.os.Bundle?) = Unit
+        override fun onActivityResumed(activity: android.app.Activity) = Unit
+        override fun onActivityPaused(activity: android.app.Activity) = Unit
+        override fun onActivitySaveInstanceState(activity: android.app.Activity, outState: android.os.Bundle) = Unit
+        override fun onActivityDestroyed(activity: android.app.Activity) = Unit
+    }
+
+    /**
      * §1.97/W4: display-name cache for the notification content, populated at
      * workspace start from the workspace metadata. The notification must not
      * hit Room on every update, so the resolved name is remembered here.
@@ -211,15 +244,25 @@ class RuntimeService : Service(), WorkspaceSessionSupervisor.Host {
         // and the StateFlow itself only emits when the recorded terminal
         // actually changes.
         observeLastActiveTerminalForNotification()
+        application.registerActivityLifecycleCallbacks(activityVisibilityCallbacks)
         // Host System Information: keep guest-visible /proc overlays ticking
         // while any session runs. Scoped to the service lifetime — never app
         // lifetime — so leaving runtime mode leaves zero background work.
-        hostInfoBridge.startOverlayTicker(sessionManager.sessionStates)
-        // §1.97/W5: the startup recovery sweep (stale PROOT_TMP_DIR scopes /
-        // tmux sockets from a process that died abnormally). Best-effort and
-        // serialized by the lifecycle manager, so a START that ever beat this
-        // coroutine also triggers the sweep itself before opening a workspace.
-        serviceScope.launch { lifecycleManager.startupSweep() }
+        // PERF-013: the job now suspends until a session is Running.
+        // LINEXA-PERF-001: foreground/background cadence comes from
+        // [appForeground]; the loop still stops entirely with zero sessions.
+        hostInfoBridge.startOverlayTicker(
+            sessionStates = sessionManager.sessionStates,
+            foreground = appForeground
+        )
+        // PERF-003: no eager startup sweep here. It used to run on this
+        // service's Main dispatcher the moment the service was created — and
+        // the Activity tab created the service just by opening it — so the
+        // sweep's filesystem scan competed with the destination's first frame
+        // for no session at all. Every start path already ensures the sweep
+        // before opening a workspace (RuntimeLifecycleManager.requestStart →
+        // runStartupSweepLocked), which is the only point where its result can
+        // matter; `startupSweep()` stays available for tests and recovery.
         Logger.i("RuntimeService", "RuntimeService created")
     }
 
@@ -396,7 +439,7 @@ class RuntimeService : Service(), WorkspaceSessionSupervisor.Host {
      * read UNCHANGED and skip the repost that recovers the grant.
      */
     private fun startForegroundNotification(workspaceId: String) {
-        val snapshot = notificationSnapshot(workspaceId, RuntimeNotificationContent.statusStarting())
+        val snapshot = notificationSnapshot(workspaceId, RuntimeNotificationContent.statusStarting(this))
         startForeground(NOTIFICATION_ID, buildNotification(snapshot))
         if (notificationsEnabled()) {
             notificationPresence.recordPosted(snapshot)
@@ -426,9 +469,9 @@ class RuntimeService : Service(), WorkspaceSessionSupervisor.Host {
      */
     private fun updateNotification(workspaceId: String) {
         val status = if (sessionManager.getState(workspaceId) is RuntimeState.Running) {
-            RuntimeNotificationContent.statusRunning()
+            RuntimeNotificationContent.statusRunning(this)
         } else {
-            RuntimeNotificationContent.statusStarting()
+            RuntimeNotificationContent.statusStarting(this)
         }
         val desired = notificationSnapshot(workspaceId, status)
         val decision = notificationPresence.evaluate(
@@ -458,13 +501,14 @@ class RuntimeService : Service(), WorkspaceSessionSupervisor.Host {
         val terminalCount = workspaceTerminalManager.terminalStates.value[workspaceId]?.size ?: 0
         return RuntimeNotificationPresence.Snapshot(
             workspaceId = workspaceId,
-            contentTitle = RuntimeNotificationContent.contentTitle(),
-            contentText = RuntimeNotificationContent.contentText(displayName, terminalCount, status),
+            contentTitle = RuntimeNotificationContent.contentTitle(this),
+            contentText = RuntimeNotificationContent.contentText(this, displayName, terminalCount, status),
             wakeLockActionLabel = RuntimeNotificationContent.wakeLockActionLabel(
+                this,
                 wakeLockManager.isHeldBy(workspaceId),
                 wakeLockManager.remainingMs()
             ),
-            stopActionLabel = RuntimeNotificationContent.stopActionLabel(),
+            stopActionLabel = RuntimeNotificationContent.stopActionLabel(this),
             openTerminalId = workspaceTerminalManager.lastActiveTerminalId(workspaceId)
         )
     }
@@ -587,10 +631,10 @@ class RuntimeService : Service(), WorkspaceSessionSupervisor.Host {
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "Runtime Service",
+            linexaString(R.string.runtime_channel_name),
             NotificationManager.IMPORTANCE_LOW
         ).apply {
-            description = "Shows when a workspace runtime is active"
+            description = linexaString(R.string.runtime_channel_description)
         }
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(channel)
@@ -598,6 +642,7 @@ class RuntimeService : Service(), WorkspaceSessionSupervisor.Host {
 
     override fun onDestroy() {
         super.onDestroy()
+        runCatching { application.unregisterActivityLifecycleCallbacks(activityVisibilityCallbacks) }
         // Stop the /proc overlay refresher BEFORE workspace teardown so its
         // last tick cannot race the rootfs being torn down underneath it.
         hostInfoBridge.stopOverlayTicker()

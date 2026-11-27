@@ -124,22 +124,44 @@ internal object ApkOutputParser {
      * omits it). apk exposes no size in search output, so sizes stay null.
      */
     fun parseSearch(output: String): List<AvailablePkg> =
-        output.lines().mapNotNull { raw ->
-            val line = raw.trim()
-            if (line.isEmpty() || line.startsWith("WARNING:") || line.startsWith("ERROR:")) return@mapNotNull null
-            val sep = line.indexOf(" - ")
-            val token = if (sep > 0) line.substring(0, sep).trim() else line
-            val description = if (sep > 0) line.substring(sep + 3).trim().takeIf { it.isNotEmpty() } else null
-            val (name, version) = splitNameVersion(token) ?: return@mapNotNull null
-            AvailablePkg(
-                name = name,
-                latestVersion = version,
-                downloadSizeBytes = null,
-                installedSizeBytes = null,
-                repository = null,
-                description = description
-            )
+        output.lines().mapNotNull { parseSearchLine(it) }
+
+    /**
+     * F-038 / R-27: parse only the requested page while still counting the
+     * whole result set, so a broad query does not materialize every row.
+     */
+    fun parseSearchPage(output: String, offset: Int, limit: Int): SearchPage {
+        val safeOffset = offset.coerceAtLeast(0)
+        val safeLimit = limit.coerceAtLeast(0)
+        var total = 0
+        val page = ArrayList<AvailablePkg>(safeLimit.coerceAtMost(64))
+        output.lineSequence().forEach { raw ->
+            val pkg = parseSearchLine(raw) ?: return@forEach
+            if (total >= safeOffset && page.size < safeLimit) page += pkg
+            total++
         }
+        return SearchPage(total, page)
+    }
+
+    private fun parseSearchLine(raw: String): AvailablePkg? {
+        val line = raw.trim()
+        if (line.isEmpty() || line.startsWith("WARNING:") || line.startsWith("ERROR:")) return null
+        val sep = line.indexOf(" - ")
+        val token = if (sep > 0) line.substring(0, sep).trim() else line
+        val description = if (sep > 0) line.substring(sep + 3).trim().takeIf { it.isNotEmpty() } else null
+        val (name, version) = splitNameVersion(token) ?: return null
+        return AvailablePkg(
+            name = name,
+            latestVersion = version,
+            downloadSizeBytes = null,
+            installedSizeBytes = null,
+            repository = null,
+            description = description
+        )
+    }
+
+    /** One page of search results plus the full count (F-038). */
+    data class SearchPage(val total: Int, val packages: List<AvailablePkg>)
 
     /**
      * Parse `apk info -d -v <names>` output — `name: description`:

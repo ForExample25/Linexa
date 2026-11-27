@@ -36,6 +36,8 @@ data class WorkspacePerformanceContent(
      * the workspace's tree.
      */
     val processLabel: String?,
+    /** Raw process count backing [processLabel], for locale-aware plurals. */
+    val processCount: Int? = null,
     /**
      * True when the memory figure is a sum of `VmRSS` rather than `Pss` and is
      * therefore an upper bound. The UI appends a `~` and explains it in the
@@ -93,6 +95,7 @@ data class WorkspacePerformanceContent(
                 memory = memoryMetric(running, sample),
                 storage = storageMetric(storage),
                 processLabel = processLabel(running, sample),
+                processCount = sample?.processCount?.takeIf { running && it > 0 },
                 memoryApproximate = running &&
                     sample?.memoryKb != null &&
                     !sample.memoryIsProportional,

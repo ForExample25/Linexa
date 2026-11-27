@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.horizontalScroll
@@ -47,7 +48,6 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import com.fem.linexa.R
 import com.fem.linexa.core.format.FileSizeFormatter
 import com.fem.linexa.domain.resource.HostProcessSample
-import com.fem.linexa.domain.resource.WorkspaceProcessSample
 import com.fem.linexa.ui.components.DistroIdentity
 import com.fem.linexa.ui.components.rememberIsForeground
 import com.fem.linexa.ui.components.haven.HavenDestination
@@ -98,8 +98,18 @@ fun ActivityScreen(
     // ACT-2: collapsed on first paint and saved across rotation/process death.
     // The section header is the ONE toggle — no separate Show/Hide control.
     var hostExpanded by rememberSaveable { mutableStateOf(false) }
-    val hostRows = remember(state.hostProcesses?.processes) {
-        HostProcessPresentation.ordered(state.hostProcesses?.processes.orEmpty())
+    // PERF-001 (phase 8): the section starts collapsed and composes zero process
+    // rows in that state, so ordering the full process table every poll tick was
+    // pure cost on the tab-entry path. The header count and the empty state read
+    // the raw sample; the sort (and its per-comparison name lowercasing) is
+    // deferred until an expand can actually show rows.
+    val hostProcessCount = state.hostProcesses?.processes?.size ?: 0
+    val hostRows = remember(state.hostProcesses?.processes, hostExpanded) {
+        if (hostExpanded) {
+            HostProcessPresentation.ordered(state.hostProcesses?.processes.orEmpty())
+        } else {
+            emptyList()
+        }
     }
     val hostVisible = HostProcessPresentation.visible(hostRows, hostExpanded)
 
@@ -114,9 +124,24 @@ fun ActivityScreen(
     // poll loop (the composable stays composed in the background, so keying on
     // composition alone would keep reading /proc for nobody).
     val foreground by rememberIsForeground()
+    // PERF-006: start after the destination's first frame. `withFrameNanos` is
+    // the real frame signal, not a sleep — the effect resumes at the next
+    // frame, so the first /proc scan can never race first composition (it used
+    // to fire in the same frame, while ~1 000 pid entries were being probed).
+    androidx.compose.runtime.LaunchedEffect(viewModel, foreground) {
+        if (foreground) {
+            androidx.compose.runtime.withFrameNanos { }
+            viewModel.start()
+        }
+    }
     DisposableEffect(viewModel, foreground) {
-        if (foreground) viewModel.start() else viewModel.pause()
+        if (!foreground) viewModel.pause()
         onDispose { viewModel.pause() }
+    }
+    // PERF-006: only the expanded section renders process rows, so only then is
+    // the PSS page-table walk worth paying for.
+    androidx.compose.runtime.LaunchedEffect(hostExpanded) {
+        viewModel.setHostProcessesExpanded(hostExpanded)
     }
 
     Scaffold(
@@ -147,11 +172,11 @@ fun ActivityScreen(
             Column(modifier = Modifier.fillMaxSize()) {
                 HPageHeader(
                     eyebrow = "LINEXA",
-                    title = "Activity",
+                    title = stringResource(R.string.haven_nav_activity),
                     trailing = {
                         HIconCircle(
                             iconRes = R.drawable.ic_haven_terminal,
-                            contentDescription = "Management Terminal",
+                            contentDescription = stringResource(R.string.activity_management_terminal),
                             onClick = { terminalOpen = !terminalOpen }
                         )
                     }
@@ -220,7 +245,7 @@ fun ActivityScreen(
                     // ── Android host processes (unprivileged /proc view) ──
                     item(key = "host-header") {
                         HostProcessHeader(
-                            count = hostRows.size,
+                            count = hostProcessCount,
                             expanded = hostExpanded,
                             onToggle = { hostExpanded = !hostExpanded }
                         )
@@ -244,7 +269,7 @@ fun ActivityScreen(
                             )
                         }
                     }
-                    if (hostRows.isEmpty()) {
+                    if (hostProcessCount == 0) {
                         item(key = "host-empty") {
                             HCard {
                                 Text(
@@ -286,12 +311,12 @@ fun ActivityScreen(
                         item(key = "sessions-empty") {
                             HCard {
                                 Text(
-                                    text = "No open sessions",
+                                    text = stringResource(R.string.activity_no_open_sessions),
                                     style = HavenType.rowTitle,
                                     color = h.text2
                                 )
                                 Text(
-                                    text = "Terminals you open inside a workspace appear here.",
+                                    text = stringResource(R.string.activity_no_open_sessions_desc),
                                     style = HavenType.desc,
                                     color = h.muted,
                                     modifier = Modifier.padding(top = 4.dp)
@@ -315,7 +340,7 @@ fun ActivityScreen(
                                             onOpenWorkspace(session.workspaceId, session.terminalId)
                                         }
                                         .padding(horizontal = 20.dp, vertical = 10.dp)
-                                        .height(com.fem.linexa.ui.theme.haven.HavenDim.rowMin),
+                                        .heightIn(min = com.fem.linexa.ui.theme.haven.HavenDim.rowMin),
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(14.dp)
                                 ) {
@@ -347,8 +372,7 @@ fun ActivityScreen(
                                             text = "${session.displayId} · ${session.workspaceName}",
                                             style = HavenType.rowTitle,
                                             color = h.text,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
+                                            maxLines = 2
                                         )
                                     }
                                     val sessionStatus = if (session.isRunning) {
@@ -379,7 +403,7 @@ fun ActivityScreen(
                         item(key = "events-empty") {
                             HCard {
                                 Text(
-                                    text = "Nothing yet",
+                                    text = stringResource(R.string.activity_nothing_yet),
                                     style = HavenType.rowTitle,
                                     color = h.text2
                                 )
@@ -412,8 +436,7 @@ fun ActivityScreen(
                                                 style = HavenType.body.copy(fontSize = androidx.compose.ui.unit.TextUnit(14f, androidx.compose.ui.unit.TextUnitType.Sp)),
                                                 color = h.text,
                                                 modifier = Modifier.weight(1f),
-                                                maxLines = 1,
-                                                overflow = TextOverflow.Ellipsis
+                                                maxLines = 2
                                             )
                                             Text(
                                                 text = event.relativeTime,
@@ -519,7 +542,7 @@ private fun HostProcessCard(process: HostProcessSample, onEnd: () -> Unit) {
                                     ?.let { FileSizeFormatter.format(it * 1024L) }
                                     ?: "—")
                             )
-                            append(" · ${WorkspaceProcessSample.stateLabel(process.stateChar)}")
+                            append(" · ${processStateLabel(process.stateChar)}")
                         },
                         style = HavenType.mono12,
                         color = h.muted,

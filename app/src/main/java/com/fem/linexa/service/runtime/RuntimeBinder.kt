@@ -7,6 +7,7 @@ import com.fem.linexa.domain.runtime.CommandResult
 import com.fem.linexa.domain.runtime.DEFAULT_TERMINAL_ID
 import com.fem.linexa.domain.runtime.RuntimeDegradation
 import com.fem.linexa.domain.runtime.RuntimeState
+import com.fem.linexa.domain.runtime.TerminalErrorReport
 import com.fem.linexa.domain.runtime.TerminalState
 import com.fem.linexa.service.runtime.container.ContainerRuntime
 import com.fem.linexa.service.runtime.features.GuestFeatureHost
@@ -197,6 +198,43 @@ class RuntimeBinder internal constructor(
      */
     suspend fun closeTerminal(workspaceId: String, terminalId: String): String? =
         workspaceTerminalManager.closeTerminal(workspaceId, terminalId)
+
+    /**
+     * Finding 011: restart an errored terminal under the same id. The
+     * manager's [WorkspaceTerminalManager.restartTerminal] is authoritative —
+     * it replaces the dead pty and preserves the terminal's elevation. The UI
+     * calls this from the error card's Restart action; nothing auto-restarts.
+     *
+     * [allowRunning] is forwarded only by Finding 019's no-output banner, whose
+     * explicit Restart button is the confirmation for replacing a live but
+     * silent pty. Every other caller keeps the manager's Error-only default.
+     */
+    suspend fun restartTerminal(
+        workspaceId: String,
+        terminalId: String,
+        allowRunning: Boolean = false
+    ): PtySession =
+        workspaceTerminalManager.restartTerminal(
+            workspaceId = workspaceId,
+            terminalId = terminalId,
+            rootfsPathOverride = fileManager.getRootfsPath(workspaceId).absolutePath,
+            allowRunning = allowRunning
+        )
+
+    /**
+     * Finding 011: the dead terminal's retained screen, for the Copy error /
+     * Diagnostics payloads. Returns "" when there is no record or the backend
+     * cannot read the screen — a diagnostic must never fail because its
+     * evidence is missing.
+     */
+    fun terminalLastOutput(
+        workspaceId: String,
+        terminalId: String,
+        maxChars: Int = TerminalErrorReport.DEFAULT_OUTPUT_CHARS
+    ): String {
+        val pty = workspaceTerminalManager.getRetainedPtySession(workspaceId, terminalId) ?: return ""
+        return runCatching { pty.recentOutput(maxChars) }.getOrDefault("")
+    }
 
     /**
      * §1.103: the terminal the runtime notification's Open action should

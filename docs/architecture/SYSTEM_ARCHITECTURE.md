@@ -1,108 +1,81 @@
 # System Architecture
 
-**Status:** Current — describes the implemented architecture, verified against source.
+**Source locations:** `app/src/main/java/com/fem/linexa/`, `app/build.gradle.kts`,
+`settings.gradle.kts`, `app/src/main/AndroidManifest.xml`
 
-**Project:** Linexa Linux Workspace (`com.fem.linexa`)
-
-**Source locations:** `app/src/main/java/com/fem/linexa/` and subpackages; `app/build.gradle.kts`; `settings.gradle.kts`; `app/src/main/AndroidManifest.xml`
-
----
+This document describes the module layout, entry points, subsystem boundaries, dependency
+direction, and packaging of the application. Feature behavior is covered in
+[`features/`](../features/); runtime internals in
+[`RUNTIME_ARCHITECTURE.md`](./RUNTIME_ARCHITECTURE.md); persistence in
+[`DATA_AND_PERSISTENCE.md`](./DATA_AND_PERSISTENCE.md).
 
 ## 1. Purpose
 
-Linexa is a single-module Android application (with two vendored Gradle library modules, `:terminal-emulator` and `:terminal-view`) that installs, imports, exports, and runs Linux root filesystems ("workspaces") inside isolated PRoot containers on Android. Each workspace runs a real PTY terminal, an optional VNC/Web desktop, and guest-side features (audio, clipboard, notifications, SSH, GPU).
+Linexa is a single-application Android project with two vendored Gradle library modules. It
+installs, imports, exports, and runs Linux root filesystems ("workspaces") inside isolated
+PRoot containers on Android. Each workspace can run PTY-backed terminals and an optional
+VNC/Web desktop, together with guest-side features such as audio, clipboard, notifications,
+SSH, and GPU acceleration.
 
-This document is the authoritative system-architecture reference. It describes the module layout, entry points, subsystem boundaries, and the dependency direction enforced by tests.
-
----
-
-## 2. Scope
-
-In scope:
-
-- Gradle module layout and ABI packaging
-- Application entry points (Application, Activity, services)
-- Layered package structure and the ArchUnit import boundary
-- Dependency injection (Hilt) seam
-- Navigation structure
-- Native binary packaging (jniLibs)
-
-Out of scope (covered elsewhere):
-
-- Feature-level behavior: [`features/`](../features/)
-- UI/UX design: [`design/`](../design/)
-- Build toolchain details: [`engineering/BUILD_AND_DEVELOPMENT.md`](../engineering/BUILD_AND_DEVELOPMENT.md)
-- Historical decisions: [`decisions/ADR_REGISTER.md`](../decisions/ADR_REGISTER.md)
-
----
-
-## 3. Current implementation status
-
-| Area | Status | Evidence |
-|---|---|---|
-| Single-module app (`:app`) | Implemented | `settings.gradle.kts` |
-| Vendored terminal modules (`:terminal-emulator`, `:terminal-view`) | Implemented | `settings.gradle.kts`, `terminal-*/PROVENANCE.md` |
-| Layered core/domain/data/service/ui/di/navigation | Implemented | source tree |
-| ArchUnit import boundary (domain/ui must not import service.runtime internals) | Implemented | `app/src/test/.../architecture/ImportBoundaryTest.kt` |
-| Hilt DI via KSP | Implemented | `di/AppModule.kt` |
-| Navigation Compose single-activity host | Implemented | `navigation/NavGraph.kt` |
-| PRoot-based container runtime | Implemented | `service/runtime/container/PRootContainerRuntime.kt` |
-| Room persistence (1 entity, version 1, exported schema) | Implemented | `data/room/LinexaDatabase.kt` |
-
----
-
-## 4. Technical overview
-
-### 4.1 Gradle module layout
+## 2. Modules
 
 `settings.gradle.kts` declares three modules:
 
 | Module | Purpose | License provenance |
 |---|---|---|
-| `:app` | Main application (`com.fem.linexa`) — UI, runtime, DI, Room, package management | Linexa source (GPL-3.0-only) |
-| `:terminal-emulator` | Vendored Termux terminal-emulator library (Apache-2.0) | `terminal-emulator/PROVENANCE.md` |
-| `:terminal-view` | Vendored Termux terminal-view library (Apache-2.0) | `terminal-view/PROVENANCE.md` |
+| `:app` | Main application (`com.fem.linexa`): UI, runtime, DI, Room, package management | Linexa source, GPL-3.0-or-later |
+| `:terminal-emulator` | Vendored Termux terminal-emulator library | Apache-2.0; see `terminal-emulator/PROVENANCE.md` |
+| `:terminal-view` | Vendored Termux terminal-view library | Apache-2.0; see `terminal-view/PROVENANCE.md` |
 
-The two terminal modules were vendored in 2026-08-29, replacing the GPL-3.0-only `terminal-lib` JitPack dependency.
+The terminal modules provide the real PTY implementation used by the application.
 
-### 4.2 Application entry points
+## 3. Application entry points
 
-- `LinexaApplication` (`@HiltAndroidApp`) — single application class, Hilt entry point
-- `MainActivity` (`@AndroidEntryPoint`) — single-activity host; edge-to-edge enabled; predictive back opted in app-wide
-- `RuntimeService` (foreground service, `specialUse`) — owns container/runtime lifecycle per workspace
-- `ImportService` (foreground service, `specialUse`) — workspace import
-- `DownloadService` (foreground service, `dataSync`) — RootFS download
-- `LinexaDocumentsProvider` (SAF `DocumentsProvider`) — diagnostic rootfs browser, guarded by `MANAGE_DOCUMENTS`
+- `LinexaApplication` (`@HiltAndroidApp`) — application class and Hilt entry point.
+- `MainActivity` (`@AndroidEntryPoint`) — single-activity Compose host. Edge-to-edge and
+  predictive back are enabled app-wide.
+- `RuntimeService` — foreground service (`specialUse`) that owns container and terminal
+  lifecycle for the entered workspace.
+- `ImportService` — foreground service (`specialUse`) for workspace import.
+- `DownloadService` — foreground service (`dataSync`) for RootFS downloads.
+- `LinexaDocumentsProvider` — SAF `DocumentsProvider` exposing installed workspace rootfs
+  trees and the shared storage mount, guarded by `MANAGE_DOCUMENTS`.
 
-Manifest permissions: `INTERNET`, `ACCESS_NETWORK_STATE`, `FOREGROUND_SERVICE` (+`SPECIAL_USE`, `+DATA_SYNC`), `POST_NOTIFICATIONS`, `MANAGE_EXTERNAL_STORAGE` (opt-in), `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, `WAKE_LOCK`.
+Manifest permissions: `INTERNET`, `ACCESS_NETWORK_STATE`, `FOREGROUND_SERVICE` plus the
+`SPECIAL_USE` and `DATA_SYNC` subtypes, `POST_NOTIFICATIONS`, optional
+`MANAGE_EXTERNAL_STORAGE`, `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`, and `WAKE_LOCK`.
 
-`allowBackup="true"` scoped by `backup_rules`/`data_extraction_rules` excluding the Room DB, workspaces tree, logs, bootstrap, and settings preferences.
+`allowBackup="true"` is scoped by `backup_rules` and `data_extraction_rules`, which exclude
+the Room database, the workspaces tree, logs, bootstrap files, and settings preferences.
 
-### 4.3 Layered package structure
+## 4. Package layering
 
 Source lives under `app/src/main/java/com/fem/linexa/`:
 
 | Layer | Packages | Role |
 |---|---|---|
-| Entry | `LinexaApplication.kt`, `MainActivity.kt` | Single-activity host |
-| `core` | `format`, `logging`, `security` | Cross-cutting: logger/log sink, archive validator, security audit, file size formatter |
-| `domain` | `workspace`, `runtime`, `packagemanager`, `resource`, `settings`, `filemanager`, `hostinfo`, `network`, `distro`, `commands`, `attribution`, `whatsnew`, `launcher`, `version` | Mostly pure models, parsers, policies, interfaces (e.g. `WorkspaceRepository`, `ResourceMonitor`, `PackageProvider`) |
-| `data` | `room`, `repository`, `settings`, `resource`, `hostinfo`, `network`, `version` | Implementations backed by Room, SharedPreferences, `/proc` readers |
-| `service` | `installer`, `rootfs`, `runtime` (+`bootstrap`, `container`, `desktop`, `features`, `graphics`, `hostinfo`, `pty`, `wakelock`), `exporter`, `importservice`, `distro`, `manager`, `workspace`, `workspaceconfig`, `commands` | Android/process-facing orchestration |
-| `ui` | `screens/*`, `components` (+`haven`), `theme` (+`haven`), `misc` | Compose screens + HAVEN design system |
-| `di` | `AppModule.kt`, `SessionCreationDispatcher.kt` | Hilt bindings (~19 `@Binds`, ~19 `@Provides`) |
-| `navigation` | `NavGraph.kt`, `TerminalDeepLinkBus.kt` | Navigation Compose host |
+| Entry | `LinexaApplication.kt`, `MainActivity.kt` | Android application and single-activity host |
+| `core` | `format`, `logging`, `security`, `filesystem`, `i18n` | Cross-cutting utilities: formatting, diagnostic logging, archive validation, write windows, locale helpers |
+| `domain` | `workspace`, `runtime`, `packagemanager`, `resource`, `settings`, `filemanager`, `hostinfo`, `network`, `distro`, `commands`, `attribution`, `whatsnew`, `launcher`, `version`, `terminal`, `security` | Models, parsers, policies, and repository/provider interfaces |
+| `data` | `room`, `repository`, `settings`, `resource`, `hostinfo`, `network`, `security`, `version` | Room, SharedPreferences, `/proc`, and Android-platform implementations |
+| `service` | `installer`, `rootfs`, `runtime` (including `bootstrap`, `container`, `desktop`, `features`, `graphics`, `hostinfo`, `pty`, `wakelock`), `exporter`, `importservice`, `distro`, `manager`, `workspace`, `workspaceconfig`, `commands` | Android- and process-facing orchestration |
+| `ui` | `screens/*`, `components` (including `haven`), `theme` (including `haven`), `misc`, `i18n` | Compose screens and the HAVEN design system |
+| `di` | `AppModule.kt`, `SessionCreationDispatcher.kt`, feature modules | Hilt bindings |
+| `navigation` | `NavGraph.kt`, `TabTransition.kt`, `TerminalDeepLinkBus.kt` | Navigation Compose host and terminal overlay signaling |
 
-### 4.4 Dependency direction (enforced by ArchUnit)
+The domain layer is intentionally mostly free of Android and Compose types. A few
+cross-layer references remain: `LauncherApp` uses command-model types from
+`service.commands`, and `core.logging.DebugCaptureGate` / `core.security.SecurityAudit`
+reference runtime types. These ports are documented at their call sites rather than hidden.
+
+## 5. Dependency direction
 
 ```
 Entry --> DI
-UI --> Nav
+UI --> Navigation
 UI --> DI
-Nav --> DI
-DI --> Service
-DI --> Data
-DI --> Domain
+Navigation --> DI
+DI --> Service / Data / Domain
 Service --> Domain
 Service --> Data
 Data --> Domain
@@ -110,61 +83,46 @@ Domain --> Core
 Service --> Core
 ```
 
-`domain` and `ui` must not import `service.runtime.container` internals. The `ImportBoundaryTest` ArchUnit rule runs with zero frozen exceptions. `AuditPreservationPinsTest` additionally pins audited runtime behavior (real PTY architecture, `/proc`+`/sys`+`/dev` binds, `--kill-on-exit`, `-0` fake root, `--link2symlink`, L2S rewriter relative targets, archive validation, vendored patches).
-
-### 4.5 Mermaid: layered architecture
+`ImportBoundaryTest` enforces the hard rule that `domain` and `ui` must not import
+`service.runtime.container` internals. Other layer relationships are conventions rather than
+compiler-enforced rules; the UI consumes domain/service state and contracts directly while
+Hilt supplies the implementations.
 
 ```mermaid
 graph TD
-    subgraph Entry ["Entry (Android)"]
-        LA[LinexaApplication @HiltAndroidApp]
-        MA[MainActivity @AndroidEntryPoint]
+    subgraph Entry["Entry"]
+        LA[LinexaApplication]
+        MA[MainActivity]
     end
 
-    subgraph UI ["UI layer (Compose + HAVEN)"]
-        US[Screens]
-        UC[Components + HAVEN]
-        UT[Theme + HavenTokens]
+    subgraph UI["UI"]
+        US[Compose screens]
+        UC[HAVEN components and theme]
     end
 
-    subgraph Nav ["Navigation"]
-        NG[NavGraph / WorkspaceNavGraph]
+    subgraph Nav["Navigation"]
+        NG[NavGraph]
         TDB[TerminalDeepLinkBus]
     end
 
-    subgraph DI ["Dependency Injection (Hilt)"]
-        AM[AppModule.kt]
-        SCD[SessionCreationDispatcher]
+    subgraph DI["DI"]
+        AM[AppModule and feature modules]
     end
 
-    subgraph Service ["Service layer (process orchestration)"]
-        SR[Runtime: container, pty, session, bootstrap, wakelock]
-        SI[Installer: StagedRootFsInstaller, InstallRecoveryManager]
-        SRFS[RootFS: profile, inspector, metadata]
-        SF[Features: audio, clipboard, notifications, desktop, gpu]
-        SE[Exporter, ImportService, Distro, Manager]
+    subgraph Service["Service"]
+        SR[Runtime, installer, features, exporter]
     end
 
-    subgraph Data ["Data layer (Room, SharedPreferences)"]
-        DR[Room: LinexaDatabase, WorkspaceDao]
-        DRepo[Repository: WorkspaceRepositoryImpl]
-        DSet[SettingsRepositoryImpl SharedPreferences]
-        DRes[Resource: ProcResourceMonitor, AndroidProcessSignals]
+    subgraph Data["Data"]
+        DR[Room, repositories, settings, /proc]
     end
 
-    subgraph Domain ["Domain layer (models, policies, interfaces — pure)"]
-        DW[Workspace: WorkspaceRepository, WorkspaceMetadata, WorkspaceStatus]
-        DRt[Runtime: RuntimeState, TerminalState, CommandResult]
-        DPkg[PackageManager: providers, coordinator, parsers]
-        DRes2[Resource: ProcessTree, ResourceMonitor]
-        DSet2[Settings: SettingsRepository, ColorTheme, ThemeMode]
-        DFM[FileManager: FileManager interface]
+    subgraph Domain["Domain"]
+        DM[Models, parsers, policies, interfaces]
     end
 
-    subgraph Core ["Core cross-cutting"]
-        CL[Logging: Logger, LogSink, DiagnosticLogManager]
-        CS[Security: ArchiveValidator, RealArchiveValidator, SecurityAudit]
-        CF[Format: FileSizeFormatter]
+    subgraph Core["Core"]
+        CL[Logging, security, format, filesystem]
     end
 
     Entry --> DI
@@ -181,40 +139,66 @@ graph TD
     Service --> Core
 ```
 
-**Principle:** Domain depends on nothing but Core. Data and Service depend on Domain. UI depends on Domain + Data + Service through DI only.
+## 6. Dependency injection
 
----
+Hilt is configured with KSP. `di/AppModule.kt` is the central binding module; feature-scoped
+modules cover additional seams such as device-info labels. Constructor injection is used
+throughout, which allows tests to substitute fakes such as `FakeProot`, `RecordingWakeLock`,
+`RecordingAudioSink`, and `RecordingHostClipboard`.
 
-## 5. Important implementation details
+Key bindings include:
 
-- Native binaries (PRoot, busybox, tar, zstd, tmux, loader, dependency libs) are vendored in `app/src/main/jniLibs/` for `arm64-v8a` and `armeabi-v7a` only. There is **no x86_64 `libproot.so`**, so x86_64 emulators cannot launch workspaces. See [`app/src/main/jniLibs/BINARY-MANIFEST.md`](../../app/src/main/jniLibs/BINARY-MANIFEST.md).
-- PRoot is termux-lineage v5.1.107.89 with Linexa patches 0001–0004 (see `jniLibs/proot-build/BUILD-NOTES.md`).
-- The terminal stack is the vendored Apache-2.0 Termux `terminal-emulator`/`terminal-view` (a real PTY via `forkpty`-equivalent native code), not the removed GPL-3.0 `terminal-lib`.
-- Room database is version 1, one entity (`WorkspaceMetadata`), schema exported and committed at `app/schemas/.../1.json`. No migrations are registered yet.
-- `isMinifyEnabled = false` for both debug and release.
+- `ContainerRuntime` → `PRootContainerRuntime`
+- `PtySessionFactory` → `TermuxPtySessionFactory`
+- `ResourceMonitor` → `ProcResourceMonitor`
+- `FileManager` → `WorkspaceFileManagerImpl`
+- `RootFsInstaller` → `StagedRootFsInstaller`
+- `WorkspaceDiskStore` / `RootfsInspector` → `WorkspaceFileManager`
 
----
+## 7. Navigation
 
-## 6. Dependencies and interactions
+Navigation Compose uses a single-activity host:
 
-- Hilt DI (`AppModule.kt`) wires `ContainerRuntime` → `PRootContainerRuntime`, `PtySessionFactory` → `TermuxPtySessionFactory`, `ResourceMonitor` → `ProcResourceMonitor`, `FileManager` → `StagedRootFsInstaller`, plus supervisors for notifications, clipboard, audio, GPU, wake-lock.
-- `RuntimeService` starts and binds `RuntimeBinder` and `WorkspaceSessionSupervisor`; `WorkspaceNavGraph` triggers `startWorkspace()`.
-- The PRoot container runtime owns per-(workspace, terminal) session bookkeeping, PRoot argv/env construction (delegated to `PRootLauncher`), bootstrap layout verification, PTY session creation, and daemon management.
+- Three permanent tabs: `workspaces`, `activity`, `settings`. Tab state is saved and
+  restored, and each tab keeps a real back stack.
+- A nested workspace graph with `SHORTCUTS`, `DESKTOP`, `PACKAGE_MANAGER`,
+  `FILE_MANAGER`, and `TASK_MANAGER` destinations.
+- The terminal is an overlay on the workspace screen, not a navigation destination.
+  `TerminalDeepLinkBus` carries focus/open requests.
+- Predictive back is enabled in the manifest, and the back hierarchy has no "jump home"
+  shortcuts.
+- Top-level tab switches use a short simultaneous crossfade; pushed screens keep the
+  Navigation Compose defaults.
 
----
+## 8. Runtime and persistence boundaries
 
-## 7. Limitations and known issues
+- `PRootContainerRuntime` owns per-(workspace, terminal) sessions, PRoot argv/environment
+  construction (through `PRootLauncher`), bootstrap verification, PTY creation, and managed
+  daemons.
+- `RuntimeService` starts and binds `RuntimeBinder` and `WorkspaceSessionSupervisor`;
+  `WorkspaceNavGraph` requests workspace start through the runtime view model.
+- Room stores one entity, `WorkspaceMetadata`, at schema version 1. The exported schema is
+  committed at `app/schemas/com.fem.linexa.data.room.LinexaDatabase/1.json`; no migrations
+  are registered yet. See [`ROOM_MIGRATIONS.md`](../ROOM_MIGRATIONS.md) before changing the
+  schema.
+- Session and terminal state are runtime-only and reset when the app process dies. RootFS
+  metadata and per-workspace configuration are file-backed and survive restarts.
 
-- No Room migrations: a schema version bump without a migration crashes existing installs on open. The migration policy is in [`ROOM_MIGRATIONS.md`](../ROOM_MIGRATIONS.md).
-- Runtime, terminal, desktop, and RootFS-import flows still need on-device verification across the supported Android versions; see [`engineering/TESTING_STRATEGY.md`](../engineering/TESTING_STRATEGY.md) and [`features/TERMINAL_AND_LINUX_RUNTIME.md`](../features/TERMINAL_AND_LINUX_RUNTIME.md).
-- Builds require JDK 17 and an Android SDK with platform 34; see [`engineering/BUILD_AND_DEVELOPMENT.md`](../engineering/BUILD_AND_DEVELOPMENT.md).
+## 9. Native binaries
 
----
+PRoot, BusyBox, GNU tar, Zstandard, tmux, the loader, and their dependent libraries are
+vendored in `app/src/main/jniLibs/` for `arm64-v8a` and `armeabi-v7a` only. There is no
+x86_64 `libproot.so`, so x86_64 emulators cannot launch workspaces.
 
-## 8. Related documentation
+The binaries use the `lib__*__.so` naming required by AGP packaging and are remapped to
+friendly names under `{filesDir}/bootstrap/{bin,lib}` at runtime. Exact versions, per-ABI
+hashes, and the dependency closure are recorded in
+[`app/src/main/jniLibs/BINARY-MANIFEST.md`](../../app/src/main/jniLibs/BINARY-MANIFEST.md).
 
-- [`architecture/APPLICATION_ARCHITECTURE.md`](./APPLICATION_ARCHITECTURE.md) — package layering and boundary rules
-- [`architecture/RUNTIME_ARCHITECTURE.md`](./RUNTIME_ARCHITECTURE.md) — PRoot runtime, PTY, session lifecycle
-- [`architecture/DATA_AND_PERSISTENCE.md`](./DATA_AND_PERSISTENCE.md) — Room, schema, RootFS metadata
-- [`decisions/ADR_REGISTER.md`](../decisions/ADR_REGISTER.md) — Keep/Fix/Refactor decisions per subsystem
-- [`engineering/BUILD_AND_DEVELOPMENT.md`](../engineering/BUILD_AND_DEVELOPMENT.md) — toolchain and build commands
+## 10. Related documentation
+
+- [`APPLICATION_ARCHITECTURE.md`](./APPLICATION_ARCHITECTURE.md) — package layering, DI, navigation
+- [`RUNTIME_ARCHITECTURE.md`](./RUNTIME_ARCHITECTURE.md) — PRoot, PTY, session lifecycle
+- [`DATA_AND_PERSISTENCE.md`](./DATA_AND_PERSISTENCE.md) — Room, RootFS metadata, install pipeline
+- [`../engineering/BUILD_AND_DEVELOPMENT.md`](../engineering/BUILD_AND_DEVELOPMENT.md) — toolchain and build
+- [`../decisions/ADR_REGISTER.md`](../decisions/ADR_REGISTER.md) — architectural decisions

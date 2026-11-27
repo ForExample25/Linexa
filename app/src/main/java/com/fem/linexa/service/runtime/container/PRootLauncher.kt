@@ -262,7 +262,7 @@ class PRootLauncher @Inject constructor(
         //
         // F-8 (2026-08-25 audit): host-only variables no longer leak into
         // the guest. The vendored PRoot now carries the guest-env-filter
-        // patch (proot-build/0004): every variable named in
+        // patch (third_party/proot/0004): every variable named in
         // PROOT_GUEST_ENV_FILTER whose value still matches the host
         // launcher's value is scrubbed from the tracee's environment at
         // execve time. The filter lists exactly the host-owned keys of
@@ -645,7 +645,7 @@ class PRootLauncher @Inject constructor(
         /**
          * F-8 (2026-08-25 audit): the comma-separated list of host-owned
          * environment variables the vendored PRoot (patch
-         * `proot-build/0004-guest-env-filter.patch`) scrubs from the tracee's
+         * `third_party/proot/0004-guest-env-filter.patch`) scrubs from the tracee's
          * environment at execve time — but ONLY when the value is still
          * byte-identical to the host launcher's value, so guest-authored
          * values of the same names keep working.

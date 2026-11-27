@@ -57,6 +57,7 @@ import com.fem.linexa.domain.commands.ShortcutPins
 import com.fem.linexa.domain.commands.ShortcutPinsOrdering
 import com.fem.linexa.domain.launcher.LauncherApp
 import com.fem.linexa.service.installer.AppInstallCoordinator
+import com.fem.linexa.ui.screens.terminal.TerminalSelectionSource
 import com.fem.linexa.ui.components.haven.HButton
 import com.fem.linexa.ui.components.haven.HavenMotion
 import com.fem.linexa.ui.components.haven.ItemPhase
@@ -111,7 +112,7 @@ fun AppLauncherSegment(
     launcherViewModel: AppLauncherViewModel,
     installTracker: AppInstallTracker,
     pinsViewModel: ShortcutPinsViewModel,
-    onOpenTerminal: (String) -> Unit,
+    onOpenTerminal: (String, TerminalSelectionSource) -> Unit,
     onAddCustomCommand: (name: String, command: String) -> Unit,
     // 2026-11 UI pass: the two workspace-tool entries (Packages / Files) were
     // moved from the Settings tab's Tools card to right above this segment's
@@ -172,12 +173,19 @@ fun AppLauncherSegment(
     // entry so an externally installed app stops showing "Unknown state".
     LaunchedEffect(workspaceId) { installTracker.refresh() }
 
-    // Open + focus the terminal an app launch opened.
-    LaunchedEffect(launchedTerminal) {
+    // Open + focus the terminal an app launch opened. The Root Shell action
+    // has its own source so the terminal chain distinguishes the first root
+    // launch from an ordinary app launch.
+    LaunchedEffect(launchedTerminal, rootShellState) {
         val terminalId = launchedTerminal
         if (terminalId != null) {
+            val source = if ((rootShellState as? AppLaunchState.Launched)?.terminalId == terminalId) {
+                TerminalSelectionSource.RootShellLaunch
+            } else {
+                TerminalSelectionSource.ExternalOpenRequest
+            }
             launcherViewModel.consumeLaunchedTerminal()
-            onOpenTerminal(terminalId)
+            onOpenTerminal(terminalId, source)
         }
     }
 
@@ -270,8 +278,12 @@ fun AppLauncherSegment(
             },
             categoryFilter = categoryFilter,
             onCategorySelect = {
+                // Selection is idempotent: the tapped chip always becomes the
+                // filter ("All" is represented by null). The old toggle made
+                // re-tapping "All" install an empty-string filter, which
+                // matched no category and blanked the grid.
                 searchQuery = ""
-                categoryFilter = if (categoryFilter == it) null else it
+                categoryFilter = it
             },
         )
 
@@ -374,6 +386,7 @@ fun AppLauncherSegment(
     // ── The context menu's "Edit command" dialog ──
     editRequest?.let { request ->
         var command by remember(request.appId) { mutableStateOf(request.initialCommand) }
+        val editedName = stringResource(R.string.launcher_edited_name, request.appName)
         com.fem.linexa.ui.components.haven.HDialog(
             title = stringResource(R.string.launcher_edit_command_title, request.appName),
             onDismiss = { editRequest = null },
@@ -387,7 +400,10 @@ fun AppLauncherSegment(
                 HButton(
                     label = stringResource(R.string.common_save),
                     onClick = {
-                        onAddCustomCommand("${request.appName} (edited)", command)
+                        onAddCustomCommand(
+                            editedName,
+                            command
+                        )
                         editRequest = null
                     },
                     variant = HavenButtonVariant.PRIMARY,
@@ -507,7 +523,7 @@ private fun LauncherSearchAndChips(
     searchActive: Boolean,
     onSearchQueryChange: (String) -> Unit,
     categoryFilter: String?,
-    onCategorySelect: (String) -> Unit
+    onCategorySelect: (String?) -> Unit
 ) {
     val h = HavenTheme.colors
     val chipMotions = LocalHavenMotions.current
@@ -528,7 +544,7 @@ private fun LauncherSearchAndChips(
                 selected = searchQuery.isBlank() && categoryFilter == null,
                 onClick = {
                     onSearchQueryChange("")
-                    onCategorySelect("")
+                    onCategorySelect(null)
                 }
             )
             categories.forEach { category ->
@@ -764,7 +780,9 @@ private fun LauncherAppTile(
             } else {
                 h.text
             },
-            maxLines = 1,
+            // Grid tiles are deliberately compact: two lines hold even a long
+            // Persian app name, and the grid row takes the tallest cell.
+            maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(top = 9.dp)
@@ -773,8 +791,7 @@ private fun LauncherAppTile(
             text = subtitle,
             style = HavenType.small,
             color = h.muted,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
+            maxLines = 2,
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(top = 2.dp)
         )
@@ -876,8 +893,7 @@ private fun AppInstallIndicatorList(
                             text = title,
                             style = HavenType.body,
                             color = h.text,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
+                            maxLines = 2,
                             modifier = Modifier.weight(1f)
                         )
                         if (job.isActive) {
@@ -1088,8 +1104,7 @@ private fun AppInstallSheet(
                         text = app.name,
                         style = HavenType.rowTitle.copy(fontSize = 20.sp),
                         color = h.text,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        maxLines = 2
                     )
                     Text(
                         text = statusText,

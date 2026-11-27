@@ -1,7 +1,9 @@
 package com.fem.linexa.ui.screens.desktop
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -14,6 +16,27 @@ import org.junit.Test
  * instruction error instead of a wrong distro command).
  */
 class XvncProvisionerTest {
+
+    @Test
+    fun theProbeUsesCommandVAndStopsAtTheFirstManagerFound() {
+        // `which` may be absent on minimal Alpine/BusyBox images (finding 036).
+        // `command -v` is a POSIX builtin; chaining with `||` reproduces the old
+        // `| head -1` first-hit behavior without truncating in the guest.
+        val command = XvncProvisioner.DETECT_PACKAGE_MANAGER_COMMAND
+        assertFalse("must not depend on the external which binary", command.contains("which "))
+        assertFalse("the probe must not truncate via head", command.contains("head"))
+        listOf("apt-get", "apk", "pacman", "dnf", "zypper").forEach { binary ->
+            assertTrue(
+                "probe is missing $binary",
+                command.contains("command -v $binary")
+            )
+        }
+        assertEquals(
+            "each || stops at the first hit, so four separators join five probes",
+            4,
+            Regex("\\|\\|").findAll(command).count()
+        )
+    }
 
     @Test
     fun aptGetProbeResolvesToAptKeyAndDebianPackage() {

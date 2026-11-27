@@ -6,7 +6,9 @@ import android.os.Build
 import com.fem.linexa.core.format.FileSizeFormatter
 import com.fem.linexa.core.filesystem.deleteRecursivelyAllowingReadOnly
 import com.fem.linexa.core.logging.Logger
+import com.fem.linexa.core.security.ArchiveSymlinkGuard
 import com.fem.linexa.core.security.ArchiveValidator
+import com.fem.linexa.core.security.ArchiveEntryType
 import com.fem.linexa.core.security.toArchiveEntryType
 import com.fem.linexa.service.rootfs.ArchiveEntryPath
 import com.fem.linexa.service.rootfs.ArchiveRootDiscovery
@@ -383,6 +385,9 @@ class StagedRootFsInstaller @Inject constructor(
             Logger.e(TAG, "install($workspaceId) threw — discarding staging debris", e)
             fileManager.getStagingRootfsPath(workspaceId).deleteRecursivelyAllowingReadOnly()
             File(fileManager.getWorkspaceBasePath(workspaceId), IMPORT_CACHE_DIR).deleteRecursively()
+            // RF-031: the config was staged before activation, so it belongs
+            // to this failed attempt and must not survive it.
+            fileManager.getStagedConfigPath(workspaceId).delete()
             InstallResult.Failure(e.message ?: "Installation failed: ${e.javaClass.simpleName}")
         }
     }
@@ -451,6 +456,9 @@ class StagedRootFsInstaller @Inject constructor(
             staging = staging,
             workspaceId = workspaceId,
             expectedExtractedBytes = analysis.requiredStorageBytes,
+            // UX-003: tar's headers/padding are part of the stream the
+            // checkpoints count, so they belong in the progress denominator.
+            expectedEntryCount = analysis.totalEntries,
             stripComponents = analysis.stripComponents,
             onProgress = { fraction ->
                 onProgress(InstallProgress(0, null, null, InstallPhase.EXTRACTING, fraction))
@@ -560,6 +568,15 @@ class StagedRootFsInstaller @Inject constructor(
 
         if (!fileManager.activateStagedRootfs(workspaceId)) {
             return@withContext failAndCleanUp(staging, importCache, "Could not activate staged rootfs (rename failed)")
+        }
+
+        // RF-031: config.yaml was staged before activation; promote it only
+        // now that the live rootfs exists. A failure here is logged, not fatal:
+        // the rootfs is already active and config is optional/defaulted.
+        if (analysis.capturedConfig != null &&
+            !fileManager.promoteStagedConfigIfPresent(workspaceId)
+        ) {
+            Logger.w(TAG, "Rootfs activated for $workspaceId but config.yaml could not be promoted")
         }
 
         importCache.deleteRecursively()
@@ -1192,6 +1209,7 @@ class StagedRootFsInstaller @Inject constructor(
         val collector = ArchiveSignalCollector(builtInProfiles())
         val topLevelSegments = LinkedHashSet<String>()
         val nestedCandidates = mutableListOf<NestedCandidate>()
+        val symlinkGuard = ArchiveSymlinkGuard()
         var shape = ArchiveRootDiscovery.Shape(emptySet(), rootLevelFile = false)
         var entry = tarStream.nextEntry
 
@@ -1213,9 +1231,20 @@ class StagedRootFsInstaller @Inject constructor(
 
             val normalized = ArchiveEntryPath.normalize(entry.name)
             if (normalized.isNotEmpty()) {
+                // RF-001: an entry whose path traverses a link declared earlier
+                // in this same stream can be written through that link during
+                // extraction. Reject before tar ever sees the archive.
+                symlinkGuard.checkEntryPath(normalized, entry.name)?.let { reason ->
+                    throw InstallAbortException("Unsafe archive entry '${entry.name}': $reason")
+                }
                 topLevelSegments += normalized.substringBefore('/')
                 shape = ArchiveRootDiscovery.observe(shape, normalized, entry.isDirectory)
             }
+            symlinkGuard.observe(
+                normalizedPath = normalized,
+                isSymlink = entry.isSymbolicLink,
+                linkTarget = entry.linkName
+            )
 
             // §1.146: presence is recorded for directories and symlinks too — a
             // symlinked `etc/os-release` carries no data but still proves the
@@ -1327,6 +1356,25 @@ class StagedRootFsInstaller @Inject constructor(
         }
 
         val stripComponents = ArchiveRootDiscovery.stripComponents(shape)
+        // RF-001: the per-entry check above ran in raw archive coordinates.
+        // Extraction strips `stripComponents` leading segments, which makes
+        // every symlink sit that many levels shallower, so re-evaluate each
+        // declared link at its final on-disk path before any extraction runs.
+        for (link in symlinkGuard.linksAfterStrip(stripComponents)) {
+            val safety = archiveValidator.checkEntry(
+                name = link.path,
+                isSymlink = true,
+                linkTarget = link.target,
+                entryType = ArchiveEntryType.SYMLINK
+            )
+            if (safety is ArchiveValidator.ValidationResult.Invalid) {
+                throw InstallAbortException(
+                    "Unsafe archive entry '${link.rawName}': after stripping " +
+                        "$stripComponents leading component(s) it becomes '${link.path}' -> " +
+                        "'${link.target}': ${safety.reason}"
+                )
+            }
+        }
         val wrapper = topLevelSegments.singleOrNull()
         val chosenMetadata = if (stripComponents > 0 && wrapper != null) {
             nestedMetadataCandidates[wrapper] ?: emptyMap()
@@ -1493,12 +1541,14 @@ class StagedRootFsInstaller @Inject constructor(
 
     private fun writeWorkspaceConfig(workspaceId: String, configBytes: ByteArray?): String? {
         val bytes = configBytes ?: return null
-        val target = File(fileManager.getWorkspaceBasePath(workspaceId), "config.yaml")
+        // RF-031: write beside the real file, not at its final name; the
+        // caller promotes it after activateStagedRootfs succeeds.
+        val target = fileManager.getStagedConfigPath(workspaceId)
         return try {
             target.writeBytes(bytes)
             null
         } catch (e: Exception) {
-            Logger.e(TAG, "Could not write config.yaml", e)
+            Logger.e(TAG, "Could not stage config.yaml", e)
             "Could not write config.yaml: ${e.message}"
         }
     }
@@ -1645,7 +1695,9 @@ class StagedRootFsInstaller @Inject constructor(
                 kept += toKeep
             }
         }
-        val text = out.toString(Charsets.UTF_8).trim()
+        // ByteArrayOutputStream.toString(Charset) is API 33; decode the bytes
+        // directly so the class works on the API 28 floor too.
+        val text = String(out.toByteArray(), Charsets.UTF_8).trim()
         return text.ifEmpty { null }
     }
 
@@ -1682,9 +1734,19 @@ class StagedRootFsInstaller @Inject constructor(
     /** §1.146: [captureHeader]'s result — the buffer plus how much of it is real. */
     private class CapturedHeader(val bytes: ByteArray, val length: Int)
 
-    private fun failAndCleanUp(staging: File, importCache: File, reason: String): InstallResult.Failure {
+    private fun failAndCleanUp(
+        staging: File,
+        importCache: File,
+        reason: String,
+        // Staging is always {workspace}/.staging-rootfs, so its parent names
+        // the workspace whose staged config must also be discarded (RF-031).
+        workspaceId: String = staging.parentFile?.name.orEmpty()
+    ): InstallResult.Failure {
         staging.deleteRecursivelyAllowingReadOnly()
         importCache.deleteRecursively()
+        if (workspaceId.isNotEmpty()) {
+            fileManager.getStagedConfigPath(workspaceId).delete()
+        }
         return InstallResult.Failure(reason)
     }
 

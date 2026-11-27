@@ -19,6 +19,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -26,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -71,13 +73,16 @@ fun WorkspacePerformancePanel(
     val state by viewModel.state.collectAsState()
     val pid = (runtimeState as? RuntimeState.Running)?.pid
 
-    // DisposableEffect, not LaunchedEffect: the sampler must stop when the panel
-    // leaves composition (tab switch, terminal overlay opening over it, leaving
-    // the workspace). onDispose is the only hook that fires for that, and its
-    // absence was a real defect before Phase 5B — the /proc poll outlived the UI
-    // that wanted it and ran until the ViewModel was cleared.
-    DisposableEffect(workspaceId, pid) {
-        viewModel.start(workspaceId, pid)
+    // P0-5 (2026-11-23): composition alone is not visibility — a workspace
+    // destination stays composed behind another screen or while the app is
+    // backgrounded, and this poller reads /proc every 2 s. Key start/pause on
+    // the lifecycle foreground flag; DisposableEffect remains the final
+    // "left composition" stop. start() is idempotent, pause() cancels safely.
+    val foreground by rememberIsForeground()
+    LaunchedEffect(workspaceId, pid, foreground) {
+        if (foreground) viewModel.start(workspaceId, pid) else viewModel.pause()
+    }
+    DisposableEffect(viewModel) {
         onDispose { viewModel.pause() }
     }
 
@@ -95,7 +100,7 @@ fun WorkspacePerformancePanel(
         color = MaterialTheme.colorScheme.surfaceContainerHigh
     ) {
         Column(modifier = Modifier.padding(horizontal = Spacing.lg, vertical = Spacing.md)) {
-            PanelHeader(processLabel = content.processLabel)
+            PanelHeader(processCount = content.processCount, processLabel = content.processLabel)
 
             Spacer(modifier = Modifier.height(Spacing.md))
 
@@ -151,7 +156,10 @@ fun WorkspacePerformancePanel(
  * the app's.
  */
 @Composable
-private fun PanelHeader(processLabel: String?) {
+private fun PanelHeader(processCount: Int?, processLabel: String?) {
+    val label = processCount?.let {
+        pluralStringResource(R.plurals.workspace_process_count, it, it)
+    } ?: processLabel
     Row(
         modifier = Modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically
@@ -169,9 +177,9 @@ private fun PanelHeader(processLabel: String?) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        if (processLabel != null) {
+        if (label != null) {
             Text(
-                text = processLabel,
+                text = label,
                 style = MaterialTheme.typography.labelSmall.asMono(),
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

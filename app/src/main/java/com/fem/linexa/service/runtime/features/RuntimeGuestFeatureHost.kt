@@ -35,6 +35,13 @@ class RuntimeGuestFeatureHost @Inject constructor(
     override suspend fun execCommand(workspaceId: String, command: String): CommandResult =
         containerRuntime.exec(workspaceId, rootfsPathOf(workspaceId), command)
 
+    override suspend fun execCommandWithInput(
+        workspaceId: String,
+        command: String,
+        stdin: String
+    ): CommandResult =
+        containerRuntime.execWithInput(workspaceId, rootfsPathOf(workspaceId), command, stdin)
+
     override suspend fun startDaemon(workspaceId: String, name: String, command: String): Boolean =
         containerRuntime.startDaemon(workspaceId, rootfsPathOf(workspaceId), name, command)
 

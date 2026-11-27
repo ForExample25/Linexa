@@ -196,6 +196,50 @@ class AppLauncherViewModelTest {
     }
 
     @Test
+    fun theExplicitRootShellActionOpensARootTerminalWithItsOwnIdentity() = runBlocking {
+        val vm = viewModel()
+        vm.attach("ws-1", binder)
+
+        vm.launchRootShell(title = "Root shell")
+        dispatcher.scheduler.advanceUntilIdle()
+
+        val state = vm.rootShellState.value
+        assertTrue("expected Launched, got $state", state is AppLaunchState.Launched)
+        assertEquals("T0", (state as AppLaunchState.Launched).terminalId)
+        assertEquals("T0", vm.launchedTerminal.value)
+        // Root emulation is the runtime's `-0` launch, never a fake uid change.
+        assertEquals(listOf(true), fakeRuntime.asRootOpens)
+
+        val identity = identities.get("ws-1", "T0")!!
+        assertEquals("Root shell", identity.title)
+        assertEquals(AppLauncherViewModel.ROOT_SHELL_APP_ID, identity.appId)
+    }
+
+    @Test
+    fun multipleRootShellLaunchesOpenIndependentWindows() = runBlocking {
+        val vm = viewModel()
+        vm.attach("ws-1", binder)
+
+        vm.launchRootShell(title = "Root shell")
+        dispatcher.scheduler.advanceUntilIdle()
+        val first = vm.launchedTerminal.value
+        assertEquals("T0", first)
+        vm.consumeLaunchedTerminal()
+
+        vm.launchRootShell(title = "Root shell")
+        dispatcher.scheduler.advanceUntilIdle()
+
+        val second = vm.launchedTerminal.value
+        assertEquals("T1", second)
+        assertEquals(listOf(true, true), fakeRuntime.asRootOpens)
+        assertTrue(manager.getPtySession("ws-1", "T0")!!.isAlive)
+        assertTrue(manager.getPtySession("ws-1", "T1")!!.isAlive)
+        assertEquals("Root shell", identities.get("ws-1", "T0")?.title)
+        assertEquals("Root shell", identities.get("ws-1", "T1")?.title)
+        assertEquals(2, fakeRuntime.openTerminalCalls)
+    }
+
+    @Test
     fun aFailedStartupIsReportedAndLeavesNoWindowIdentity() = runBlocking {
         fakeRuntime.failNextOpen = true
         val vm = viewModel()
@@ -272,6 +316,13 @@ class AppLauncherViewModelTest {
 
         override suspend fun exec(workspaceId: String, rootfsPath: String, command: String): CommandResult =
             CommandResult(exitCode = 0, output = "")
+
+        override suspend fun execWithInput(
+            workspaceId: String,
+            rootfsPath: String,
+            command: String,
+            stdin: String
+        ): CommandResult = exec(workspaceId, rootfsPath, command)
 
         override suspend fun execStreaming(
             workspaceId: String,

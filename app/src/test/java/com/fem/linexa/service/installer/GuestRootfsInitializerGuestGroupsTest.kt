@@ -64,6 +64,21 @@ class GuestRootfsInitializerGuestGroupsTest {
     private fun controlFile(name: String): File =
         File(File(binDir, ID_CONTROL_DIR).apply { mkdirs() }, name)
 
+    private fun writeWorkingIdApplet() {
+        File(binDir, "id").writeText(
+            """
+            #!/bin/sh
+            DIR=${'$'}{0%/*}
+            case "${'$'}1" in
+              -G)  [ -r "${'$'}DIR/$ID_CONTROL_DIR$ID_G_CONTROL" ] && { read -r v < "${'$'}DIR/$ID_CONTROL_DIR$ID_G_CONTROL"; echo "${'$'}v"; } ;;
+              -un) [ -r "${'$'}DIR/$ID_CONTROL_DIR$ID_UN_CONTROL" ] && { read -r v < "${'$'}DIR/$ID_CONTROL_DIR$ID_UN_CONTROL"; echo "${'$'}v"; } ;;
+              -u)  [ -r "${'$'}DIR/$ID_CONTROL_DIR$ID_U_CONTROL" ] && { read -r v < "${'$'}DIR/$ID_CONTROL_DIR$ID_U_CONTROL"; echo "${'$'}v"; } ;;
+            esac
+            exit 0
+            """.trimIndent()
+        )
+    }
+
     /** Plants a guest /etc/group shaped like a post-fixup Ubuntu one. */
     private fun plantGroupFile(vararg lines: String): File {
         val etc = File(rootfs, "etc").apply { mkdirs() }
@@ -86,18 +101,7 @@ class GuestRootfsInitializerGuestGroupsTest {
         // script that shells out to dirname/cat would silently produce empty
         // output in exactly the environment under test.
         val id = File(binDir, "id")
-        id.writeText(
-            """
-            #!/bin/sh
-            DIR=${'$'}{0%/*}
-            case "${'$'}1" in
-              -G)  [ -r "${'$'}DIR/$ID_CONTROL_DIR$ID_G_CONTROL" ] && { read -r v < "${'$'}DIR/$ID_CONTROL_DIR$ID_G_CONTROL"; echo "${'$'}v"; } ;;
-              -un) [ -r "${'$'}DIR/$ID_CONTROL_DIR$ID_UN_CONTROL" ] && { read -r v < "${'$'}DIR/$ID_CONTROL_DIR$ID_UN_CONTROL"; echo "${'$'}v"; } ;;
-              -u)  [ -r "${'$'}DIR/$ID_CONTROL_DIR$ID_U_CONTROL" ] && { read -r v < "${'$'}DIR/$ID_CONTROL_DIR$ID_U_CONTROL"; echo "${'$'}v"; } ;;
-            esac
-            exit 0
-            """.trimIndent()
-        )
+        writeWorkingIdApplet()
         assertTrue(id.setExecutable(true))
 
         val app = Mockito.mock(Application::class.java)
@@ -279,6 +283,49 @@ class GuestRootfsInitializerGuestGroupsTest {
 
         val added = group.readText().lines().filter { it.startsWith("aid_") }
         assertEquals(listOf("aid_1077:x:1077:root,aid_u0_a511"), added)
+    }
+
+    @Test
+    fun `the host group read is memoized for the process`() {
+        val group = plantGroupFile("root:x:0:")
+        setLiveGroups("1077")
+        setLiveUser("u0_a511")
+        setLiveUid("10511")
+
+        assertNull(initializer.ensureGuestGroups(rootfs, "ws-groups-cache-1"))
+        assertTrue(group.readText().contains("aid_1077:x:1077"))
+
+        // Android fixes a process's supplementary groups at process start;
+        // changing the fake `id` output here would be impossible in
+        // production without a process restart. The memoized read must keep
+        // reporting the first (real) set instead of spawning `id -G` again.
+        setLiveGroups("1088")
+        assertNull(initializer.ensureGuestGroups(rootfs, "ws-groups-cache-1"))
+        assertFalse(
+            "a second reconciliation must not pick up a new host read in the same process",
+            group.readText().contains("aid_1088")
+        )
+        assertEquals(1, group.readText().lines().count { it.startsWith("aid_") })
+    }
+
+    @Test
+    fun `a failed host group read is retried`() {
+        val group = plantGroupFile("root:x:0:")
+        val id = File(binDir, "id")
+        id.writeText("#!/bin/sh\nexit 1\n")
+        assertTrue(id.setExecutable(true))
+        assertNull(initializer.ensureGuestGroups(rootfs, "ws-groups-cache-2"))
+        assertFalse(group.readText().contains("aid_"))
+
+        // Restore a working applet: the failed read must not have been cached.
+        writeWorkingIdApplet()
+        assertTrue(id.setExecutable(true))
+        setLiveGroups("1077")
+        setLiveUser("u0_a511")
+        setLiveUid("10511")
+
+        assertNull(initializer.ensureGuestGroups(rootfs, "ws-groups-cache-2"))
+        assertTrue(group.readText().contains("aid_1077:x:1077"))
     }
 
     private companion object {

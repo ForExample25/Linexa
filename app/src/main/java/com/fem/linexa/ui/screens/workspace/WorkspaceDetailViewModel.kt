@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
+import com.fem.linexa.core.i18n.linexaString
 import com.fem.linexa.R
 import com.fem.linexa.core.format.FileSizeFormatter
 import com.fem.linexa.core.logging.DiagnosticLogManager
@@ -36,6 +37,7 @@ import com.fem.linexa.domain.runtime.FEATURE_DESKTOP
 import com.fem.linexa.service.runtime.features.DesktopRunMode
 import com.fem.linexa.service.runtime.features.FeatureSettings
 import com.fem.linexa.service.workspace.WorkspaceDeleter
+import com.fem.linexa.ui.screens.desktop.DesktopVncAuthProvisioner
 import com.fem.linexa.ui.theme.LinexaColors
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -209,7 +211,7 @@ class WorkspaceDetailViewModel @Inject constructor(
      */
     private fun buildUiState(metadata: WorkspaceMetadata?): WorkspaceDetailUiState {
         if (metadata == null) {
-            return WorkspaceDetailUiState.Error(getApplication<Application>().getString(R.string.workspace_not_found))
+            return WorkspaceDetailUiState.Error(getApplication<Application>().linexaString(R.string.workspace_not_found))
         }
         val (label, fraction) = getDiskUsage(workspaceId)
         val workspace = metadata.toUiWorkspace(label, fraction)
@@ -241,12 +243,16 @@ class WorkspaceDetailViewModel @Inject constructor(
             val effectiveDesktopEnabled = if (resolvedSettings.desktopMode == DesktopRunMode.WEBVIEW) {
                 WorkspaceCapabilities.desktopEnabled(resolvedToggles, metadata.attributes)
             } else {
-                WorkspaceCapabilities.desktopUsable(
-                    resolvedToggles,
-                    metadata.attributes + (WorkspaceCapabilities.ATTR_DESKTOP to
-                        RootFsCapabilityProbe.hasDesktopCapability(
-                            fileManager.getRootfsPath(workspaceId)
-                        ).toString())
+                // Auto-detection: a rootfs that really contains a desktop is
+                // available without the user having to find and flip an
+                // intent toggle first. An explicit toggle/config choice still
+                // wins (see [WorkspaceCapabilities.desktopAvailable]).
+                WorkspaceCapabilities.desktopAvailable(
+                    persistedToggles = metadata.featureToggles,
+                    attributes = metadata.attributes,
+                    capable = RootFsCapabilityProbe.hasDesktopCapability(
+                        fileManager.getRootfsPath(workspaceId)
+                    )
                 )
             }
             // The saved user commands, decoded once and used for both halves
@@ -407,7 +413,7 @@ class WorkspaceDetailViewModel @Inject constructor(
             builtinNodes = builtinNodes,
             declaredShortcuts = declaredCards,
             custom = custom,
-            customSectionTitle = getApplication<Application>().getString(R.string.workspace_commands_mine),
+            customSectionTitle = getApplication<Application>().linexaString(R.string.workspace_commands_mine),
             customIconRes = com.fem.linexa.R.drawable.ic_haven_terminal
         )
     }
@@ -558,12 +564,66 @@ class WorkspaceDetailViewModel @Inject constructor(
                     }
                 }
                 _desktopToggleBlocked.value = false
+                // Record the explicit choice. Import persists the
+                // defaults-merged toggle map, so a bare `desktop=false` is
+                // indistinguishable from the default; this marker is what
+                // lets auto-detection tell "never chose" from "chose off".
+                // Written only when the toggle is actually applied (a refused
+                // enable leaves no intent behind, so a later guided install
+                // auto-detects instead of resurrecting a stale refusal).
+                repository.updateAttributes(
+                    workspaceId,
+                    mapOf(WorkspaceCapabilities.ATTR_DESKTOP_INTENT to enabled.toString())
+                )
+                // Finding 007: the secure default is that a password exists
+                // before the first desktop start. Enabling the desktop with no
+                // stored password (and no explicit no-auth consent) generates
+                // one and persists it; the VNC settings panel shows it, and the
+                // embedded client picks it up from the same record. Never
+                // overwrite a chosen password or an unreadable secret — the
+                // latter must stay fail-closed until the user acts.
+                val settings = FeatureSettings.from(current.attributes)
+                DesktopVncAuthProvisioner.passwordToGenerateOnEnable(
+                    password = settings.desktopVncPassword,
+                    unreadable = settings.desktopVncPasswordUnreadable,
+                    allowUnauthenticated = settings.desktopVncAllowUnauthenticated
+                )?.let { generated ->
+                    repository.updateAttributes(
+                        workspaceId,
+                        mapOf(FeatureSettings.KEY_DESKTOP_VNC_PASSWORD to generated)
+                    )
+                    Logger.i(TAG, "Generated a default VNC password while enabling desktop for $workspaceId")
+                }
             }
             // Phase 05: atomic single-toggle write — two rapid toggles both
             // persist. The old read here + full-map write in
             // updateFeatureToggles meant the second toggle overwrote the
             // first one's key (the row it read was already stale).
             repository.setFeatureToggle(workspaceId, featureId, enabled)
+        }
+    }
+
+    /**
+     * Direct desktop launch (secure default): makes sure a VNC password exists
+     * before the first start of an auto-detected desktop. Same rule and same
+     * persistence as the enable toggle ([setFeatureToggle]) — never overwrites
+     * a chosen password, an unreadable secret, or an explicit no-auth consent.
+     */
+    fun ensureDesktopVncPassword() {
+        viewModelScope.launch {
+            val current = repository.getById(workspaceId) ?: return@launch
+            val settings = FeatureSettings.from(current.attributes)
+            DesktopVncAuthProvisioner.passwordToGenerateOnEnable(
+                password = settings.desktopVncPassword,
+                unreadable = settings.desktopVncPasswordUnreadable,
+                allowUnauthenticated = settings.desktopVncAllowUnauthenticated
+            )?.let { generated ->
+                repository.updateAttributes(
+                    workspaceId,
+                    mapOf(FeatureSettings.KEY_DESKTOP_VNC_PASSWORD to generated)
+                )
+                Logger.i(TAG, "Generated a default VNC password for direct desktop launch of $workspaceId")
+            }
         }
     }
 

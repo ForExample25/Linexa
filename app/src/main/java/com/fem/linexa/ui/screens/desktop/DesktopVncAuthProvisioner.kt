@@ -10,18 +10,30 @@ import java.security.SecureRandom
  * geometry string is a constant per device, while these strings embed a
  * secret and run through a shell. The rules that keep that safe:
  *
- * - The password reaches the guest **only** through [provisionCommand], which
- *   single-quotes it with [shellSingleQuoted]. A password that survived that
- *   quoting cannot inject shell syntax — but [generatePassword] also only
- *   ever emits `[a-zA-Z0-9]`, so the generated default (the intended flow,
- *   per [com.fem.linexa.service.runtime.features.FeatureSettings.desktopVncPassword])
- *   contains nothing for the quoting to fight in the first place. A hand-typed
- *   password with a quote inside is still safe, merely escaped.
+ * - The password reaches the guest **only** through [provisionRequest], and
+ *   only on the guest process's **stdin**. It is never part of the command
+ *   string that becomes PRoot's argv, so it cannot be read from
+ *   `/proc/<pid>/cmdline` by another process of the same UID while provisioning
+ *   runs (finding 031). The generated default is still `[a-zA-Z0-9]`, but stdin
+ *   means a hand-typed password with a quote or `$()` is not shell syntax at
+ *   all — there is no shell interpolation of the secret left to defend.
+ * - The passwd file is written through a fresh temporary file opened under
+ *   `set -C` (noclobber): the shell's redirection is `O_CREAT|O_EXCL`, so a
+ *   symlink planted at the temp path makes provisioning fail instead of
+ *   redirecting the (root-emulated) write elsewhere. `umask 077` gives the file
+ *   mode 0600 from the instant it exists, and `mv -f` is `rename(2)`, which
+ *   replaces the destination entry atomically without following a symlink
+ *   there. A destination that is a directory is refused rather than moved into.
  * - The `vncpasswd -f` step is guarded by `command -v vncpasswd`: the passwd
  *   file is written only when the guest's TigerVNC install actually ships the
- *   helper, and the ViewModel treats a non-zero exit as "proceed without
- *   authentication" rather than "start nothing" — a missing helper must
- *   degrade to the pre-Desktop-Modes behaviour, not break the desktop.
+ *   helper. A non-zero exit is **fail-closed**: when a password was configured
+ *   but could not be provisioned, [com.fem.linexa.ui.screens.desktop.DesktopViewModel]
+ *   refuses to start Xvnc instead of silently falling back to an
+ *   unauthenticated server. A missing helper must never turn a
+ *   password-protected desktop into one any local app can attach to.
+ *   `DesktopVncAuthProvisionerTest` and the fail-closed branches in both desktop
+ *   start paths pin this policy. (Finding 038: this KDoc previously described
+ *   the old fail-open behaviour.)
  * - The keyfile lives at [PASSWD_PATH], inside the workspace's own rootfs.
  *   It is per-workspace by construction and never leaves the guest FS.
  *
@@ -62,43 +74,71 @@ internal object DesktopVncAuthProvisioner {
     fun passwdPathFor(guestHome: String?): String {
         val home = guestHome?.trim()?.trimEnd('/')
         if (home.isNullOrEmpty() || !home.startsWith("/") || home == "/") return PASSWD_PATH
+        // A declared home is metadata, not a trusted literal: a `..` segment
+        // would let it escape the home it names. Fall back to the standard path
+        // instead of provisioning outside it.
+        if (home.split('/').any { it == ".." }) return PASSWD_PATH
         return "$home/$PASSWD_RELATIVE_PATH"
     }
 
     /**
-     * The one-shot guest command that materialises the passwd file (in the
+     * One provisioning request: the guest command and the bytes to write to
+     * its stdin.
+     *
+     * [command] is safe to log and never contains the password (finding 031).
+     * [stdin] is the secret itself; callers hand it to
+     * [com.fem.linexa.service.runtime.features.GuestFeatureHost.execCommandWithInput]
+     * and must not log it.
+     */
+    data class ProvisionRequest(val command: String, val stdin: String)
+
+    /**
+     * The one-shot guest request that materialises the passwd file (in the
      * workspace's resolved home, see [passwdPathFor]) from [password], or a
      * command whose non-zero exit signals "no vncpasswd in this guest".
      *
-     * Shape: `mkdir -p` (TigerVNC does not create the directory itself) →
-     * `command -v vncpasswd` guard → `printf '%s\n' '<pw>' | vncpasswd -f`
-     * (reads one line from stdin, writes the DES-encrypted keyfile format) →
-     * `chmod 600` (the file is secret; Xvnc reads it as the same emulated
-     * root, but the mode is what a passwd file owes its surroundings).
+     * Shape: `umask 077` (the file is 0600 from creation) → `mkdir -p`
+     * (TigerVNC does not create the directory itself) → `command -v vncpasswd`
+     * guard → `set -C; vncpasswd -f > "$tmp"` (reads the password from the
+     * process's stdin, writes the DES-encrypted keyfile format) → `chmod 600`
+     * → refuse a directory destination → `mv -f` (atomic rename, does not
+     * follow a destination symlink) into place.
      *
-     * Pre-release audit fix (2026-09-02): [shellSingleQuoted] already returns
-     * the fully-quoted token (`'…'`), so the previous template's extra quote
-     * pair around it produced `''<quoted>''` — the segments between the
-     * outer quote-pairs are then *unquoted shell text*. A password like
-     * `a;b$(id)` executed command substitution in the guest shell, and a
-     * password containing `'` terminated the parse early (unterminated
-     * string → provisioning failure → the start path degraded to an
-     * unauthenticated desktop). The token must be interpolated bare.
+     * Finding 031: the password is in [ProvisionRequest.stdin], never in this
+     * string. The previous template embedded it as a `printf … | vncpasswd`
+     * argv, readable from `/proc/<pid>/cmdline` by same-UID processes for the
+     * duration of the exec.
+     *
+     * The noclobber temp file is what makes the destination write safe against
+     * a symlink the guest user planted at the predictable temp path: `O_EXCL`
+     * makes the redirection fail instead of following it, and the rename
+     * replaces any symlink at the final path rather than writing through it.
+     * A stale temp from an earlier failed run is removed first, deliberately
+     * before `set -C` (removing a symlink does not follow it).
      */
-    fun provisionCommand(password: String, guestHome: String? = null): String {
+    fun provisionRequest(password: String, guestHome: String? = null): ProvisionRequest {
         val passwdPath = passwdPathFor(guestHome)
-        val vncDir = passwdPath.substringBeforeLast('/')
-        return "mkdir -p $vncDir && command -v vncpasswd >/dev/null 2>&1 && " +
-            "printf '%s\\n' ${shellSingleQuoted(password)} | vncpasswd -f > $passwdPath && " +
-            "chmod 600 $passwdPath"
+        val quotedPasswd = shellSingleQuoted(passwdPath)
+        val quotedDir = shellSingleQuoted(passwdPath.substringBeforeLast('/'))
+        val quotedTmp = shellSingleQuoted("$passwdPath.tmp")
+        val command = "umask 077 && mkdir -p $quotedDir && " +
+            "command -v vncpasswd >/dev/null 2>&1 && " +
+            "rm -f $quotedTmp && " +
+            "( set -C; vncpasswd -f > $quotedTmp ) && " +
+            "chmod 600 $quotedTmp && " +
+            "[ ! -d $quotedPasswd ] && " +
+            "mv -f $quotedTmp $quotedPasswd"
+        return ProvisionRequest(command = command, stdin = password + "\n")
     }
 
     /**
      * The `-SecurityTypes …` arguments Xvnc must be started with. When
      * [hasPassword] the server offers **only** VNC-Auth (an offered `None`
      * alongside it would let any local app bypass the secret), and points at
-     * the keyfile in [guestHome]; without a password the pre-Desktop-Modes
-     * `None` stands.
+     * the keyfile in [guestHome]. Without a password the server runs with
+     * `None` **only when the caller has already checked the user's explicit
+     * consent** ([unauthenticatedStartBlocked]); this function describes the
+     * command, not the permission to run it.
      */
     fun securityArgs(hasPassword: Boolean, guestHome: String? = null): String {
         val passwdPath = passwdPathFor(guestHome)
@@ -107,25 +147,64 @@ internal object DesktopVncAuthProvisioner {
     }
 
     /**
-     * Phase 07 (OPT-SEC-004, Step B2): whether an unauthenticated Xvnc start
-     * must be REFUSED outright.
+     * Phase 07 (OPT-SEC-004, Step B2) + finding 007: whether a start with
+     * `-SecurityTypes None` must be REFUSED outright.
      *
-     * `securityArgs` is [SECURITY_ARGS_NONE] exactly when no password was
-     * provisioned. For such a start the only thing standing between the
-     * desktop and every other app on the device is Xvnc's own `-localhost
-     * yes` — and the guest's Xvnc only accepts that flag from TigerVNC ≥ 1.11
-     * (older versions exit 1 on the unknown option, which is why
-     * [com.fem.linexa.ui.screens.desktop.DesktopGeometry.xvncCommand] only
-     * sends it when [localhostSupported] was probed, never assumed). An
-     * Xvnc that cannot be restricted to loopback AND has no password is
-     * reachable, unauthenticated, by any local app: the start must fail
-     * closed, before any process exists.
+     * Android has no per-app loopback isolation: `-localhost yes` does not
+     * authenticate anything, because every app on the device shares the host
+     * network namespace and can connect to `127.0.0.1`. A no-password desktop
+     * is therefore reachable by any local app regardless of the loopback bind,
+     * so the user must give **explicit consent**
+     * ([com.fem.linexa.service.runtime.features.FeatureSettings.desktopVncAllowUnauthenticated])
+     * before such a start is allowed. Without a password and without consent
+     * the start fails closed, before any process exists.
      *
-     * Pure and JVM-testable; the ViewModel consults it with the SAME
-     * [localhostSupported] value that builds the command — never a guess.
+     * The loopback capability is deliberately NOT part of this decision: it
+     * only selects which user-facing reason the ViewModel shows. It is not an
+     * authentication boundary and must never be treated as one.
+     *
+     * Pure and JVM-testable.
      */
-    fun unauthenticatedStartBlocked(localhostSupported: Boolean, securityArgs: String): Boolean =
-        !localhostSupported && securityArgs == SECURITY_ARGS_NONE
+    fun unauthenticatedStartBlocked(
+        securityArgs: String,
+        allowUnauthenticated: Boolean
+    ): Boolean = securityArgs == SECURITY_ARGS_NONE && !allowUnauthenticated
+
+    /**
+     * Finding 007: the password a desktop **enable** should generate, or null
+     * when none is needed.
+     *
+     * The secure default is "a password exists before the first start", so
+     * enabling the desktop with no stored password (and no explicit consent to
+     * run without one) generates one and persists it. It does not overwrite a
+     * password the user chose, does not replace an unreadable secret (that
+     * must fail closed until the user acts), and does not fight an explicit
+     * no-authentication choice. Pure, so the rule is JVM-testable without the
+     * ViewModel.
+     */
+    fun passwordToGenerateOnEnable(
+        password: String,
+        unreadable: Boolean,
+        allowUnauthenticated: Boolean
+    ): String? = if (needsGeneratedPassword(password, unreadable, allowUnauthenticated)) {
+        generatePassword()
+    } else {
+        null
+    }
+
+    /**
+     * The predicate behind [passwordToGenerateOnEnable], without the side
+     * effect of drawing a random secret. The direct-launch path asks it first:
+     * a workspace whose desktop was auto-detected at import never went through
+     * the enable toggle, so it has no password, and the fail-closed start
+     * policy would otherwise refuse it ("does not support restricting the
+     * server to loopback") although nothing is wrong with the guest's Xvnc.
+     */
+    fun needsGeneratedPassword(
+        password: String,
+        unreadable: Boolean,
+        allowUnauthenticated: Boolean
+    ): Boolean = password.isEmpty() && !unreadable && !allowUnauthenticated
 
     /**
      * Phase 07 (OPT-SEC-004, Step B3): the guest command that lists the
@@ -146,17 +225,37 @@ internal object DesktopVncAuthProvisioner {
             "(command -v busybox >/dev/null 2>&1 && busybox netstat -ltn 2>/dev/null) || true"
 
     /**
-     * Phase 07 (OPT-SEC-004, Step B3): whether a listener listing
-     * ([BIND_PROBE_COMMAND]'s output) proves the VNC [port] is reachable
-     * from anything but loopback.
+     * Finding 016: the three states a listener listing can prove.
      *
-     * Returns the offending `address:port` list (for the user-facing error),
-     * or `null` when the evidence says loopback-only — **or says nothing at
-     * all**: a null/blank listing is "unverified", and per the brief the
-     * caller must log a warning and keep the password requirement rather
-     * than claim a loopback-only bind without evidence. A single non-loopback
-     * listener beside the loopback one is still a violation: what matters is
-     * that ANY socket on the port answers on a routable address.
+     * The old API returned a nullable violation, which conflated
+     * "loopback-only" with "the probe told us nothing" — both became `null`.
+     * The caller then treated "cannot verify" as a pass. This type keeps the
+     * distinction explicit so a missing tool (or a listing that does not
+     * mention the port at all) can require a password or consent instead of
+     * silently standing in for evidence.
+     */
+    sealed class LoopbackProof {
+        /** A listener on the port was seen, and every such listener is loopback. */
+        object Verified : LoopbackProof()
+
+        /** No usable evidence: blank output, or no listener for the port in it. */
+        object Unverified : LoopbackProof()
+
+        /** At least one listener on the port answers on a routable address. */
+        data class Violation(val offenders: String) : LoopbackProof()
+    }
+
+    /**
+     * Phase 07 (OPT-SEC-004, Step B3) + finding 016: classify a listener
+     * listing ([BIND_PROBE_COMMAND]'s output) as [LoopbackProof.Verified],
+     * [LoopbackProof.Violation] or [LoopbackProof.Unverified].
+     *
+     * A null/blank listing is **Unverified**, never "verified". So is a
+     * non-blank listing that contains no listener for [port] at all (a probe
+     * race, a namespace mismatch, or a tool that printed only a header): the
+     * absence of a matching line is not evidence of a loopback bind. Only a
+     * listing that actually shows at least one socket on [port] and no
+     * routable one is `Verified`.
      *
      * Parsing notes: `ss -ltn` / `netstat -ltn` listeners carry the port only
      * in the LOCAL address column (the peer is `*:*`), and the trailing
@@ -164,16 +263,33 @@ internal object DesktopVncAuthProvisioner {
      * covered: `::1:5901`, `[::1]:5901` (loopback) vs `[::]:5901`, `:::5901`,
      * `*:5901`, `0.0.0.0:5901` (violations).
      */
-    fun loopbackBindViolation(listenerOutput: String?, port: Int): String? {
-        if (listenerOutput.isNullOrBlank()) return null
-        val offenders = Regex("""(\S+):$port(?!\d)""")
+    fun loopbackProof(listenerOutput: String?, port: Int): LoopbackProof {
+        if (listenerOutput.isNullOrBlank()) return LoopbackProof.Unverified
+        val addresses = Regex("""(\S+):$port(?!\d)""")
             .findAll(listenerOutput)
-            .mapNotNull { it.groupValues[1] }
-            .filterNot { isLoopbackListener(it) }
-            .distinct()
+            .map { it.groupValues[1] }
             .toList()
-        return if (offenders.isEmpty()) null else offenders.joinToString(", ")
+        // No listener for the port in the listing: the probe did not prove
+        // anything about THIS server, so it cannot be called verified.
+        if (addresses.isEmpty()) return LoopbackProof.Unverified
+        val offenders = addresses.filterNot { isLoopbackListener(it) }.distinct()
+        return if (offenders.isEmpty()) {
+            LoopbackProof.Verified
+        } else {
+            LoopbackProof.Violation(offenders.joinToString(", "))
+        }
     }
+
+    /**
+     * The offending `address:port` list for a [LoopbackProof.Violation], or
+     * null for every other state.
+     *
+     * Kept as the narrow projection existing callers/tests used before the
+     * tri-state existed; new code should branch on [loopbackProof] so
+     * "Unverified" can never be mistaken for a pass.
+     */
+    fun loopbackBindViolation(listenerOutput: String?, port: Int): String? =
+        (loopbackProof(listenerOutput, port) as? LoopbackProof.Violation)?.offenders
 
     /**
      * Whether [address] (the local-address token of a LISTEN line) can only
@@ -216,8 +332,11 @@ internal object DesktopVncAuthProvisioner {
 
     /**
      * Wrap [raw] in POSIX single quotes, escaping embedded single quotes the
-     * `'\''` way — the only construct a single-quoted string needs, and the
-     * reason an arbitrary password cannot turn into shell syntax.
+     * `'\''` way — the only construct a single-quoted string needs.
+     *
+     * Used for the guest paths [provisionRequest] interpolates. The password
+     * itself no longer reaches a shell at all (finding 031): it travels on
+     * stdin, so there is no quoting for it to escape.
      */
     fun shellSingleQuoted(raw: String): String = "'${raw.replace("'", "'\\''")}'"
 

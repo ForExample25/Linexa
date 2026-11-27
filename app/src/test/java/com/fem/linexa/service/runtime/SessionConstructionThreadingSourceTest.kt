@@ -72,7 +72,7 @@ class SessionConstructionThreadingSourceTest {
                 "the injected dispatcher binds Dispatchers.Main.immediate in production, and the " +
                 "vendored TerminalSession constructor captures the constructing thread's Looper " +
                 "(no-arg Handler), which does not exist on coroutines workers",
-            createCall.contains("withContext(sessionCreationDispatcher)") &&
+            createCall.contains("withContext(sessionCreationDispatcher + NonCancellable)") &&
                 createCall.contains("ptySessionFactory.create(")
         )
     }

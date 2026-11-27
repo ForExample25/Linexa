@@ -1,5 +1,6 @@
 package com.fem.linexa.core.logging
 
+import com.fem.linexa.core.perf.PerfTrace
 import com.fem.linexa.domain.settings.SettingsRepository
 import com.fem.linexa.service.runtime.RuntimeTrace
 import kotlinx.coroutines.CoroutineScope
@@ -81,6 +82,9 @@ class DebugCaptureGate @Inject constructor(
      */
     private fun apply(enabled: Boolean) {
         DebugCapture.setEnabled(enabled)
+        // Phase M0-A: turning capture off must also drop any live startup
+        // records (and close their async trace sections). No-op when on.
+        PerfTrace.onCaptureChanged(enabled)
         if (!enabled) runtimeTrace.clear()
     }
 

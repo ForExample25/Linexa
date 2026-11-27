@@ -69,6 +69,12 @@ class WorkspaceGpuSupervisor(
     private val logDirFor: (String) -> File,
     private val scope: CoroutineScope,
     private val clockMs: () -> Long = System::currentTimeMillis,
+    /**
+     * Exit-watcher cadence. Production uses [WATCHER_POLL_MS]; tests inject a
+     * short interval so the crash contract can be observed by joining the
+     * watcher instead of sleeping for production's two-second cadence.
+     */
+    private val watcherPollMs: Long = WATCHER_POLL_MS,
 ) {
 
     /** Health-registry component key for this feature (§6 component vocabulary). */
@@ -90,6 +96,14 @@ class WorkspaceGpuSupervisor(
         val runtime = runnings[workspaceId] ?: return false
         return runtime.process.isAlive
     }
+
+    /**
+     * Test seam: the exit watcher registered for [workspaceId], or null when
+     * none is running. Joining it gives a deterministic "the crash was
+     * observed and reported" edge; polling the health registry can only sample
+     * it. Production never calls this.
+     */
+    internal fun watcherFor(workspaceId: String): Job? = runnings[workspaceId]?.watcher
 
     /**
      * Launch-path provisioning. Returns the guest env to merge into the PRoot
@@ -204,11 +218,19 @@ class WorkspaceGpuSupervisor(
         }
 
         val stopping = AtomicBoolean(false)
+        // Report Healthy BEFORE the watcher exists. The watcher is the only
+        // reporter of an unexpected exit, and it reports once; if it observed a
+        // crash between its own launch and this call, the later `reportHealthy`
+        // would erase that only report and the workspace would stay green for a
+        // dead server. Healthy-first makes the ordering monotonic: any crash
+        // the watcher can see happens after this line and therefore wins.
+        healthRegistry.reportHealthy(workspaceId, COMPONENT)
+        runtimeTrace.record(workspaceId, "GPU: host server running (pid ${process.pid()})")
         val watcher = scope.launch {
             // Exit watcher: crash detection WITHOUT a restart loop. An
             // unexpected death is reported once; recovery is the next explicit
             // workspace start, exactly like §1.83's daemon watcher semantics.
-            while (process.isAlive) delay(WATCHER_POLL_MS)
+            while (process.isAlive) delay(watcherPollMs)
             if (!stopping.get()) {
                 val detail = "GPU host server exited unexpectedly (guest GL falls back to software)"
                 Logger.w(TAG, "$workspaceId: $detail")
@@ -218,8 +240,6 @@ class WorkspaceGpuSupervisor(
         }
         val runtime = GpuRuntime(process, socketFile, socketDir, watcher, stopping)
         runnings[workspaceId] = runtime
-        healthRegistry.reportHealthy(workspaceId, COMPONENT)
-        runtimeTrace.record(workspaceId, "GPU: host server running (pid ${process.pid()})")
         Logger.i(TAG, "$workspaceId: GPU host server started (pid ${process.pid()})")
         return VirglHostServer.guestLaunchEnv()
     }

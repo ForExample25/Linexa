@@ -124,7 +124,8 @@ class TerminalRepaintBridgeSourceTest {
         )
         assertTrue(
             "and the repaint call must still land on the view holder",
-            realTerminalView.contains("terminalViewState.value?.onScreenUpdated()")
+            realTerminalView.contains("val boundView = terminalViewState.value") &&
+                realTerminalView.contains("boundView.onScreenUpdated()")
         )
         assertFalse(
             "the replay-less PtyEvent flow must no longer drive repaints — " +
@@ -148,9 +149,12 @@ class TerminalRepaintBridgeSourceTest {
             "the screen revision must be conflated state (MutableStateFlow), not an event",
             ptySession.contains("MutableStateFlow(0)")
         )
-        val textBumps = Regex("onTextChanged\\(changedSession: TerminalSession\\?\\) \\{[\\s\\S]{0,120}bumpScreenRevision\\(\\)")
+        // The window leaves room for the instrumentation comment/flag mirror
+        // that now precedes the bump in onTextChanged; it stays short enough
+        // not to reach the next callback's bump.
+        val textBumps = Regex("onTextChanged\\(changedSession: TerminalSession\\?\\) \\{[\\s\\S]{0,400}bumpScreenRevision\\(\\)")
             .containsMatchIn(ptySession)
-        val colorsBumps = Regex("onColorsChanged\\(session: TerminalSession\\?\\) \\{[\\s\\S]{0,120}bumpScreenRevision\\(\\)")
+        val colorsBumps = Regex("onColorsChanged\\(session: TerminalSession\\?\\) \\{[\\s\\S]{0,400}bumpScreenRevision\\(\\)")
             .containsMatchIn(ptySession)
         assertTrue(
             "both rendering-relevant callbacks must bump the revision (text=$textBumps, colors=$colorsBumps)",

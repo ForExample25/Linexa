@@ -56,6 +56,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -145,8 +146,6 @@ fun FileManagerScreen(
     val androidStorage = state.androidStorage
     var androidPlaces by androidx.compose.runtime.remember { mutableStateOf<List<com.fem.linexa.ui.screens.filemanager.FileManagerViewModel.AndroidPlace>>(emptyList()) }
     val showOverview = state.showOverview
-    var placesExpanded by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(true) }
-    var androidExpanded by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(true) }
     // The overview owns the Android folder list and the StatFs reading: load
     // both whenever it is shown (they were previously only loaded after the
     // user had already switched to Android mode — i.e. never visible here).
@@ -287,6 +286,7 @@ fun FileManagerScreen(
                             }
                         }
                     }
+                    val clipLabel = stringResource(R.string.file_manager_clip_label)
                     HSubHeader(
                         title = viewerPath.substringAfterLast('/'),
                         subtitle = viewerSubtitle,
@@ -301,7 +301,7 @@ fun FileManagerScreen(
                                 onClick = {
                                     fileContent?.let { content ->
                                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                        clipboard.setPrimaryClip(ClipData.newPlainText("Linexa file", content))
+                                        clipboard.setPrimaryClip(ClipData.newPlainText(clipLabel, content))
                                         Toast.makeText(context, R.string.common_copied, Toast.LENGTH_SHORT).show()
                                     }
                                 }
@@ -316,13 +316,19 @@ fun FileManagerScreen(
                             .padding(start = 20.dp, end = 20.dp, bottom = 20.dp)
                     )
                 } else {
+                    val transfer = pendingTransfer
+                    val pendingSubtitle = when {
+                        transfer == null -> workspaceName
+                        transfer.items.size == 1 -> transfer.first?.name ?: workspaceName
+                        else -> pluralStringResource(
+                            R.plurals.file_manager_item_count,
+                            transfer.items.size,
+                            transfer.items.size
+                        )
+                    }
                     HSubHeader(
                         title = stringResource(R.string.file_manager_title),
-                        subtitle = pendingTransfer?.let {
-                            // §1.115: the clipboard's content stays visible in the
-                            // header while a transfer is pending (multi-item aware).
-                            if (it.items.size == 1) it.first?.name else "${it.items.size} items"
-                        } ?: workspaceName,
+                        subtitle = pendingSubtitle,
                         onBack = { if (showOverview) onBack() else viewModel.navigateUp() },
                         backContentDescription = stringResource(R.string.common_back),
                         trailing = {
@@ -395,10 +401,6 @@ fun FileManagerScreen(
                             homes = homes,
                             workspaceStorage = state.storage,
                             workspaceStorageLoading = state.storageLoading,
-                            androidExpanded = androidExpanded,
-                            onAndroidToggle = { androidExpanded = !androidExpanded },
-                            linuxExpanded = placesExpanded,
-                            onLinuxToggle = { placesExpanded = !placesExpanded },
                             onOpenAndroid = { viewModel.openAndroidStorage(it) },
                             onOpenLinux = { viewModel.openLinuxPlace(it) },
                             onGrantAccess = {
@@ -550,8 +552,7 @@ fun FileManagerScreen(
                             text = stringResource(R.string.file_manager_selection_title, selectedPaths.size),
                             style = HavenType.body.copy(fontWeight = FontWeight.SemiBold),
                             color = HavenTheme.colors.text,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
+                            maxLines = 2,
                             modifier = Modifier.padding(horizontal = 6.dp)
                         )
                         HIconGhost(
@@ -645,8 +646,7 @@ fun FileManagerScreen(
                                         text = stringResource(R.string.file_manager_new_folder),
                                         style = HavenType.body.copy(fontWeight = FontWeight.SemiBold),
                                         color = HavenTheme.colors.text,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        maxLines = 2
                                     )
                                 }
                                 Row(
@@ -671,8 +671,7 @@ fun FileManagerScreen(
                                         text = stringResource(R.string.file_manager_new_file),
                                         style = HavenType.body.copy(fontWeight = FontWeight.SemiBold),
                                         color = HavenTheme.colors.text,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
+                                        maxLines = 2
                                     )
                                 }
                             }
@@ -851,7 +850,7 @@ fun FileManagerScreen(
                     )
                     Box {
                         HRow(
-                            title = template?.label
+                            title = template?.let { stringResource(it.labelRes) }
                                 ?: stringResource(R.string.file_manager_template_none),
                             description = stringResource(R.string.file_manager_template),
                             onClick = { templateMenu = true },
@@ -874,7 +873,7 @@ fun FileManagerScreen(
                                 FileTypes.templates.forEach { preset ->
                                     add(
                                         HMenuItem(
-                                            label = "${preset.label} (.${preset.extension})",
+                                            label = "${stringResource(preset.labelRes)} (.${preset.extension})",
                                             iconRes = R.drawable.ic_haven_file,
                                             onClick = {
                                                 template = preset
@@ -930,7 +929,11 @@ fun FileManagerScreen(
         HSheet(
             title = target.name,
             subtitle = target.path,
-            onDismiss = { actionSheetFile = null }
+            onDismiss = { actionSheetFile = null },
+            // The per-entry action list can exceed the screen at a large font
+            // scale with wrapped Persian labels; a partially-expanded sheet
+            // makes its body scroll so every action stays reachable.
+            skipPartiallyExpanded = false
         ) {
             Column(
                 modifier = Modifier.padding(top = 4.dp, start = 12.dp, end = 12.dp),
@@ -1044,10 +1047,10 @@ fun FileManagerScreen(
                     FileInfoLine(
                         stringResource(R.string.file_manager_info_type),
                         when {
-                            info.isDirectory -> "directory"
-                            info.isSymlink -> "symbolic link"
+                            info.isDirectory -> stringResource(R.string.file_manager_type_directory)
+                            info.isSymlink -> stringResource(R.string.file_manager_type_symlink)
                             else -> info.name.substringAfterLast('.', missingDelimiterValue = "")
-                                .ifEmpty { "file" }
+                                .ifEmpty { stringResource(R.string.file_manager_type_file) }
                         }
                     )
                     if (!info.isDirectory && info.hasByteSize) {
@@ -1176,8 +1179,8 @@ private fun FileSortCriterion.labelRes(): Int = when (this) {
  *  A. ANDROID STORAGE (primary): a compact capacity card (measured with
  *     StatFs, shown only when All-files access is granted) and the standard
  *     folders that actually exist on this device.
- *  B. LINUX WORKSPACE (secondary, collapsible): the workspace storage card and
- *     the six guaranteed guest locations.
+ *  B. LINUX WORKSPACE (secondary): the workspace storage card and the
+ *     guaranteed guest locations.
  *
  * Every tap leaves the overview and opens a real listing. Android folders are
  * listed host-side; Linux locations go through the runtime binder (PRoot's
@@ -1190,17 +1193,11 @@ private fun FileManagerOverview(
     homes: WorkspaceHomeLayout.WorkspaceHomes,
     workspaceStorage: WorkspaceStorage?,
     workspaceStorageLoading: Boolean,
-    androidExpanded: Boolean,
-    onAndroidToggle: () -> Unit,
-    linuxExpanded: Boolean,
-    onLinuxToggle: () -> Unit,
     onOpenAndroid: (String?) -> Unit,
     onOpenLinux: (String) -> Unit,
     onGrantAccess: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val h = HavenTheme.colors
-    val motions = com.fem.linexa.ui.components.haven.LocalHavenMotions.current
     val granted = androidStorage?.accessGranted == true
     Column(
         modifier = modifier
@@ -1209,129 +1206,107 @@ private fun FileManagerOverview(
             .padding(start = 20.dp, end = 20.dp, bottom = 24.dp)
     ) {
         // ── A. Android storage ──
-        CollapsibleSectionHeader(
-            title = stringResource(R.string.fm_android_title),
-            expanded = androidExpanded,
-            onToggle = onAndroidToggle
-        )
-        AnimatedVisibility(
-            visible = androidExpanded,
-            enter = fadeIn(motions.enter) + expandVertically(motions.enterSpec()),
-            exit = fadeOut(motions.exit) + shrinkVertically(motions.exitSpec())
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                val used = androidStorage?.usedBytes
-                val total = androidStorage?.totalBytes
-                StorageSummaryCard(
-                    title = stringResource(R.string.fm_android_title),
-                    caption = if (granted && used != null) {
-                        stringResource(
-                            R.string.fm_storage_used_of_free,
-                            FileSizeFormatter.format(used),
-                            FileSizeFormatter.format(androidStorage?.availableBytes ?: 0L)
-                        )
-                    } else {
-                        stringResource(R.string.fm_android_access_hint)
-                    },
-                    trailing = if (granted && total != null) FileSizeFormatter.format(total) else null,
-                    fraction = if (granted) androidStorage?.fraction else null,
-                    loading = false,
-                    onClick = if (granted) ({ onOpenAndroid(null) }) else null
-                )
-                if (!granted) {
-                    HButton(
-                        label = stringResource(R.string.fm_android_grant),
-                        onClick = onGrantAccess,
-                        variant = HavenButtonVariant.SECONDARY,
-                        size = HavenButtonSize.SMALL
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            val used = androidStorage?.usedBytes
+            val total = androidStorage?.totalBytes
+            StorageSummaryCard(
+                title = stringResource(R.string.fm_android_title),
+                caption = if (granted && used != null) {
+                    stringResource(
+                        R.string.fm_storage_used_of_free,
+                        FileSizeFormatter.format(used),
+                        FileSizeFormatter.format(androidStorage?.availableBytes ?: 0L)
                     )
                 } else {
-                    val standard = listOf("Download", "Movies", "Music", "Pictures", "Documents", "DCIM")
-                    val tiles = standard.mapNotNull { label ->
-                        androidPlaces.firstOrNull { it.label == label }?.let { place ->
-                            OverviewTile(
-                                title = when (label) {
-                                    "Download" -> stringResource(R.string.fm_dir_downloads)
-                                    "Movies" -> stringResource(R.string.fm_dir_movies)
-                                    "Music" -> stringResource(R.string.fm_dir_music)
-                                    "Pictures" -> stringResource(R.string.fm_dir_pictures)
-                                    "Documents" -> stringResource(R.string.fm_dir_documents)
-                                    else -> stringResource(R.string.fm_dir_dcim)
-                                },
-                                subtitle = null,
-                                iconRes = when (label) {
-                                    "Download" -> R.drawable.ic_haven_download
-                                    "Movies" -> R.drawable.ic_haven_play
-                                    "Music" -> R.drawable.ic_haven_audio
-                                    "Pictures" -> R.drawable.ic_haven_grid
-                                    "Documents" -> R.drawable.ic_haven_file
-                                    else -> R.drawable.ic_haven_monitor
-                                },
-                                path = place.path
-                            )
-                        }
+                    stringResource(R.string.fm_android_access_hint)
+                },
+                trailing = if (granted && total != null) FileSizeFormatter.format(total) else null,
+                fraction = if (granted) androidStorage?.fraction else null,
+                loading = false,
+                onClick = if (granted) ({ onOpenAndroid(null) }) else null
+            )
+            if (!granted) {
+                HButton(
+                    label = stringResource(R.string.fm_android_grant),
+                    onClick = onGrantAccess,
+                    variant = HavenButtonVariant.SECONDARY,
+                    size = HavenButtonSize.SMALL
+                )
+            } else {
+                val standard = listOf("Download", "Movies", "Music", "Pictures", "Documents", "DCIM")
+                val tiles = standard.mapNotNull { label ->
+                    androidPlaces.firstOrNull { it.label == label }?.let { place ->
+                        OverviewTile(
+                            title = when (label) {
+                                "Download" -> stringResource(R.string.fm_dir_downloads)
+                                "Movies" -> stringResource(R.string.fm_dir_movies)
+                                "Music" -> stringResource(R.string.fm_dir_music)
+                                "Pictures" -> stringResource(R.string.fm_dir_pictures)
+                                "Documents" -> stringResource(R.string.fm_dir_documents)
+                                else -> stringResource(R.string.fm_dir_dcim)
+                            },
+                            subtitle = null,
+                            iconRes = when (label) {
+                                "Download" -> R.drawable.ic_haven_download
+                                "Movies" -> R.drawable.ic_haven_play
+                                "Music" -> R.drawable.ic_haven_audio
+                                "Pictures" -> R.drawable.ic_haven_grid
+                                "Documents" -> R.drawable.ic_haven_file
+                                else -> R.drawable.ic_haven_monitor
+                            },
+                            path = place.path
+                        )
                     }
-                    TileGrid(tiles = tiles, onClick = { onOpenAndroid(it.path) })
                 }
-                Spacer(modifier = Modifier.height(4.dp))
+                TileGrid(tiles = tiles, onClick = { onOpenAndroid(it.path) })
             }
+            Spacer(modifier = Modifier.height(4.dp))
         }
 
         // ── B. Linux workspace ──
-        Spacer(modifier = Modifier.height(6.dp))
-        CollapsibleSectionHeader(
-            title = stringResource(R.string.fm_linux_title),
-            expanded = linuxExpanded,
-            onToggle = onLinuxToggle
-        )
-        AnimatedVisibility(
-            visible = linuxExpanded,
-            enter = fadeIn(motions.enter) + expandVertically(motions.enterSpec()),
-            exit = fadeOut(motions.exit) + shrinkVertically(motions.exitSpec())
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                StorageSummaryCard(
-                    title = stringResource(R.string.fm_storage_title),
-                    caption = workspaceStorage?.let { reading ->
-                        reading.freeLabel?.let {
-                            stringResource(R.string.fm_storage_used_of_free, reading.usedLabel, it)
-                        } ?: stringResource(R.string.fm_storage_used_only, reading.usedLabel)
-                    } ?: stringResource(R.string.fm_storage_caption),
-                    trailing = null,
-                    fraction = workspaceStorage?.fraction,
-                    loading = workspaceStorageLoading && workspaceStorage == null,
-                    onClick = { onOpenLinux("/") }
+        Spacer(modifier = Modifier.height(16.dp))
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            StorageSummaryCard(
+                title = stringResource(R.string.fm_storage_title),
+                caption = workspaceStorage?.let { reading ->
+                    reading.freeLabel?.let {
+                        stringResource(R.string.fm_storage_used_of_free, reading.usedLabel, it)
+                    } ?: stringResource(R.string.fm_storage_used_only, reading.usedLabel)
+                } ?: stringResource(R.string.fm_storage_caption),
+                trailing = null,
+                fraction = workspaceStorage?.fraction,
+                loading = workspaceStorageLoading && workspaceStorage == null,
+                onClick = { onOpenLinux("/") }
+            )
+            // Home follows the SELECTED Workspace identity's passwd record.
+            // A normal-user workspace also gets a separate Root Home place,
+            // so "/root" stays reachable without being called "Home".
+            val tiles = buildList {
+                add(OverviewTile(stringResource(R.string.fm_place_root), "/", R.drawable.ic_haven_db, "/"))
+                add(
+                    OverviewTile(
+                        stringResource(R.string.fm_place_home),
+                        homes.userHome,
+                        R.drawable.ic_haven_home,
+                        homes.userHome
+                    )
                 )
-                // Home follows the SELECTED Workspace identity's passwd record.
-                // A normal-user workspace also gets a separate Root Home place,
-                // so "/root" stays reachable without being called "Home".
-                val tiles = buildList {
-                    add(OverviewTile(stringResource(R.string.fm_place_root), "/", R.drawable.ic_haven_db, "/"))
+                if (homes.showRootHomeShortcut) {
                     add(
                         OverviewTile(
-                            stringResource(R.string.fm_place_home),
-                            homes.userHome,
-                            R.drawable.ic_haven_home,
-                            homes.userHome
+                            stringResource(R.string.fm_place_root_home),
+                            homes.rootHome,
+                            R.drawable.ic_haven_lock,
+                            homes.rootHome
                         )
                     )
-                    if (homes.showRootHomeShortcut) {
-                        add(
-                            OverviewTile(
-                                stringResource(R.string.fm_place_root_home),
-                                homes.rootHome,
-                                R.drawable.ic_haven_lock,
-                                homes.rootHome
-                            )
-                        )
-                    }
-                    add(OverviewTile(stringResource(R.string.fm_place_tmp), "/tmp", R.drawable.ic_haven_clock, "/tmp"))
-                    add(OverviewTile(stringResource(R.string.fm_place_etc), "/etc", R.drawable.ic_haven_sliders, "/etc"))
-                    add(OverviewTile(stringResource(R.string.fm_place_opt), "/opt", R.drawable.ic_haven_box, "/opt"))
-                    add(OverviewTile(stringResource(R.string.fm_place_usr), "/usr", R.drawable.ic_haven_folder, "/usr"))
                 }
-                TileGrid(tiles = tiles, onClick = { onOpenLinux(it.path) })
+                add(OverviewTile(stringResource(R.string.fm_place_tmp), "/tmp", R.drawable.ic_haven_clock, "/tmp"))
+                add(OverviewTile(stringResource(R.string.fm_place_etc), "/etc", R.drawable.ic_haven_sliders, "/etc"))
+                add(OverviewTile(stringResource(R.string.fm_place_opt), "/opt", R.drawable.ic_haven_box, "/opt"))
+                add(OverviewTile(stringResource(R.string.fm_place_usr), "/usr", R.drawable.ic_haven_folder, "/usr"))
             }
+            TileGrid(tiles = tiles, onClick = { onOpenLinux(it.path) })
         }
     }
 }
@@ -1368,15 +1343,12 @@ private fun StorageSummaryCard(
                     text = title,
                     style = HavenType.rowTitle,
                     color = h.text,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
+                    maxLines = 2
                 )
                 Text(
                     text = caption,
                     style = HavenType.small,
-                    color = h.text2,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis
+                    color = h.text2
                 )
             }
             if (loading) {
@@ -1434,8 +1406,7 @@ private fun TileGrid(tiles: List<OverviewTile>, onClick: (OverviewTile) -> Unit)
                                 text = tile.title,
                                 style = HavenType.rowTitle,
                                 color = h.text,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                maxLines = 2
                             )
                             if (tile.subtitle != null) {
                                 Text(
@@ -1452,32 +1423,6 @@ private fun TileGrid(tiles: List<OverviewTile>, onClick: (OverviewTile) -> Unit)
                 if (pair.size == 1) Spacer(modifier = Modifier.weight(1f))
             }
         }
-    }
-}
-
-/** A collapsible section header — the chevron rotates with [expanded]. */
-@Composable
-private fun CollapsibleSectionHeader(
-    title: String,
-    expanded: Boolean,
-    onToggle: () -> Unit
-) {
-    val h = HavenTheme.colors
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onToggle)
-            .padding(horizontal = 6.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = title,
-            style = HavenType.section,
-            color = h.muted,
-            modifier = Modifier.weight(1f)
-        )
-        HChevron(expanded = expanded)
     }
 }
 
@@ -1608,7 +1553,7 @@ private fun SheetAction(
             .heightIn(min = 46.dp)
             .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp),
+            .padding(horizontal = 14.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp)
     ) {
@@ -1622,8 +1567,7 @@ private fun SheetAction(
             text = label,
             style = HavenType.body.copy(fontWeight = FontWeight.Medium),
             color = if (danger) h.red else h.text,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
+            maxLines = 2
         )
     }
 }

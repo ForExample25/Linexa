@@ -125,6 +125,9 @@ class WorkspaceClipboardSupervisor(
     private fun mirrorEpochOf(workspaceId: String): Int =
         synchronized(stateLock) { mirrorEpochs[workspaceId] ?: 0 }
 
+    private fun isEnabled(workspaceId: String): Boolean =
+        synchronized(stateLock) { workspaceId in enabledWorkspaces }
+
     /**
      * Converge [workspaceId]'s clipboard bridge to [enabled].
      *
@@ -271,7 +274,7 @@ class WorkspaceClipboardSupervisor(
                     // Same tick as the drain: the change listener cannot see a
                     // copy made while Linexa was backgrounded (API 29+ denies
                     // the read), so the poll is what eventually picks it up.
-                    mirrorOnce(workspaceId)
+                    mirrorOnce(workspaceId, onlyIfEnabled = true)
                     delay(pollIntervalMillis)
                 }
             }
@@ -313,7 +316,7 @@ class WorkspaceClipboardSupervisor(
      */
     internal fun onPrimaryClipChanged() {
         val targets = synchronized(stateLock) { enabledWorkspaces.toList() }
-        targets.forEach { mirrorOnce(it) }
+        targets.forEach { mirrorOnce(it, onlyIfEnabled = true) }
     }
 
     /**
@@ -324,8 +327,15 @@ class WorkspaceClipboardSupervisor(
      * buffer because Android declined to answer would turn a working paste into
      * an empty one. The mirror is only ever replaced by real content, or removed
      * outright when the feature is turned off ([clearMirror]).
+     *
+     * [onlyIfEnabled] is set by the watcher and the change listener, never by the
+     * enable-time seed (which runs before the workspace is added to
+     * [enabledWorkspaces]). It closes a disable race: cancellation is
+     * cooperative, so a watcher tick may begin *after* [clearMirror] bumped the
+     * epoch; such a tick sees the new epoch and would otherwise re-create a
+     * mirror of the user's clipboard in a workspace whose feature is off.
      */
-    internal fun mirrorOnce(workspaceId: String) {
+    internal fun mirrorOnce(workspaceId: String, onlyIfEnabled: Boolean = false) {
         // Read the epoch BEFORE the clipboard read: everything from here on is
         // work that a concurrent disable must be able to invalidate.
         val epoch = mirrorEpochOf(workspaceId)
@@ -351,6 +361,10 @@ class WorkspaceClipboardSupervisor(
             // user's clipboard back into a workspace that must not hold it.
             if (mirrorEpochOf(workspaceId) != epoch) {
                 Logger.d(TAG, "$workspaceId: dropping a stale clipboard mirror write")
+                return
+            }
+            if (onlyIfEnabled && !isEnabled(workspaceId)) {
+                Logger.d(TAG, "$workspaceId: dropping a clipboard mirror write for a disabled workspace")
                 return
             }
             if (writeMirror(target, text)) {

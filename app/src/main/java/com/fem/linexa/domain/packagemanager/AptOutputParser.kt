@@ -93,6 +93,42 @@ internal object AptOutputParser {
         }
 
     /**
+     * F-038 / R-27: parse only the requested page, while still counting the
+     * full result set.
+     *
+     * A one-letter query can return thousands of `name - description` lines.
+     * The old flow parsed every line into a `Pair` (duplicating the whole
+     * captured output) and then dropped all but [limit] of them. This walks
+     * the output once, retains at most [limit] pairs, and returns the total
+     * the screen needs for its page count.
+     */
+    fun parseSearchPage(
+        output: String,
+        offset: Int,
+        limit: Int
+    ): SearchPage {
+        val safeOffset = offset.coerceAtLeast(0)
+        val safeLimit = limit.coerceAtLeast(0)
+        var total = 0
+        val page = ArrayList<Pair<String, String>>(safeLimit.coerceAtMost(64))
+        output.lineSequence().forEach { line ->
+            val idx = line.indexOf(" - ")
+            if (idx <= 0) return@forEach
+            if (total >= safeOffset && page.size < safeLimit) {
+                page += line.substring(0, idx).trim() to line.substring(idx + 3).trim()
+            }
+            total++
+        }
+        return SearchPage(total = total, packages = page)
+    }
+
+    /** One page of search results plus the full count (F-038). */
+    data class SearchPage(
+        val total: Int,
+        val packages: List<Pair<String, String>>
+    )
+
+    /**
      * Parse `apt-cache policy <names>` output into name → (version, repo).
      * Policy blocks look like:
      * ```

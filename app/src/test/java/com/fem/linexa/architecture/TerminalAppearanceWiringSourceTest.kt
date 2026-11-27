@@ -100,8 +100,17 @@ class TerminalAppearanceWiringSourceTest {
             termuxPtySession.contains("scratch.updateWith(props)")
         )
         assertTrue(
-            "a valid scheme is copied into the static theme BEFORE TerminalSession construction",
-            Regex("TerminalColors\\.COLOR_SCHEME\\.mDefaultColors").containsMatchIn(termuxPtySession)
+            "RN-006: the parsed scheme is handed to THIS session before the emulator exists",
+            termuxPtySession.contains("session.setColorScheme(it)")
+        )
+        assertTrue(
+            "RN-006: the process-global scheme must never be mutated by a workspace's file",
+            !termuxPtySession.contains("TerminalColors.COLOR_SCHEME.mDefaultColors") &&
+                !termuxPtySession.contains("System.arraycopy")
+        )
+        assertTrue(
+            "the Termux scheme type is still the only terminal palette source",
+            termuxPtySession.contains("TerminalColorScheme()")
         )
         assertTrue(
             "malformed user files must never block a terminal",
@@ -124,7 +133,7 @@ class TerminalAppearanceWiringSourceTest {
     @Test
     fun havenTokensAreNotTheTerminalPalette() {
         // The shortcut bar is the ONLY Haven consumer of keyBg/keyFg; the
-        // terminal color path reads TerminalColors.COLOR_SCHEME exclusively.
+        // terminal color path reads the vendored per-session scheme exclusively.
         val pty = source("com/fem/linexa/service/runtime/pty/TermuxPtySession.kt")
         assertTrue(
             "the terminal color path must go through the vendored scheme",

@@ -164,19 +164,19 @@ class AuditPreservationPinsTest {
             "0004-guest-env-filter.patch"
         )
         for (name in patches) {
-            val f = File("src/main/jniLibs/proot-build/$name")
+            val f = File("../third_party/proot/$name")
             assertTrue("patch $name must be vendored", f.exists())
             assertTrue("patch $name must document its rationale", f.readText().contains("Linexa"))
         }
         assertTrue(
             "the L2S regression test must be vendored",
-            File("src/main/jniLibs/proot-build/test-l2s-relative-targets.c").exists()
+            File("../third_party/proot/test-l2s-relative-targets.c").exists()
         )
         // 0001 is already built into the termux v5.1.107.89 tag; it stays as
         // the documented provenance record.
         assertTrue(
             "the readlinkat patch record must stay",
-            File("src/main/jniLibs/proot-build/0001-readlinkat-empty-pathname-fix.patch").exists()
+            File("../third_party/proot/0001-readlinkat-empty-pathname-fix.patch").exists()
         )
     }
 }

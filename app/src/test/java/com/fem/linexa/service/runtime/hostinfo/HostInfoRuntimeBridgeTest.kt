@@ -328,6 +328,26 @@ class HostInfoRuntimeBridgeTest {
     }
 
     @Test
+    fun `overlay-only refresh skips the feed and still restores a deleted overlay`() = runBlocking {
+        // LINEXA-PERF-001: only feed ticks pay for the full host collection and
+        // the /run/linexa/hostinfo.conf rewrite.
+        val bridge = bridgeOf(StubHostInfoSources(device, cpu))
+        val feed = File(File(rootfs, "run"), "linexa/hostinfo.conf")
+
+        assertNull(bridge.refreshProcOverlays(rootfs, workspaceId = "ws", includeFeed = false))
+        assertFalse("overlay-only tick must not create the feed", feed.exists())
+        assertTrue(File(rootfs, "proc/.stat").isFile)
+
+        assertNull(bridge.refreshProcOverlays(rootfs, workspaceId = "ws", includeFeed = true))
+        assertTrue(feed.isFile)
+
+        // The content memo must never mask an overlay deleted behind our back.
+        File(rootfs, "proc/.version").delete()
+        assertNull(bridge.refreshProcOverlays(rootfs, workspaceId = "ws", includeFeed = false))
+        assertTrue("deleted overlay must be rewritten", File(rootfs, "proc/.version").isFile)
+    }
+
+    @Test
     fun `no proc directory is a silent success - launcher will bind nothing`() = runBlocking {
         val bridge = bridgeOf(StubHostInfoSources(device, cpu))
         val withoutProc = tmp.newFolder("no-proc-rootfs")

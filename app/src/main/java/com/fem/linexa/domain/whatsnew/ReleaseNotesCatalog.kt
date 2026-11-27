@@ -20,10 +20,10 @@ package com.fem.linexa.domain.whatsnew
  *
  * The text is deliberately plain literals rather than `@StringRes` lookups: it is
  * per-release prose that is written once, superseded by the next release, and never
- * translated (the project ships one `values/strings.xml` — the many `application-label-*`
- * entries in the APK come from AndroidX, not from Linexa translations). A localized
- * changelog would need one string resource per line per release, permanently
- * accumulating, for text that is obsolete by the following version.
+ * translated. A localized changelog would need one string resource per line per
+ * release, permanently accumulating, for text that is obsolete by the following
+ * version. The fixed furniture around it (section labels, date prefix, beta badge)
+ * *is* localized.
  */
 object ReleaseNotesCatalog {
 
@@ -34,13 +34,16 @@ object ReleaseNotesCatalog {
      * rather than by position — but is kept chronological so the file reads as a
      * changelog and appending is the natural edit.
      *
-     * The first public release starts a fresh versionCode sequence at 1. Pre-public
-     * development builds are not part of this changelog.
+     * The published 0.1.0-beta artifact used `versionCode = 1` (the historical
+     * literal); 0.2.0 uses the pinned `1002` from `app/build.gradle.kts`.
+     * `ReleaseNotesCatalogTest` enforces the match for the running release build.
      */
     val entries: List<ReleaseNotes> = listOf(
         ReleaseNotes(
             versionCode = 1,
             versionName = "0.1.0-beta",
+            releaseDate = "2026-11-14",
+            isBeta = true,
             summary = "First public beta: real Linux workspaces on Android, a full terminal, desktop access, and local-first workspace management.",
             changes = listOf(
                 ReleaseChange(
@@ -79,6 +82,90 @@ object ReleaseNotesCatalog {
                         "program attributed in Settings → About."
                 )
             )
+        ),
+        ReleaseNotes(
+            versionCode = 1002,
+            versionName = "0.2.0",
+            releaseDate = "2026-11-28",
+            isBeta = true,
+            summary = "A faster, smaller beta with an in-app update checker, a more " +
+                "reliable Linux runtime, and a polished bilingual interface.",
+            changes = listOf(
+                ReleaseChange(
+                    ChangeCategory.NEW,
+                    "In-app update checker: discovers published GitHub releases " +
+                        "(including this beta channel), shows the release notes and " +
+                        "download size, verifies the APK, and hands it to Android's " +
+                        "installer."
+                ),
+                ReleaseChange(
+                    ChangeCategory.NEW,
+                    "Persian interface with RTL-aware typography, plus a per-app " +
+                        "language choice in Global Settings."
+                ),
+                ReleaseChange(
+                    ChangeCategory.NEW,
+                    "Clearer terminal diagnostics: structured exit explanations, a " +
+                        "silent-output watchdog, and a copyable error report."
+                ),
+                ReleaseChange(
+                    ChangeCategory.NEW,
+                    "What's New now shows the release date, a beta badge, and the " +
+                        "notes of previous releases."
+                ),
+                ReleaseChange(
+                    ChangeCategory.IMPROVED,
+                    "Workspace re-entry after Stop is roughly ten times faster in " +
+                        "device testing: the previous size is shown immediately while " +
+                        "a background measurement refreshes it."
+                ),
+                ReleaseChange(
+                    ChangeCategory.IMPROVED,
+                    "Re-entering a workspace that is already running attaches to the " +
+                        "live session instead of starting the runtime service again."
+                ),
+                ReleaseChange(
+                    ChangeCategory.IMPROVED,
+                    "Terminal layout stays stable while the terminal opens, and the " +
+                        "requested session's first frame is ready without a resize jump."
+                ),
+                ReleaseChange(
+                    ChangeCategory.IMPROVED,
+                    "Package Manager sorting, the Apps category filter, and the File " +
+                        "Manager storage overview no longer reset or blank unexpectedly."
+                ),
+                ReleaseChange(
+                    ChangeCategory.FIXED,
+                    "Workspace deletion and install cleanup no longer follow " +
+                        "guest-authored directory symlinks outside the workspace."
+                ),
+                ReleaseChange(
+                    ChangeCategory.FIXED,
+                    "PTY lifecycle hardening: stale descriptor reuse after exit, lost " +
+                        "final output, and native failure-path cleanup are corrected."
+                ),
+                ReleaseChange(
+                    ChangeCategory.FIXED,
+                    "Install recovery now sweeps stale rootfs backups and quarantine " +
+                        "directories, and installs can be cancelled safely."
+                ),
+                ReleaseChange(
+                    ChangeCategory.PERFORMANCE,
+                    "Release builds now use R8 code shrinking, optimization, and " +
+                        "resource shrinking. The 0.2.0 APK is 13.5 MB versus " +
+                        "57.3 MB for 0.1.0 — 76% smaller."
+                ),
+                ReleaseChange(
+                    ChangeCategory.PERFORMANCE,
+                    "Workspace re-entry after Stop measured 2.5 s before and about " +
+                        "0.24 s after the fix (median, same device and procedure)."
+                ),
+                ReleaseChange(
+                    ChangeCategory.CHANGED,
+                    "Linexa's own source is now consistently published under " +
+                        "GPL-3.0-only; bundled components keep their own licenses."
+                )
+            )
         )
     )
 
@@ -94,4 +181,19 @@ object ReleaseNotesCatalog {
      */
     fun forVersion(versionCode: Int): ReleaseNotes? =
         entries.firstOrNull { it.versionCode == versionCode }
+
+    /**
+     * Releases older than [versionCode], newest first — the "Previous releases"
+     * section of the expanded What's New card.
+     *
+     * Entries without content are omitted, and the running release is excluded even
+     * if a malformed catalog listed it twice. The result is a display list, not a
+     * second source of truth: every item still comes from [entries].
+     */
+    fun previousVersions(versionCode: Int): List<ReleaseNotes> =
+        entries
+            .asSequence()
+            .filter { it.versionCode < versionCode && it.hasContent }
+            .sortedByDescending { it.versionCode }
+            .toList()
 }

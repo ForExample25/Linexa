@@ -107,7 +107,8 @@ class WorkspaceGpuSupervisorTest {
             nativeLibraryDir = native.absolutePath,
             processFactory = factory,
             logDirFor = { tmp.newFolder() },
-            scope = watcherScope
+            scope = watcherScope,
+            watcherPollMs = 20
         )
     }
 
@@ -196,13 +197,19 @@ class WorkspaceGpuSupervisorTest {
         assertTrue(health.degradations("ws1").isEmpty())
 
         // Unclean death: no destroy() was called, the process simply dies —
-        // the watcher's poll (2s, REAL time in the watcherScope) must observe
-        // it exactly once. Wait in real time; runTest's virtual clock must
-        // not outrun the watcher's wall-clock poll.
+        // the watcher (REAL time, in watcherScope) must observe it exactly
+        // once. The clock below is real; runTest's virtual clock must not
+        // outrun the watcher's wall-clock poll.
+        val watcher = requireNotNull(s.watcherFor("ws1")) { "no exit watcher was registered" }
         factory.created.single().dieUncleanly()
-        val deadline = System.currentTimeMillis() + 10_000
-        while (health.degradations("ws1").isEmpty() && System.currentTimeMillis() < deadline) {
-            Thread.sleep(100)
+        // Join the watcher itself: the degradation is written before the job
+        // completes, so this is the exact "crash observed and reported" edge.
+        // `runBlocking` keeps the wait on real time — a `withTimeout` on the
+        // runTest dispatcher would advance virtual time instead and abandon the
+        // real-time watcher. The test injects a 20 ms poll interval, so this
+        // completes in milliseconds even on a throttled device.
+        runBlocking {
+            kotlinx.coroutines.withTimeout(10_000) { watcher.join() }
         }
         val degradations = health.degradations("ws1")
         assertEquals(1, degradations.size)

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Per-app language support declarations.
+
+  Android 13+ uses this list to surface Linexa in Settings → Apps → Linexa →
+  Language and to keep the system's per-app locale in sync with the resources
+  the app actually ships. API 28–32 ignore the attribute; the app's own
+  selector (persisted in `linexa_settings` and applied by `AppLocale`) is the
+  single behavior on every supported version, so the two paths never disagree
+  about which languages exist.
+
+  Keep this list in sync with the `values-*` resource folders: `en` is the
+  default (`values/`) and `fa` is `values-fa/`.
+-->
+<locale-config xmlns:android="http://schemas.android.com/apk/res/android">
+    <locale android:name="en" />
+    <locale android:name="fa" />
+</locale-config>

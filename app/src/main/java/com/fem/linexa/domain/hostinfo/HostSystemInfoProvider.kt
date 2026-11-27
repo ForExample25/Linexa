@@ -39,8 +39,29 @@ interface HostSystemInfoProvider {
     /**
      * Selective snapshot: refresh ONLY [categories]; others resolve from the
      * last cache without I/O. Returns a complete-shaped snapshot either way.
+     *
+     * Named categories are refreshed unconditionally (subject only to the
+     * documented cache contract of the implementation). One-shot consumers
+     * — a screen opening, a launch probing cores — want that.
      */
     suspend fun snapshotOf(categories: Set<HostInfoCategory>): HostSystemInfoSnapshot
+
+    /**
+     * Timer-safe variant of [snapshotOf]: named categories are collected only
+     * when their [HostInfoRefreshPolicy] TTL has expired (or they have never
+     * been collected); every other category rides the cache.
+     *
+     * This exists because a *polling* caller must never be able to defeat the
+     * TTL cache — `LINEXA-PERF-001` was exactly that: the runtime overlay
+     * ticker used [snapshotOf] every two seconds and therefore re-ran a full
+     * host collection (identity strings, sysfs sweeps, volume enumeration)
+     * on every tick no matter how fresh the cache was.
+     *
+     * The default implementation degrades to [snapshotOf] for providers that
+     * do not implement a cache.
+     */
+    suspend fun cachedSnapshotOf(categories: Set<HostInfoCategory>): HostSystemInfoSnapshot =
+        snapshotOf(categories)
 
     /** Cache-only view for cheap UI reads; null before the first collection. */
     fun lastSnapshot(): HostSystemInfoSnapshot?

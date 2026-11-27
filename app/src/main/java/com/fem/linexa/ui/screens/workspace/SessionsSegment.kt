@@ -72,9 +72,8 @@ import java.time.format.DateTimeFormatter
  *
  * Top: one prominent resource card for the workspace itself (CPU, RAM,
  * processes, execution status), measured only from the workspace's own process
- * tree. A compact context strip shows the device's RAM and the Linexa app's
- * memory for orientation; the full device/app dashboard lives on the global
- * Activity tab and storage lives in the File Manager, so neither is repeated here.
+ * tree. The full device/app dashboard lives on the global Activity tab and
+ * storage lives in the File Manager, so neither is repeated here.
  *
  * Below: the real terminal sessions from [RuntimeBinder.terminalSessions] as
  * task-manager rows (status, duration, CPU, RAM, overflow menu), with search,
@@ -90,7 +89,14 @@ fun SessionsSegment(
     runtimeState: RuntimeState,
     onOpenTerminal: (String) -> Unit,
     viewModel: SessionsViewModel,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /**
+     * LINEXA-PERF-014: the Task Manager route existed and was wired all the way
+     * to `WorkspaceNavGraph`, but no composable ever invoked it, so the screen
+     * was unreachable in production. The Sessions header is its natural home —
+     * this segment *is* the workspace's task surface.
+     */
+    onOpenTaskManager: () -> Unit = {}
 ) {
     val h = HavenTheme.colors
     val state by viewModel.state.collectAsState()
@@ -130,7 +136,6 @@ fun SessionsSegment(
             runtimeState = runtimeState,
             connected = binder != null
         )
-        SystemContextRow(state = state)
 
         state.message?.let { message ->
             Row(
@@ -182,6 +187,11 @@ fun SessionsSegment(
                     onClick = viewModel::startTerminal
                 )
             }
+            HIconGhost(
+                iconRes = R.drawable.ic_haven_cpu,
+                contentDescription = stringResource(R.string.tm_open_task_manager),
+                onClick = onOpenTaskManager
+            )
             HIconGhost(
                 iconRes = R.drawable.ic_haven_refresh,
                 contentDescription = stringResource(R.string.tm_refresh),
@@ -486,64 +496,11 @@ private fun WorkspaceResourceCard(
                 },
                 style = HavenType.mono12,
                 color = h.muted,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
+                maxLines = 2,
                 modifier = Modifier.weight(1f)
             )
             if (state.loading && running) HSpinner(small = true, color = h.amber)
         }
-    }
-}
-
-/**
- * One quiet line of orientation under the workspace card: how full the device's
- * RAM is and what the Linexa app itself holds. Deliberately small — the full
- * dashboard is the Activity tab. Device CPU is shown only when the OS lets us
- * read it; on most current Android versions it cannot be measured, and a
- * permanent dash would be noise.
- */
-@Composable
-private fun SystemContextRow(state: SessionsViewModel.State) {
-    val h = HavenTheme.colors
-    val memory = state.deviceMemory
-    val app = state.appMemory
-    val deviceCpu = state.deviceCpu?.overallPercent
-    val deviceRam = memory?.usedBytes?.let { used ->
-        memory?.totalBytes?.let { total ->
-            "${ResourceText.bytes(used)} / ${ResourceText.bytes(total)}"
-        }
-    }
-    val appRam = (app?.pssBytes ?: app?.rssBytes)?.let {
-        ResourceText.bytes(it, approximate = app?.pssBytes == null)
-    }
-    if (deviceRam == null && appRam == null && deviceCpu == null) return
-
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 10.dp)
-            .clip(RoundedCornerShape(HavenDim.rCard))
-            .background(h.surface)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        horizontalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        if (deviceCpu != null) {
-            HMiniStat(
-                label = stringResource(R.string.sessions_context_device_cpu),
-                value = ResourceText.percent(deviceCpu),
-                modifier = Modifier.weight(0.7f)
-            )
-        }
-        HMiniStat(
-            label = stringResource(R.string.sessions_context_device_ram),
-            value = deviceRam ?: ResourceText.UNKNOWN,
-            modifier = Modifier.weight(1.3f)
-        )
-        HMiniStat(
-            label = stringResource(R.string.tm_app_section),
-            value = appRam ?: ResourceText.UNKNOWN,
-            modifier = Modifier.weight(1f)
-        )
     }
 }
 
@@ -619,15 +576,13 @@ private fun TaskRow(
                         text = kindLabel(session.kind),
                         style = HavenType.body.copy(fontWeight = FontWeight.SemiBold),
                         color = if (active) h.text else h.text2,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        maxLines = 2
                     )
                     Text(
                         text = "${session.label} · $duration",
                         style = HavenType.mono12,
                         color = h.muted,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                        maxLines = 2,
                         modifier = Modifier.padding(top = 2.dp)
                     )
                 }
@@ -690,8 +645,6 @@ private fun TaskRow(
                         text = reason,
                         style = HavenType.small,
                         color = h.muted,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.padding(top = 10.dp, end = 10.dp)
                     )
                 }

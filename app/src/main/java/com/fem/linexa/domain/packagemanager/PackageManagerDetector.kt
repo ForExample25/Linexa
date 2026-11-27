@@ -6,11 +6,12 @@ import com.fem.linexa.domain.runtime.CommandExecutor
 /**
  * §1.92 — Automatic package-manager detection.
  *
- * The probe is a single `which` over the supported managers (no hardcoded
- * distro selection). When several managers exist in one workspace (e.g.
- * dnf + apt), the choice is resolved by deduplicating the probe output and
- * preferring the canonical manager for the distro advertised by
- * `/etc/os-release` — never by `head -1` order.
+ * The probe is a single shell loop over the supported managers using
+ * `command -v` — a POSIX shell builtin that BusyBox/Alpine images are
+ * guaranteed to have, unlike the external `which` binary. When several
+ * managers exist in one workspace (e.g. dnf + apt), the choice is resolved by
+ * deduplicating the probe output and preferring the canonical manager for the
+ * distro advertised by `/etc/os-release` — never by `head -1` order.
  *
  * All decision logic lives in the pure functions below (JVM-testable);
  * [detect] is the thin suspend wrapper that runs the two probes through the
@@ -25,8 +26,16 @@ object PackageManagerDetector {
     const val KEY_DNF = "dnf"
     const val KEY_ZYPPER = "zypper"
 
-    /** Canonical probe: path lookup for every supported manager. */
-    const val PROBE_COMMAND = "which apt-get pacman apk dnf zypper 2>/dev/null"
+    /**
+     * Canonical probe: one `command -v` per supported manager, in one exec.
+     *
+     * A loop is required, not stylistic: POSIX defines `command -v` for a
+     * single name, and dash (Debian/Ubuntu's `/bin/sh`) ignores extra
+     * arguments instead of printing each hit. `which` is not used because
+     * minimal Alpine/BusyBox images may not ship it (finding 036).
+     */
+    const val PROBE_COMMAND =
+        "for linexa_pm in apt-get pacman apk dnf zypper; do command -v \"\$linexa_pm\"; done 2>/dev/null"
 
     /** Distro identity probe, used to break ties between multiple managers. */
     const val OS_RELEASE_COMMAND = "grep -E '^(ID|ID_LIKE)=' /etc/os-release 2>/dev/null"
@@ -43,8 +52,8 @@ object PackageManagerDetector {
     /**
      * The guest binary a provider key drives — the inverse of [PROBE_ORDER].
      * §1.118: needed so a *declared* `linexa.package_manager.type` can be
-     * confirmed with one targeted `which` instead of the full five-way probe
-     * plus os-release tie-break.
+     * confirmed with one targeted `command -v` instead of the full five-way
+     * probe plus os-release tie-break.
      */
     fun binaryFor(key: String): String? =
         PROBE_ORDER.firstOrNull { (_, k) -> k == key.lowercase() }?.first
@@ -57,16 +66,16 @@ object PackageManagerDetector {
      * screen pointed at a manager the guest doesn't have.
      */
     fun verifyCommandFor(key: String): String? =
-        binaryFor(key)?.let { "which $it 2>/dev/null" }
+        binaryFor(key)?.let { "command -v $it 2>/dev/null" }
 
     /**
      * Run the detection probes inside the workspace and return the resolved
      * provider key, or null when no supported package manager is present.
-     * The two probes are sequential and cheap (`which` + one grep).
+     * The two probes are sequential and cheap (`command -v` loop + one grep).
      *
      * §1.118: [declaredType] short-circuits detection when the rootfs declared
      * its package manager. The declaration is *confirmed* with a single
-     * targeted `which` rather than trusted outright — the whole benefit is
+     * targeted `command -v` rather than trusted outright — the whole benefit is
      * skipping the five-way probe and the os-release tie-break, and a
      * declaration that turns out to be wrong must not leave the UI pointed at
      * a manager the guest doesn't ship. An unconfirmed declaration falls
@@ -85,14 +94,14 @@ object PackageManagerDetector {
                     "in the guest — falling back to the full probe"
             )
         }
-        val whichResult = runtimeBinder.execCommand(workspaceId, PROBE_COMMAND)
+        val probeResult = runtimeBinder.execCommand(workspaceId, PROBE_COMMAND)
         val osRelease = runtimeBinder.execCommand(workspaceId, OS_RELEASE_COMMAND).output
-        return resolve(whichResult.output, osRelease)
+        return resolve(probeResult.output, osRelease)
     }
 
     /**
-     * Pure decision: given the raw `which` probe output and the raw
-     * os-release output, return the canonical provider key or null.
+     * Pure decision: given the raw path probe output and the raw os-release
+     * output, return the canonical provider key or null.
      */
     fun resolve(whichOutput: String, osReleaseOutput: String): String? {
         val candidates = parseWhichOutput(whichOutput)
@@ -104,9 +113,9 @@ object PackageManagerDetector {
     }
 
     /**
-     * Parse `which apt-get pacman apk dnf zypper` output into the list of
-     * found keys, preserving probe order. Each line is a full path like
-     * `/usr/bin/apt-get`; only the basename matters.
+     * Parse the `command -v` probe output into the list of found keys,
+     * preserving probe order. Each line is a full path like `/usr/bin/apt-get`;
+     * only the basename matters.
      */
     fun parseWhichOutput(output: String): List<String> =
         output.lines()

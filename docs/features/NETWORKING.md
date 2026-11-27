@@ -1,16 +1,20 @@
 # Workspace Networking
 
-**Status:** Current — describes the implemented network configuration feature, verified against source.
-
-**Project:** Linexa Linux Workspace (`com.fem.linexa`)
-
-**Source locations:** `app/src/main/java/com/fem/linexa/service/runtime/features/`, `app/src/main/java/com/fem/linexa/data/network/`, `app/src/main/java/com/fem/linexa/domain/network/`, `app/src/main/res/xml/network_security_config.xml`
+**Source locations:** `app/src/main/java/com/fem/linexa/service/runtime/features/WorkspaceNetworkProvisioner.kt`,
+`app/src/main/java/com/fem/linexa/domain/workspace/NetworkSettings.kt`,
+`app/src/main/java/com/fem/linexa/domain/network/`,
+`app/src/main/java/com/fem/linexa/data/network/`,
+`app/src/main/java/com/fem/linexa/domain/packagemanager/PackageMirrorPlanner.kt`,
+`app/src/main/java/com/fem/linexa/service/distro/DownloadService.kt`,
+`app/src/main/res/xml/network_security_config.xml`
 
 ---
 
 ## 1. Purpose
 
-This document is the feature-level reference for Linexa's workspace network configuration: per-workspace DNS, /etc/hosts management, package-mirror provisioning, and RootFS download mirror override.
+Workspace networking covers the settings that make a guest's network usable
+and reproducible: DNS, `/etc/hosts`, package mirrors, and the RootFS download
+mirror. It also defines the app's cleartext-HTTP policy.
 
 ---
 
@@ -18,73 +22,143 @@ This document is the feature-level reference for Linexa's workspace network conf
 
 In scope:
 
-- Per-workspace DNS (system/custom, IP-literal validation)
-- /etc/hosts merging behind managed markers
-- Package mirrors per package manager (apt/dnf/pacman/zypper/apk)
-- RootFS download mirror (host side, SHA-256 from official catalog)
-- Network security configuration (cleartext loopback only, WebView origin pinning)
+- Per-workspace DNS mode and custom resolver list
+- `/etc/hosts` merging with managed markers
+- Package-manager mirror configuration for apt, dnf, pacman, zypper, and apk
+- RootFS archive download mirror and checksum handling
+- Network security configuration and WebView origin policy
 
 Out of scope:
 
 - PRoot runtime: [`architecture/RUNTIME_ARCHITECTURE.md`](../architecture/RUNTIME_ARCHITECTURE.md)
-- VNC/Web desktop networking: [`features/DESKTOP_AND_VNC.md`](./DESKTOP_AND_VNC.md)
+- Desktop/VNC networking: [`features/DESKTOP_AND_VNC.md`](./DESKTOP_AND_VNC.md)
 
 ---
 
-## 3. Current implementation status
+## 3. Settings model
 
-| Area | Status | Evidence |
-|---|---|---|
-| Per-workspace DNS (system/custom) | Implemented | `service/runtime/features/`, `AndroidHostDnsProvider` |
-| DNS from Android host resolver topology (`ConnectivityManager`) | Implemented | host info subsystem |
-| Custom DNS IP-literal validation | Implemented | config validation |
-| Old hardcoded 8.8.8.8/8.8.4.4 seed removed | Implemented | replaced by host resolver |
-| /etc/hosts merging behind `# BEGIN Linexa managed` markers | Implemented | `HostsFileMerger` |
-| Package mirrors per package manager (apt/dnf/pacman/zypper/apk) | Implemented | `PackageMirrorPlanner` |
-| `.linexa-bak` backups, fully reversible | Implemented | mirror provisioning |
-| RootFS download mirror override per workspace | Implemented | `network.mirror.rootfs.url` |
-| SHA-256 sidecar always from official catalog | Implemented | checksum verification, fail-closed |
-| Cleartext limited to 127.0.0.1/localhost | Implemented | `network_security_config.xml` |
-| WebView pins loopback origin | Implemented | desktop Web mode |
+`NetworkSettings` is a per-workspace value object persisted in workspace
+attributes.
 
----
+| Setting | Values |
+|---|---|
+| `dnsMode` | `SYSTEM` (default) or `CUSTOM` |
+| `dnsServers` | Up to four IPv4/IPv6 literals, validated before persistence |
+| `packageMirrorMode` | `DEFAULT` or `CUSTOM` |
+| `packageMirrorUrl` | Mirror base URL, length- and character-validated |
+| `rootfsMirrorUrl` | Optional archive URL override |
 
-## 4. Technical overview
+Validation rejects malformed IP literals, unsupported URL characters, and
+overlong values. The UI surfaces the rejection rather than storing an invalid
+setting.
 
-### 4.1 DNS
-
-Per-workspace network settings live in **Settings → Network** and are applied at every workspace start by `WorkspaceNetworkProvisioner`.
-
-- **System (default)** — the guest's `/etc/resolv.conf` is seeded from the Android host's live resolver topology (`ConnectivityManager` link properties). The old hardcoded `8.8.8.8/8.8.4.4` seed is gone.
-- **Custom** — user-entered IP literals, validated before persistence; invalid entries are rejected.
-
-### 4.2 /etc/hosts
-
-User entries are merged into the guest's `/etc/hosts` behind managed markers (`# BEGIN Linexa managed` / `# END Linexa managed`) at every start; guest-owned lines outside the markers are preserved.
-
-### 4.3 Package mirrors (guest)
-
-Per package manager (apt/dnf/pacman/zypper/apk), a mirror can be set for the guest's own package manager configuration. The original files are backed up as `.linexa-bak` and are fully reversible.
-
-### 4.4 RootFS download mirror (host side)
-
-The RootFS download URL can be overridden per workspace (`network.mirror.rootfs.url`). Only the archive URL is overridden: the SHA-256 sidecar always comes from the official catalog, and the checksum lookup always uses the official archive filename — a mirror that serves different bytes fails verification and the install aborts. A mirror can be slow or hostile, but never silently wrong. If the sidecar itself cannot be fetched, the install fails closed (nothing unverified is installed) unless the catalog entry honestly declares no checksum at all.
-
-### 4.5 Network security configuration
-
-Cleartext is limited to `127.0.0.1`/`localhost`; Web mode pins the loopback origin. See [`app/src/main/res/xml/network_security_config.xml`](../../app/src/main/res/xml/network_security_config.xml).
+`WorkspaceNetworkProvisioner` applies the settings at every workspace start.
+DNS, hosts, and mirror failures are reported in the provisioning result but do
+not prevent the session from starting.
 
 ---
 
-## 5. Limitations and known issues
+## 4. DNS
 
-- network flows still need on-device verification; see [`engineering/TESTING_STRATEGY.md`](../engineering/TESTING_STRATEGY.md).
-- Per-package-manager mirror support depends on the guest's package manager config file formats being correctly targeted.
+- **System (default).** The guest's `/etc/resolv.conf` is seeded from the
+  Android host's live resolver topology through `ConnectivityManager` link
+  properties (`AndroidHostDnsProvider`). This follows the network the device
+  is actually using, including VPNs and private DNS.
+- **Custom.** The user's IP literals are written instead. Entries are
+  validated before they are persisted.
+
+There is no hardcoded public resolver fallback. If the host exposes no
+resolver, the guest's file is left without fabricated servers.
 
 ---
 
-## 6. Related documentation
+## 5. `/etc/hosts`
 
-- [`features/DESKTOP_AND_VNC.md`](./DESKTOP_AND_VNC.md) — VNC loopback, Web mode
-- [`architecture/RUNTIME_ARCHITECTURE.md`](../architecture/RUNTIME_ARCHITECTURE.md) — PRoot runtime, networking context
-- [`engineering/TESTING_STRATEGY.md`](../engineering/TESTING_STRATEGY.md) — verification status
+`HostsFileMerger` merges user entries into the guest's `/etc/hosts` between
+managed markers:
+
+```
+# BEGIN Linexa managed
+...
+# END Linexa managed
+```
+
+Lines outside the markers are preserved. Re-applying is idempotent: the
+managed block is replaced, not appended repeatedly.
+
+---
+
+## 6. Package mirrors
+
+`PackageMirrorPlanner` maps a custom mirror URL to the configuration file
+format of the guest's package manager:
+
+| Manager | Configuration target |
+|---|---|
+| apt | `sources.list.d` entry |
+| dnf | repository file |
+| pacman | `mirrorlist` |
+| zypper | repository file |
+| apk | `repositories` |
+
+The original files are backed up with a `.linexa-bak` suffix before rewrite,
+which makes the change reversible. Mirror provisioning is skipped when the
+same mirror is already applied.
+
+The planner targets the package manager the guest actually uses; a guest with
+multiple package managers gets the detected primary manager configured rather
+than every possible one.
+
+---
+
+## 7. RootFS download mirror
+
+The RootFS archive URL can be overridden per workspace
+(`network.mirror.rootfs.url`). Only the archive URL is overridden:
+
+- The SHA-256 sidecar always comes from the official catalog.
+- The checksum lookup always uses the official archive filename.
+- A mirror serving different bytes fails verification, and the install aborts.
+- If the sidecar cannot be fetched, the install fails closed unless the
+  catalog entry explicitly declares that no checksum exists.
+
+A mirror can therefore be slow or unavailable, but it cannot cause unverified
+content to be installed silently.
+
+---
+
+## 8. Network security configuration
+
+`network_security_config.xml` keeps the platform default
+(`cleartextTrafficPermitted="false"`) and permits cleartext only for:
+
+- `127.0.0.1`
+- `localhost`
+
+This is what allows WebView mode to load a guest HTTP server on loopback.
+HTTPS traffic for downloads and update checks uses the default configuration.
+Adding another cleartext host requires an explicit change to this file.
+
+---
+
+## 9. Limitations
+
+- **Guest-side enforcement is limited.** Linexa configures DNS and mirrors; it
+  does not run a firewall or intercept guest traffic. A guest process can
+  change its own resolver or hosts file while running.
+- **Mirror formats vary by distribution version.** Package-manager
+  configuration syntax changes between releases. The planner targets the
+  detected manager and its standard file layout; an unusual or heavily
+  customized guest configuration may need manual repair.
+- **Custom DNS is a static list.** It does not follow network changes while
+  the workspace runs. A workspace restart re-applies the current setting.
+- **RootFS mirror override applies at download time.** It does not affect
+  package downloads inside the guest, which use the package mirror setting.
+
+---
+
+## 10. Related documentation
+
+- [`features/DESKTOP_AND_VNC.md`](./DESKTOP_AND_VNC.md) — VNC loopback and WebView mode
+- [`architecture/RUNTIME_ARCHITECTURE.md`](../architecture/RUNTIME_ARCHITECTURE.md) — runtime provisioning order
+- [`architecture/DATA_AND_PERSISTENCE.md`](../architecture/DATA_AND_PERSISTENCE.md) — RootFS catalog and checksums

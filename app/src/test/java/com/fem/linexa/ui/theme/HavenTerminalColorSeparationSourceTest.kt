@@ -96,10 +96,14 @@ class HavenTerminalColorSeparationSourceTest {
     fun theTerminalSchemeIsConfiguredOnlyFromTerminalConfiguration() {
         val pty = source("com/fem/linexa/service/runtime/pty/TermuxPtySession.kt")
         assertTrue(
-            "colors.properties must be applied to the terminal color scheme",
+            "colors.properties must be applied to a PER-SESSION terminal color scheme",
             pty.contains(".termux/colors.properties") &&
-                pty.contains("TerminalColorScheme") &&
-                pty.contains("TerminalColors.COLOR_SCHEME.mDefaultColors")
+                pty.contains("TerminalColorScheme()") &&
+                pty.contains("session.setColorScheme(it)")
+        )
+        assertTrue(
+            "RN-006: one workspace's file must never mutate the process-global scheme",
+            !pty.contains("TerminalColors.COLOR_SCHEME.mDefaultColors")
         )
         assertTrue(
             "the scheme setup must state the Haven boundary in its own contract note",

@@ -62,9 +62,9 @@ APK and is therefore listed here.
   the STMicroelectronics contributors. The exact source is the
   `termux/proot` tag `v5.1.107.89`, commit
   `a89b3732ec6ae1db674510f0843b2f3db54d0a2f`, plus the four patches in
-  `app/src/main/jniLibs/proot-build/`. The build recipe, flags, and
+  `third_party/proot/`. The build recipe, flags, and
   verification commands are in
-  `app/src/main/jniLibs/proot-build/BUILD-NOTES.md`.
+  `third_party/proot/BUILD-NOTES.md`.
 - **BusyBox** — Copyright (C) 1998-2024 Erik Andersen, Rob Landley,
   Denys Vlasenko and contributors. BusyBox states that version 2 of the GPL
   is the only version under which it may be distributed.
@@ -105,31 +105,6 @@ APK and is therefore listed here.
   `LGPL-3.0-or-later`.
 - **libandroid-shmem** — Copyright (c) 2013 Sergii Pylypenko; Copyright (c)
   2017 Fredrik Fornwall.
-
-### 1.2 License compatibility with GPL-3.0-only
-
-Linexa's own source is GPL-3.0-only. The third-party components remain under
-their own licenses; this summary records why the aggregate can be conveyed
-alongside GPLv3 code. It does not replace the license texts.
-
-- **GPL-2.0-or-later** (PRoot): the "or later" option permits use under GPLv3.
-- **GPL-3.0-or-later** (GNU tar): directly compatible with GPLv3.
-- **GPL-2.0-only** (BusyBox): conveyed as a separate executable (`bin/busybox`
-  plus the `libbusybox.so` it loads) and invoked as a host process. It is not
-  linked into the Linexa app; it remains GPL-2.0-only, and its complete source
-  is offered separately under section 5.
-- **Apache-2.0** (Termux terminal modules and app dependencies): compatible
-  with GPLv3.
-- **LGPL-2.1-or-later / LGPL-3.0-or-later** (acl, talloc, and other LGPL
-  libraries): the LGPL permits conveying the combined work under GPLv3 when
-  the LGPL notices and corresponding-source offer are preserved.
-- **Permissive licenses** (BSD-3-Clause, MIT, ISC, 0BSD, Zlib, public domain):
-  compatible with GPLv3.
-- **Zstandard** is conveyed under its BSD-3-Clause option.
-
-No third-party component is relicensed under Linexa's GPL-3.0-only. All
-copyright notices and license texts remain in this file and in
-`app/src/main/assets/licenses/`.
 
 ## 2. App dependencies compiled into the APK
 
@@ -226,7 +201,7 @@ available as follows:
 
 - **PRoot** — upstream `termux/proot` tag `v5.1.107.89`, commit
   `a89b3732ec6ae1db674510f0843b2f3db54d0a2f`, with Linexa patches
-  0001–0004 in `app/src/main/jniLibs/proot-build/`; build flags and
+  0001–0004 in `third_party/proot/`; build flags and
   verification commands are in `BUILD-NOTES.md` in that directory.
 - **BusyBox, GNU tar, acl, GNU libiconv, talloc, PCRE2, ncurses, libevent,
   zlib, liblzma, libandroid-glob, libandroid-shmem and libandroid-support**
@@ -234,10 +209,10 @@ available as follows:
   recipes for the pinned versions. The recipes are public at
   <https://github.com/termux/termux-packages/tree/master/packages>.
 - **Linexa's own source** — the repository that contains this file, which is
-  the complete source of the GPL-3.0-only application.
+  the complete source of the GPL-3.0-or-later application.
 
 **Written offer.** Linexa hereby offers, valid for at least three years from
-the date of the 0.1.0-beta release (2026-11-14), to give any third party a
+the date of the 0.1.0-beta release (2026-11-13), to give any third party a
 complete machine-readable copy of the corresponding source code for the
 GPL- and LGPL-licensed binaries listed above, on a medium customarily used
 for software interchange, for a charge no more than the cost of physically

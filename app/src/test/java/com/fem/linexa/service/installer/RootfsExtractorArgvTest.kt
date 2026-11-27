@@ -9,10 +9,12 @@ import org.junit.Test
 /**
  * Phase 04: the extraction argv's containment contract.
  *
- * - the bundled `setsid` is the first argv so the child becomes a session/
- *   process-group leader (what `ProcessContainment` can kill as a group);
+ * - a `setsid` binary, when the bootstrap ships one, is the first argv so the
+ *   child becomes a session/process-group leader (a hardening layer for
+ *   [com.fem.linexa.core.filesystem.ProcessTreeTerminator]);
  * - `--kill-on-exit` is present as a second layer;
- * - without `setsid`, the argv stays valid (proot first, flag still on).
+ * - without `setsid` (the current busybox), the argv stays valid — proot
+ *   first, flag still on, tree containment from the PPID snapshot.
  */
 class RootfsExtractorArgvTest {
 
@@ -31,7 +33,7 @@ class RootfsExtractorArgvTest {
             listOf(
                 "/bin/setsid",
                 "/lib/libproot.so",
-                "-v", "2",
+                "-v", "0",
                 "--link2symlink",
                 "--kill-on-exit",
                 "/bin/tar",
@@ -62,5 +64,32 @@ class RootfsExtractorArgvTest {
         assertEquals("/lib/libproot.so", argv.first())
         assertFalse(argv.contains("/bin/setsid"))
         assertTrue(argv.contains("--kill-on-exit"))
+    }
+
+    @Test
+    fun `proot syscall tracing is requested only when debug info is enabled`() {
+        fun argv(verbose: Boolean) = buildExtractionArgv(
+            proot = File("/lib/libproot.so"),
+            tar = File("/bin/tar"),
+            setsid = null,
+            tempArchive = File("/cache/archive.tar"),
+            staging = File("/ws/.staging-rootfs"),
+            stripComponents = 0,
+            verbose = verbose
+        )
+
+        val quiet = argv(verbose = false)
+        assertEquals(
+            "F-004: release installs must not request proot's syscall trace",
+            "0",
+            quiet[quiet.indexOf("-v") + 1]
+        )
+
+        val traced = argv(verbose = true)
+        assertEquals(
+            "debug info restores the full translation trace",
+            "2",
+            traced[traced.indexOf("-v") + 1]
+        )
     }
 }

@@ -40,9 +40,16 @@ import com.fem.linexa.service.installer.RootFsProbe
  * @param probeId which [RootFsProbe.DistroId] this profile maps onto, kept so
  *   the existing UI/iconography enum keeps working unchanged.
  * @param detection how an archive of this distribution is recognized.
- * @param supportedArchitectures architectures this distribution publishes a
- *   rootfs for. Advisory: used to sanity-check a detected architecture, never
- *   to reject an archive (a user may have built their own).
+ * @param supportedArchitectures architectures of this distribution that **this
+ *   build can run**, i.e. the ones for which a PRoot binary is packaged. It is
+ *   not a list of every architecture the distribution publishes: Debian,
+ *   Ubuntu, Fedora, Arch and Alpine all ship x86_64/i686 images, but Linexa
+ *   packages only arm64-v8a/armeabi-v7a PRoot, so those values must never
+ *   appear here (RootFS finding 029). They remain detectable through
+ *   [DetectionRules.architectureHints] and are rejected before extraction by
+ *   `ArchitectureCompatibility`. Advisory: used to sanity-check a detected
+ *   architecture, never to reject an archive by itself (a user may have built
+ *   their own rootfs).
  * @param layout structural expectations of the extracted tree.
  * @param install the ordered, closed-set setup steps this distribution needs.
  * @param environment guest-side defaults (login shell, package manager).

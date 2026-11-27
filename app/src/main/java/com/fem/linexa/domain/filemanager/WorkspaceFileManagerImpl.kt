@@ -27,7 +27,19 @@ import javax.inject.Singleton
  * `rm -rf -- '-rf'` is unambiguous, and busybox and coreutils both honour it).
  */
 @Singleton
-class WorkspaceFileManagerImpl @Inject constructor() : FileManager {
+class WorkspaceFileManagerImpl @Inject constructor(
+    private val rootfsLocator: WorkspaceRootfsLocator
+) : FileManager {
+
+    /**
+     * F-003: the host-side fast path, or null when the workspace has no live
+     * rootfs (or the caller is a JVM test). Every read-only operation tries
+     * it first and falls back to the guest command on null.
+     */
+    private fun hostAccess(workspaceId: String): HostFileAccess? =
+        rootfsLocator.viewFor(workspaceId)
+            ?.let(::HostFileAccess)
+            ?.takeIf { it.available }
 
     /**
      * Single-quote a path for safe interpolation into a shell command.
@@ -42,6 +54,8 @@ class WorkspaceFileManagerImpl @Inject constructor() : FileManager {
         workspaceId: String,
         path: String
     ): FileOpResult<List<FileInfo>> {
+        // F-003: an app-private rootfs needs no PRoot process to be listed.
+        hostAccess(workspaceId)?.list(path)?.let { return FileOpResult.Ok(it) }
         // -A: include dotfiles but not `.`/`..`. The parser drops those two
         // anyway; asking `ls` not to emit them keeps the output honest.
         // LC_ALL=C: pins the date columns the parser matches to the POSIX
@@ -76,6 +90,8 @@ class WorkspaceFileManagerImpl @Inject constructor() : FileManager {
         workspaceId: String,
         path: String
     ): FileOpResult<String> {
+        // F-003: byte-exact host read; no base64 round-trip needed.
+        hostAccess(workspaceId)?.read(path)?.let { return FileOpResult.Ok(it) }
         val result = runtimeBinder.execCommand(workspaceId, "base64 -- ${sh(path)}")
         if (result.exitCode != 0) {
             return failure(result.exitCode, result, "Cannot read $path")
@@ -160,6 +176,8 @@ class WorkspaceFileManagerImpl @Inject constructor() : FileManager {
         workspaceId: String,
         path: String
     ): FileOpResult<FileInfo> {
+        // F-003: `ls -ld` without a guest process.
+        hostAccess(workspaceId)?.stat(path)?.let { return FileOpResult.Ok(it) }
         // Same listing machinery as [listFiles] with `-d` (the entry itself,
         // not its children) — one parser, one truth about the columns.
         val result = runtimeBinder.execCommand(workspaceId, "LC_ALL=C ls -ld -- ${sh(path)}")
@@ -227,6 +245,8 @@ class WorkspaceFileManagerImpl @Inject constructor() : FileManager {
     }
 
     override suspend fun exists(runtimeBinder: CommandExecutor, workspaceId: String, path: String): Boolean {
+        // F-003: host existence is authoritative for non-bind-mounted paths.
+        hostAccess(workspaceId)?.exists(path)?.let { return it }
         // -e follows symlinks, so a dangling link would read as absent; -L
         // catches the link itself, which for delete/rename purposes exists.
         val result = runtimeBinder.execCommand(workspaceId, "test -e ${sh(path)} -o -L ${sh(path)}")
@@ -238,6 +258,9 @@ class WorkspaceFileManagerImpl @Inject constructor() : FileManager {
         workspaceId: String,
         path: String
     ): FileOpResult<Long> {
+        // F-003: regular files have an exact byte size on the host. Directories
+        // keep `du -sk` (guest block accounting) via the fallback below.
+        hostAccess(workspaceId)?.size(path)?.let { return FileOpResult.Ok(it) }
         // `du -sb` is GNU-only; busybox du has no -b. `du -sk` is POSIX and
         // present in both, and KiB * 1024 is an apparent-size approximation
         // that is at least correct about magnitude on every rootfs.

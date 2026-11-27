@@ -6,6 +6,18 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
+/**
+ * Structural guard for the phantom-limit Settings wiring.
+ *
+ * Why a source test: the LIMITS and the decision logic live in
+ * `PhantomLimitPolicy` and are asserted behaviourally by its own test; what a
+ * JVM test cannot observe is that the Settings UI actually ROUTES through the
+ * policy — that the status/description selectors are the policy's pure
+ * functions and that the reachable count comes from the policy's counter, not
+ * an inline second implementation (the §1.19 defect class: a policy nothing
+ * calls compiles perfectly). The invariant: one policy, every consumer
+ * delegating to it.
+ */
 class PhantomLimitWiringSourceTest {
 
     private lateinit var moduleRoot: File

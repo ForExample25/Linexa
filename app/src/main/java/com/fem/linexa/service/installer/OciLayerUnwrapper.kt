@@ -1,6 +1,7 @@
 package com.fem.linexa.service.installer
 
 import com.fem.linexa.core.logging.Logger
+import com.fem.linexa.core.security.ArchiveSymlinkGuard
 import com.fem.linexa.core.security.ArchiveValidator
 import com.fem.linexa.core.security.toArchiveEntryType
 import com.fem.linexa.service.rootfs.ArchiveEntryPath
@@ -237,6 +238,7 @@ class OciLayerUnwrapper @Inject constructor(
             layerStream.use { decompressed ->
                 TarArchiveInputStream(decompressed).use { tar ->
                     var entries = 0L
+                    val symlinkGuard = ArchiveSymlinkGuard()
                     var entry = tar.nextEntry
                     while (entry != null) {
                         val safety = archiveValidator.checkEntry(
@@ -257,6 +259,23 @@ class OciLayerUnwrapper @Inject constructor(
                                     "'${entry.name}': ${safety.reason}"
                             )
                         }
+                        val normalized = ArchiveEntryPath.normalize(entry.name)
+                        symlinkGuard.checkEntryPath(normalized, entry.name)?.let { reason ->
+                            target.delete()
+                            Logger.w(
+                                TAG,
+                                "§1.148 rejected OCI layer '$layerPath': $reason"
+                            )
+                            return Result.Failure(
+                                "Unsafe entry in the OCI image's rootfs layer " +
+                                    "'${entry.name}': $reason"
+                            )
+                        }
+                        symlinkGuard.observe(
+                            normalizedPath = normalized,
+                            isSymlink = entry.isSymbolicLink,
+                            linkTarget = entry.linkName
+                        )
                         entries++
                         entry = tar.nextEntry
                     }

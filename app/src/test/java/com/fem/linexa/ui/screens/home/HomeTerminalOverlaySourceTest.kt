@@ -121,8 +121,8 @@ class HomeTerminalOverlaySourceTest {
             havenSurface.contains(".background(h.term)")
         )
         assertTrue(
-            "imePadding keeps the extra-keys pill above the keyboard",
-            havenSurface.contains(".imePadding()")
+            "the navigation-bar ∪ IME union keeps the extra-keys pill above the keyboard",
+            havenSurface.contains(".windowInsetsPadding(WindowInsets.navigationBars.union(WindowInsets.ime))")
         )
         // 2026-08-28 full-bleed rebuild (concept fr-term): the SURFACE body paints
         // edge-to-edge — no inset padding may shrink the painted term background.
@@ -131,7 +131,8 @@ class HomeTerminalOverlaySourceTest {
         // column (below the terminal surface, above the soft keyboard), so the
         // inset handling moved INTO the HavenExtraKeys bar itself
         // (navigationBarsPadding for the keyboard-closed state; the surface's
-        // imePadding keeps the whole column above the keyboard when it is open).
+        // nav ∪ IME union keeps the whole column above the keyboard when it is
+        // open and is consumed once, so the child row's nav padding is zero).
         assertFalse(
             "the term background must reach edge-to-edge (no status-bar padding on the surface body)",
             surfaceFn.contains(".statusBarsPadding()")

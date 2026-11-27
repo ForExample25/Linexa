@@ -2,10 +2,16 @@ package com.fem.linexa.ui.screens.filemanager
 
 import android.app.Application
 import android.net.Uri
+import android.os.Build
 import android.os.Environment
 import android.os.StatFs
+import androidx.annotation.PluralsRes
+import androidx.annotation.StringRes
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.fem.linexa.R
+import com.fem.linexa.core.i18n.linexaQuantityString
+import com.fem.linexa.core.i18n.linexaString
 import com.fem.linexa.core.logging.Logger
 import com.fem.linexa.domain.filemanager.FileInfo
 import com.fem.linexa.domain.filemanager.FileManager
@@ -407,7 +413,7 @@ class FileManagerViewModel @Inject constructor(
             } catch (e: Exception) {
                 Logger.e(TAG, "Failed to list files at $normalizedPath", e)
                 if (_currentPath.value == normalizedPath) {
-                    _uiState.value = FileManagerUiState.Error(e.message ?: "Failed to list files")
+                    _uiState.value = FileManagerUiState.Error(e.message ?: str(R.string.file_manager_list_failed))
                 }
             }
         }
@@ -454,8 +460,27 @@ class FileManagerViewModel @Inject constructor(
         navigateTo(path, force = true)
     }
 
+    /**
+     * "All files access" (MANAGE_EXTERNAL_STORAGE) exists only on API 30+.
+     *
+     * [Environment.isExternalStorageManager] is a method added in R; calling it
+     * on API 28/29 throws `NoSuchMethodError` and would crash Android-storage
+     * browsing on devices the app still supports. The version gate therefore
+     * has to live in this method, beside the call: lint's NewApi check cannot
+     * see through a helper function, and runtime safety must not depend on
+     * lint.
+     *
+     * On pre-R the answer is "not granted": this app declares no legacy
+     * broad-storage permission (SAF is the supported path there), so claiming
+     * access would only move the failure to `getExternalStorageDirectory`.
+     */
+    private fun hasAllFilesAccess(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
+        return Environment.isExternalStorageManager()
+    }
+
     private fun androidStorageRoot(): java.io.File? {
-        if (!Environment.isExternalStorageManager()) return null
+        if (!hasAllFilesAccess()) return null
         return runCatching {
             Environment.getExternalStorageDirectory()
         }.getOrNull()?.takeIf { it.canRead() }
@@ -499,7 +524,7 @@ class FileManagerViewModel @Inject constructor(
             }
             if (_currentPath.value != normalizedPath) return@launch
             if (listing == null) {
-                _uiState.value = FileManagerUiState.Error("Cannot read $normalizedPath")
+                _uiState.value = FileManagerUiState.Error(str(R.string.file_manager_cannot_read, normalizedPath))
             } else {
                 // Same one-frame guarantee as the Linux branch above.
                 _visibleFiles.value = emptyList()
@@ -515,7 +540,7 @@ class FileManagerViewModel @Inject constructor(
         viewModelScope.launch {
             val reading = withContext(Dispatchers.IO) {
                 runCatching {
-                    if (!Environment.isExternalStorageManager()) return@withContext AndroidStorage(null, null, false)
+                    if (!hasAllFilesAccess()) return@withContext AndroidStorage(null, null, false)
                     val root = Environment.getExternalStorageDirectory()
                     if (!root.canRead()) return@withContext AndroidStorage(null, null, false)
                     val stat = StatFs(root.absolutePath)
@@ -537,22 +562,22 @@ class FileManagerViewModel @Inject constructor(
      * (dot-prefixed) are skipped as file managers do.
      */
     suspend fun androidPlaces(): List<AndroidPlace> = withContext(Dispatchers.IO) {
-        if (!Environment.isExternalStorageManager()) return@withContext emptyList()
+        if (!hasAllFilesAccess()) return@withContext emptyList()
         val root = runCatching { Environment.getExternalStorageDirectory() }.getOrNull() ?: return@withContext emptyList()
         if (!root.canRead()) return@withContext emptyList()
         val standard = listOf(
-            "Download" to "Download",
-            "Movies" to "Movies",
-            "Music" to "Music",
-            "Pictures" to "Pictures",
-            "Documents" to "Documents",
-            "DCIM" to "DCIM"
+            R.string.fm_dir_downloads to "Download",
+            R.string.fm_dir_movies to "Movies",
+            R.string.fm_dir_music to "Music",
+            R.string.fm_dir_pictures to "Pictures",
+            R.string.fm_dir_documents to "Documents",
+            R.string.fm_dir_dcim to "DCIM"
         )
         val real = root.listFiles()?.filter { it.isDirectory && it.canRead() && !it.name.startsWith(".") }?.map { it.name }?.toSet() ?: emptySet()
         val out = ArrayList<AndroidPlace>()
         // Standard folders first in canonical order (only when present).
-        for ((label, dir) in standard) {
-            if (dir in real) out += AndroidPlace(label, java.io.File(root, dir).absolutePath)
+        for ((labelRes, dir) in standard) {
+            if (dir in real) out += AndroidPlace(str(labelRes), java.io.File(root, dir).absolutePath)
         }
         // Then any other real top-level directory, alphabetical.
         real.filterNot { it in standard.map { s -> s.second } }.sorted().forEach { dir ->
@@ -583,7 +608,7 @@ class FileManagerViewModel @Inject constructor(
 
     fun createFolder(name: String) {
         val path = LsLongFormatParser.joinPath(_currentPath.value, name)
-        run("Created folder: $name") { b, ws -> fileManager.createDirectory(b, ws, path) }
+        run(str(R.string.file_manager_created_folder, name)) { b, ws -> fileManager.createDirectory(b, ws, path) }
     }
 
     /**
@@ -607,18 +632,18 @@ class FileManagerViewModel @Inject constructor(
                 template?.let { chosen ->
                     when (val write = fileManager.writeFile(b, ws, path, chosen.content ?: "")) {
                         is FileOpResult.Failure -> {
-                            _operationMessage.value = "Created $name, but the template failed: ${write.message}"
+                            _operationMessage.value = str(R.string.file_manager_created_template_failed, name, write.message)
                             navigateTo(_currentPath.value)
                             return@launch
                         }
                         is FileOpResult.Ok -> Unit
                     }
                 }
-                _operationMessage.value = "Created file: $name"
+                _operationMessage.value = str(R.string.file_manager_created_file, name)
                 navigateTo(_currentPath.value)
             } catch (e: Exception) {
                 Logger.e(TAG, "Create file failed", e)
-                _operationMessage.value = "Failed: ${e.message}"
+                _operationMessage.value = str(R.string.file_manager_operation_failed, e.message ?: e.javaClass.simpleName)
             }
         }
     }
@@ -662,9 +687,9 @@ class FileManagerViewModel @Inject constructor(
             }
             _selectedPaths.value = emptySet()
             _operationMessage.value = when {
-                failures.isEmpty() -> "Deleted $deleted item(s)"
+                failures.isEmpty() -> qty(R.plurals.file_manager_deleted_count, deleted, deleted)
                 deleted == 0 -> failures.first()
-                else -> "Deleted $deleted, failed ${failures.size}: ${failures.first()}"
+                else -> str(R.string.file_manager_delete_partial, deleted, failures.size, failures.first())
             }
             navigateTo(_currentPath.value)
         }
@@ -678,7 +703,7 @@ class FileManagerViewModel @Inject constructor(
         val files = _files.value.filter { it.path in _selectedPaths.value }
         if (files.isEmpty()) return
         _pendingTransfer.value = PendingTransfer(files, move = false)
-        _operationMessage.value = "Copied ${files.size} item(s) — open a folder and paste"
+        _operationMessage.value = qty(R.plurals.file_manager_copied_count_hint, files.size, files.size)
         _selectedPaths.value = emptySet()
     }
 
@@ -686,7 +711,7 @@ class FileManagerViewModel @Inject constructor(
         val files = _files.value.filter { it.path in _selectedPaths.value }
         if (files.isEmpty()) return
         _pendingTransfer.value = PendingTransfer(files, move = true)
-        _operationMessage.value = "Cut ${files.size} item(s) — open a folder and paste"
+        _operationMessage.value = qty(R.plurals.file_manager_cut_count_hint, files.size, files.size)
         _selectedPaths.value = emptySet()
     }
 
@@ -707,7 +732,7 @@ class FileManagerViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 Logger.e(TAG, "Inspect failed", e)
-                _operationMessage.value = "Failed: ${e.message}"
+                _operationMessage.value = str(R.string.file_manager_operation_failed, e.message ?: e.javaClass.simpleName)
             }
         }
     }
@@ -772,7 +797,7 @@ class FileManagerViewModel @Inject constructor(
         val b = binder ?: return
         val ws = workspaceId ?: return
         if (!FileTypes.isEditable(fileInfo.name)) {
-            _operationMessage.value = "No editor for this file type — opening the viewer"
+            _operationMessage.value = str(R.string.file_manager_no_editor)
             viewFile(fileInfo)
             return
         }
@@ -784,7 +809,7 @@ class FileManagerViewModel @Inject constructor(
                         if (!editorIsLoading(fileInfo.path)) return@launch
                         if (result.value.length > MAX_EDITOR_CHARS) {
                             _editorState.value = null
-                            _operationMessage.value = "File too large to edit (max ${MAX_EDITOR_CHARS / 1024} KiB)"
+                            _operationMessage.value = str(R.string.file_manager_file_too_large_edit, MAX_EDITOR_CHARS / 1024)
                             viewFile(fileInfo)
                         } else {
                             _editorState.value = FileEditorState(
@@ -807,7 +832,7 @@ class FileManagerViewModel @Inject constructor(
                 Logger.e(TAG, "Edit open failed", e)
                 if (!editorIsLoading(fileInfo.path)) return@launch
                 _editorState.value = null
-                _operationMessage.value = "Failed: ${e.message}"
+                _operationMessage.value = str(R.string.file_manager_operation_failed, e.message ?: e.javaClass.simpleName)
             }
         }
     }
@@ -857,7 +882,7 @@ class FileManagerViewModel @Inject constructor(
                                 current
                             }
                         }
-                        _operationMessage.value = "Saved: ${state.name}"
+                        _operationMessage.value = str(R.string.file_manager_saved_named, state.name)
                     }
                     is FileOpResult.Failure -> {
                         _editorState.update { current ->
@@ -873,7 +898,7 @@ class FileManagerViewModel @Inject constructor(
                 _editorState.update { current ->
                     if (current?.path == state.path) current.copy(saving = false) else current
                 }
-                _operationMessage.value = "Failed: ${e.message}"
+                _operationMessage.value = str(R.string.file_manager_operation_failed, e.message ?: e.javaClass.simpleName)
             }
         }
     }
@@ -888,25 +913,25 @@ class FileManagerViewModel @Inject constructor(
     }
 
     fun deleteItem(fileInfo: FileInfo) {
-        run("Deleted: ${fileInfo.name}") { b, ws -> fileManager.delete(b, ws, fileInfo.path) }
+        run(str(R.string.file_manager_deleted_named, fileInfo.name)) { b, ws -> fileManager.delete(b, ws, fileInfo.path) }
     }
 
     fun renameItem(fileInfo: String, newName: String) {
         val oldPath = LsLongFormatParser.joinPath(_currentPath.value, fileInfo)
         val newPath = LsLongFormatParser.joinPath(_currentPath.value, newName)
-        run("Renamed to: $newName") { b, ws -> fileManager.rename(b, ws, oldPath, newPath) }
+        run(str(R.string.file_manager_renamed_to, newName)) { b, ws -> fileManager.rename(b, ws, oldPath, newPath) }
     }
 
     /** §1.115: mark an entry to be copied on the next [pasteInto]. */
     fun copyToClipboard(fileInfo: FileInfo) {
         _pendingTransfer.value = PendingTransfer(fileInfo, move = false)
-        _operationMessage.value = "Copied ${fileInfo.name} — open a folder and paste"
+        _operationMessage.value = str(R.string.file_manager_copied_named_hint, fileInfo.name)
     }
 
     /** §1.115: mark an entry to be moved on the next [pasteInto]. */
     fun cutToClipboard(fileInfo: FileInfo) {
         _pendingTransfer.value = PendingTransfer(fileInfo, move = true)
-        _operationMessage.value = "Cut ${fileInfo.name} — open a folder and paste"
+        _operationMessage.value = str(R.string.file_manager_cut_named_hint, fileInfo.name)
     }
 
     fun clearPendingTransfer() {
@@ -937,7 +962,10 @@ class FileManagerViewModel @Inject constructor(
                     continue
                 }
                 if (item.isDirectory && isInside(destination, source)) {
-                    failures += "${item.name}: cannot paste a folder into itself"
+                    failures += getApplication<Application>().linexaString(
+                        R.string.file_manager_paste_into_itself,
+                        item.name
+                    )
                     continue
                 }
                 try {
@@ -956,9 +984,14 @@ class FileManagerViewModel @Inject constructor(
             }
             _pendingTransfer.value = null
             _operationMessage.value = when {
-                failures.isEmpty() -> "${if (transfer.move) "Moved" else "Copied"} $moved item(s)"
+                failures.isEmpty() -> if (transfer.move) qty(R.plurals.file_manager_moved_count, moved, moved) else qty(R.plurals.file_manager_copied_count, moved, moved)
                 moved == 0 -> failures.first()
-                else -> "${if (transfer.move) "Moved" else "Copied"} $moved, failed ${failures.size}: ${failures.first()}"
+                else -> str(
+                    R.string.file_manager_transfer_partial,
+                    if (transfer.move) qty(R.plurals.file_manager_moved_count, moved, moved) else qty(R.plurals.file_manager_copied_count, moved, moved),
+                    failures.size,
+                    failures.first()
+                )
             }
             navigateTo(_currentPath.value)
         }
@@ -993,7 +1026,7 @@ class FileManagerViewModel @Inject constructor(
                 Logger.e(TAG, "Failed to read file", e)
                 if (_viewingFile.value == fileInfo.path) {
                     _viewingFile.value = null
-                    _operationMessage.value = "Failed to read file: ${e.message}"
+                    _operationMessage.value = str(R.string.file_manager_read_failed, e.message ?: e.javaClass.simpleName)
                 }
             }
         }
@@ -1009,7 +1042,7 @@ class FileManagerViewModel @Inject constructor(
         val ws = workspaceId ?: return
 
         viewModelScope.launch {
-            _operationMessage.value = "Importing $fileName..."
+            _operationMessage.value = str(R.string.file_manager_importing, fileName)
             try {
                 val content = contentResolver.openInputStream(uri)?.use { stream ->
                     // Import is text-only by construction (the guest write is a
@@ -1017,30 +1050,30 @@ class FileManagerViewModel @Inject constructor(
                     // file and reporting success.
                     val bytes = stream.readBytes()
                     if (bytes.size > MAX_IMPORT_BYTES) {
-                        _operationMessage.value = "Too large to import (max ${MAX_IMPORT_BYTES / 1024} KiB)"
+                        _operationMessage.value = str(R.string.file_manager_import_too_large, MAX_IMPORT_BYTES / 1024)
                         return@launch
                     }
                     if (bytes.contains(0)) {
-                        _operationMessage.value = "Binary files cannot be imported yet"
+                        _operationMessage.value = str(R.string.file_manager_import_binary)
                         return@launch
                     }
                     bytes.decodeToString()
                 } ?: run {
-                    _operationMessage.value = "Failed to open file"
+                    _operationMessage.value = str(R.string.file_manager_import_open_failed)
                     return@launch
                 }
 
                 val destPath = LsLongFormatParser.joinPath(_currentPath.value, fileName)
                 when (val result = fileManager.writeFile(b, ws, destPath, content)) {
                     is FileOpResult.Ok -> {
-                        _operationMessage.value = "Imported: $fileName"
+                        _operationMessage.value = str(R.string.file_manager_imported, fileName)
                         navigateTo(_currentPath.value)
                     }
                     is FileOpResult.Failure -> _operationMessage.value = result.message
                 }
             } catch (e: Exception) {
                 Logger.e(TAG, "Import failed", e)
-                _operationMessage.value = "Import failed: ${e.message}"
+                _operationMessage.value = str(R.string.file_manager_import_failed, e.message ?: e.javaClass.simpleName)
             }
         }
     }
@@ -1050,7 +1083,7 @@ class FileManagerViewModel @Inject constructor(
         val ws = workspaceId ?: return
 
         viewModelScope.launch {
-            _operationMessage.value = "Exporting ${fileInfo.name}..."
+            _operationMessage.value = str(R.string.file_manager_exporting, fileInfo.name)
             try {
                 when (val result = fileManager.readFile(b, ws, fileInfo.path)) {
                     is FileOpResult.Failure -> _operationMessage.value = result.message
@@ -1058,15 +1091,15 @@ class FileManagerViewModel @Inject constructor(
                         contentResolver.openOutputStream(uri)?.use { out ->
                             out.write(result.value.toByteArray())
                         } ?: run {
-                            _operationMessage.value = "Failed to open output"
+                            _operationMessage.value = str(R.string.file_manager_export_open_failed)
                             return@launch
                         }
-                        _operationMessage.value = "Exported: ${fileInfo.name}"
+                        _operationMessage.value = str(R.string.file_manager_exported, fileInfo.name)
                     }
                 }
             } catch (e: Exception) {
                 Logger.e(TAG, "Export failed", e)
-                _operationMessage.value = "Export failed: ${e.message}"
+                _operationMessage.value = str(R.string.file_manager_export_failed, e.message ?: e.javaClass.simpleName)
             }
         }
     }
@@ -1100,10 +1133,18 @@ class FileManagerViewModel @Inject constructor(
                 }
             } catch (e: Exception) {
                 Logger.e(TAG, "File operation failed", e)
-                _operationMessage.value = "Failed: ${e.message}"
+                _operationMessage.value = str(R.string.file_manager_operation_failed, e.message ?: e.javaClass.simpleName)
             }
         }
     }
+
+    /** Resolve a user-facing message in the app-selected language. */
+    private fun str(@StringRes resId: Int, vararg args: Any): String =
+        getApplication<Application>().linexaString(resId, *args)
+
+    /** Quantity-aware message for counts. */
+    private fun qty(@PluralsRes resId: Int, quantity: Int, vararg args: Any): String =
+        getApplication<Application>().linexaQuantityString(resId, quantity, *args)
 
     private fun buildBreadcrumbs(path: String): List<String> {
         if (path == "/") return listOf("/")

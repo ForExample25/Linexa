@@ -1,95 +1,84 @@
 # Data and Persistence
 
-**Status:** Current — describes the implemented persistence model, verified against source.
+**Source locations:** `app/src/main/java/com/fem/linexa/data/room/`,
+`app/src/main/java/com/fem/linexa/domain/workspace/`,
+`app/src/main/java/com/fem/linexa/service/installer/`,
+`app/src/main/java/com/fem/linexa/service/rootfs/`, `app/src/main/assets/`, `app/schemas/`
 
-**Project:** Linexa Linux Workspace (`com.fem.linexa`)
+This document describes the Room database, the `WorkspaceMetadata` schema, the RootFS
+metadata format (`linexa.yaml`), metadata precedence, and the install/activation pipeline.
+Feature behavior is covered in [`../features/`](../features/).
 
-**Source locations:** `app/src/main/java/com/fem/linexa/data/room/`, `app/src/main/java/com/fem/linexa/domain/workspace/`, `app/src/main/java/com/fem/linexa/service/installer/`, `app/src/main/java/com/fem/linexa/service/rootfs/`, `app/src/main/assets/`, `app/schemas/`
+## 1. Room database
 
----
+`LinexaDatabase` is declared with `entities = [WorkspaceMetadata::class]`, `version = 1`,
+and `exportSchema = true`. The single table is `workspaces`, keyed by `WorkspaceMetadata.id`.
+The exported schema is committed at
+`app/schemas/com.fem.linexa.data.room.LinexaDatabase/1.json`.
 
-## 1. Purpose
+Type converters live with the entity and cover `WorkspaceStatus`, string maps, boolean maps,
+`DistroInfo`, `RuntimeConfig`, `TerminalSettings`, and `DesktopSettings`. The DAO exposes
+`Flow` queries such as `observeAll` and `observeById`.
 
-This document is the authoritative reference for Linexa's data and persistence: the Room database, `WorkspaceMetadata` schema, the RootFS metadata schema (`linexa.yaml`), metadata precedence, and the install pipeline.
+No migrations are registered yet: the database is built with a plain
+`Room.databaseBuilder(...).build()` and `fallbackToDestructiveMigration` is not set. Every
+future version bump must ship a `Migration(N-1, N)` and the exported `N.json` in the same
+change. See [`ROOM_MIGRATIONS.md`](../ROOM_MIGRATIONS.md).
 
----
-
-## 2. Scope
-
-In scope:
-
-- Room database (`LinexaDatabase`, `WorkspaceMetadata`, schema version 1, exported schema)
-- `WorkspaceMetadata` fields and status lifecycle
-- RootFS metadata schema (`linexa.yaml`, schema versions 1 and 2)
-- Metadata precedence ladder (archive → bundled version-specific → bundled generic → legacy `.tiny.yaml` → undeclared probe)
-- Bundled version matching (`BundledRootfsMetadataProvider`)
-- Install pipeline and activation
-- Runtime-only state boundaries (what is persisted vs. what resets on process death)
-
-Out of scope:
-
-- Feature runtime behavior: [`features/`](../features/)
-- Build/toolchain: [`engineering/BUILD_AND_DEVELOPMENT.md`](../engineering/BUILD_AND_DEVELOPMENT.md)
-
----
-
-## 3. Current implementation status
-
-| Area | Status | Evidence |
-|---|---|---|
-| Room `LinexaDatabase`, version 1, one entity | Implemented | `data/room/LinexaDatabase.kt` |
-| Exported schema committed (`1.json`) | Implemented | `app/schemas/com.fem.linexa.data.room.LinexaDatabase/1.json` |
-| No Room migrations registered | Implemented | `di/AppModule.kt` plain `.build()` |
-| `WorkspaceMetadata` sealed status enum | Implemented | `domain/workspace/WorkspaceStatus.kt` |
-| RootFS metadata schema `linexa.yaml` v1+v2 | Implemented | `service/rootfs/`, `ROOTFS_METADATA_SCHEMA.md` content verified against source |
-| Staged installer with recovery journal | Implemented | `service/installer/StagedRootFsInstaller.kt`, `InstallRecoveryManager` |
-| Session/terminal state runtime-only | Implemented | `SessionManager.kt`, `RuntimeState.kt`, `TerminalState.kt` |
-
----
-
-## 4. Technical overview
-
-### 4.1 Room database
-
-`LinexaDatabase` — `@Database(entities = [WorkspaceMetadata::class], version = 1, exportSchema = true)`, single entity `WorkspaceMetadata`, table `workspaces`, `@PrimaryKey id`. Converters: `WorkspaceStatusConverter`, `MapConverter`, `BooleanMapConverter`, `DistroInfoConverter`, `RuntimeConfigConverter`, `TerminalSettingsConverter`, `DesktopSettingsConverter`. DAO exposes `Flow` queries (`observeAll`, `observeById`). Schema JSON committed at `app/schemas/com.fem.linexa.data.room.LinexaDatabase/1.json`. No migrations registered; plain `Room.databaseBuilder(...).build()`. `fallbackToDestructiveMigration` not set.
-
-### 4.2 WorkspaceMetadata fields
+## 2. WorkspaceMetadata fields
 
 | Field | Type | Default |
 |---|---|---|
-| `id` | String (@PrimaryKey) | — |
-| `schemaVersion` | Int | 1 |
-| `status` | WorkspaceStatus | — |
-| `distro` | DistroInfo | — |
-| `displayName` | String | — |
-| `avatarLetter` | String | — |
-| `avatarColorHex` | String | — |
-| `rootfsPath` | String | — |
-| `createdAt` | Long | — |
-| `lastLaunchedAt` | Long? | null |
-| `runtimeConfig` | RuntimeConfig | — |
-| `terminalSettings` | TerminalSettings | — |
-| `desktopSettings` | DesktopSettings? | null |
-| `featureToggles` | Map<String, Boolean> | emptyMap |
-| `pluginConfig` | Map<String, String> | emptyMap |
-| `attributes` | Map<String, String> | emptyMap |
+| `id` | String (`@PrimaryKey`) | required |
+| `schemaVersion` | Int | `1` |
+| `status` | `WorkspaceStatus` | required |
+| `distro` | `DistroInfo` | required |
+| `displayName` | String | required |
+| `avatarLetter` | String | required |
+| `avatarColorHex` | String | required |
+| `rootfsPath` | String | required; diagnostic snapshot, not authoritative at launch |
+| `createdAt` | Long | required |
+| `lastLaunchedAt` | Long? | `null` |
+| `runtimeConfig` | `RuntimeConfig` | required |
+| `terminalSettings` | `TerminalSettings` | required |
+| `desktopSettings` | `DesktopSettings?` | `null` |
+| `featureToggles` | `Map<String, Boolean>` | empty map |
+| `pluginConfig` | `Map<String, String>` | empty map; inert compatibility column |
+| `attributes` | `Map<String, String>` | empty map |
 
-`WorkspaceStatus`: `Created`, `Importing(progress)`, `Installed`, `Ready`, `Broken(reason)`, `Repairing`, `Deleting`.
+`WorkspaceStatus` is a sealed interface with the following states:
 
-### 4.3 Persistence boundaries
+- `Created` — the database record exists but the rootfs has not been materialized.
+- `Importing(progress)` — extraction is in progress; `progress` is `0f..1f`.
+- `Installed` — the rootfs exists but has not been validated.
+- `Ready` — the rootfs passed validation and can be launched.
+- `Broken(reason)` — corruption, interrupted import, or a failed health check.
+- `Repairing` — a repair operation is running.
+- `Deleting` — deletion is in progress.
+
+## 3. Persistence boundaries
 
 | Persisted | Runtime-only | Filesystem |
 |---|---|---|
-| `WorkspaceMetadata` (Room) — all workspace config | `SessionManager` sessions, `RuntimeState`, `TerminalState`, `WorkspaceHealthRegistry`, `RuntimeTrace` | RootFS archives, install journals, logs, bootstrap symlinks |
-| Settings via `SettingsRepositoryImpl` (SharedPreferences): theme mode, color theme, terminal font, battery optimization rows | | |
+| `WorkspaceMetadata` in Room | `SessionManager` sessions, `RuntimeState`, `TerminalState`, `WorkspaceHealthRegistry`, `RuntimeTrace` | RootFS archives, install journals, logs, bootstrap files |
+| Settings through `SettingsRepositoryImpl` (SharedPreferences): theme mode, color theme, terminal font and layout preferences, language, battery-optimization rows | | |
 
-Session and terminal state reset to `Stopped` on fresh process start. Secret workspace attributes (currently the VNC password) are persisted as an AES-GCM envelope under an `AndroidKeyStore` key by `data/repository/WorkspaceSecretAttributes.kt`; legacy plaintext rows are rewritten at app start by `service/workspace/VncPasswordMigrationManager.kt`. The decrypted value exists only in memory — see [`features/SECURITY_AND_PERMISSIONS.md`](../features/SECURITY_AND_PERMISSIONS.md).
+Session and terminal state reset to `Stopped` when the app process starts fresh. Workspace
+identity, configuration, and status survive restarts.
 
-### 4.4 RootFS metadata schema (`linexa.yaml`)
+Secret workspace attributes, currently the VNC password, are persisted as an AES-GCM
+envelope under an AndroidKeyStore key by `WorkspaceSecretAttributes`. Legacy plaintext rows
+are rewritten at app start by `VncPasswordMigrationManager`. The decrypted value exists only
+in memory. See [`../features/SECURITY_AND_PERMISSIONS.md`](../features/SECURITY_AND_PERMISSIONS.md).
 
-All keys live under the single top-level `linexa:` mapping, shared with per-workspace configuration (`features`, `env`, `launch`, `host_info`). The presentation block is spelled `metadata:` (`presentation:` is rejected).
+## 4. RootFS metadata (`linexa.yaml`)
 
-Schema version 2 (required; build supports 1 and 2):
+All keys live under the single top-level `linexa:` mapping, shared with per-workspace
+configuration (`features`, `env`, `launch`, `host_info`). The presentation block is spelled
+`metadata:`; the older `presentation:` spelling is rejected.
+
+The build supports schema versions 1 and 2. Schema 2 adds groups and semantic actions to
+`shortcuts:`:
 
 ```yaml
 linexa:
@@ -123,13 +112,13 @@ linexa:
       la: "ls -A"
       ll: "ls -alF"
   init:
-    post_install: [...]
-    first_boot: [...]
+    post_install: []
+    first_boot: []
   health_check:
     command: "test -x /bin/bash && test -x /usr/bin/apt-get"
   metadata:
     display_name: Debian
-    description: …
+    description: Debian userland
     preview: opt/linexa/preview.png
   shortcuts:
     - id: software-management
@@ -144,76 +133,117 @@ linexa:
       as_root: true
 ```
 
-Schema 2 adds exactly three things to `shortcuts:`: `children:` (navigable groups), `action:` (semantic tag: install/remove/update/launch/check), `as_root:` (elevation launcher). Groups with their own `command:`/`action:`/`as_root:` are rejected. Flat schema-1 entries mix freely with groups.
+Schema 2 adds three shortcut capabilities:
 
-### 4.5 Metadata precedence
+- `children:` — navigable groups.
+- `action:` — a semantic tag such as `install`, `remove`, `update`, `launch`, or `check`.
+- `as_root:` — marks a leaf as an elevated launcher.
 
-When Linexa needs to know what a rootfs is, sources are consulted in this exact order. The FIRST source that yields a valid native declaration wins; later sources never override it.
+A group may not declare its own `command:`, `action:`, or `as_root:`. Flat schema-1 entries
+and schema-2 groups may be mixed.
+
+## 5. Metadata precedence
+
+When Linexa needs to identify a rootfs, the first source that yields a valid native
+declaration wins. Later sources never override an earlier one.
 
 | Priority | Source | Notes |
 |---|---|---|
-| 1 | Archive-carried native `.linexa.yaml` / `linexa.yaml` / `config.yaml` (archive root) | Validated fail-hard at install; persisted verbatim as `{workspace}/config.yaml` |
+| 1 | Archive-carried native `.linexa.yaml` / `linexa.yaml` / `config.yaml` at the archive root | Validated fail-hard at install; persisted as `{workspace}/config.yaml` |
 | 2 | Bundled version-specific `assets/rootfs/metadata/<distro>-<version>.linexa.yaml` | Resolved by `BundledRootfsMetadataProvider.forDistro(id, version)` |
 | 3 | Bundled generic `assets/rootfs/metadata/<distro>.linexa.yaml` | Default for stock catalog images |
-| 4 | Archive-carried legacy `.tiny.yaml` | TinyContainer compatibility; presentation + quick-commands ONLY; fail-open |
-| 5 | Undeclared | Signal-based detection (`RootFsProbe`): os-release, marker files, ELF probes |
+| 4 | Archive-carried legacy `.tiny.yaml` | TinyContainer compatibility; presentation and quick commands only; fail-open |
+| 5 | Undeclared | Signal-based detection through `RootFsProbe` (os-release, marker files, ELF probes) |
 
-The installer applies the bundled profile only when the archive carried no **native** declaration (`effectiveCaptured == null` gate — a `.tiny.yaml`-only archive receives the bundled profile). The selected source is logged and recorded on `RootFsDescriptor.source` and `InstallSummary.metadataSource`.
+The installer applies a bundled profile only when the archive carried no native declaration.
+A `.tiny.yaml`-only archive therefore receives the bundled profile. The selected source is
+recorded on `RootFsDescriptor.source` and in `InstallSummary.metadataSource`.
 
-### 4.6 Bundled version matching
+## 6. Bundled version matching
 
-`forDistro(distroId, version)` tries: exact `<distro>-<version>.linexa.yaml`; progressively shorter dot-prefixes (`22.04.5` → `22.04` → `22`); `<distro>.linexa.yaml`. First candidate that exists wins. Bundled profiles shipped today: `debian.linexa.yaml`, `ubuntu.linexa.yaml` (generic; version/codename deliberately omitted).
+`forDistro(distroId, version)` tries the following candidates in order:
 
-### 4.7 Validation rules (fail-hard at install)
+1. exact `<distro>-<version>.linexa.yaml`;
+2. progressively shorter dot-prefixes (`22.04.5` → `22.04` → `22`);
+3. `<distro>.linexa.yaml`.
 
-- Paths (`home`, `workspace.directory`, `shell`): absolute, no whitespace/NUL, no `..` segments; workspace must not be `/`.
-- `shell_args`: single argv tokens (no whitespace/NUL), ≤ 8 entries.
-- `variables`: POSIX name shape, single-line scalar values, ≤ 24 entries.
-- `aliases`: identifier names, single-line expansions, ≤ 40 entries.
-- `init` / `health_check` / `shortcuts`: single-line, length-capped commands.
-- Everything structural rejected at import with the exact YAML path named.
+The first existing candidate wins. Bundled profiles are shipped for Alpine,
+Arch Linux, Debian, Fedora, and Ubuntu under `assets/rootfs/metadata/`.
 
-### 4.8 How the runtime consumes the declaration
+## 7. Validation rules
 
-- **Shell** — `config.yaml launch.shell` (user override) → declared `environment.shell` (verified to exist) → probe `/bin/bash` → `/bin/sh`.
-- **Home / USER / startup directory** — `GuestEnvironmentResolver` resolves `environment.home` (default `/root`), `environment.user` (default `root`), `workspace.directory` (default `<home>/linexa`). Workspace created at install and self-healed at every launch (`ensureGuestWorkspace`), seeded with a README; if creation fails the launch falls back to HOME.
-- **Declared env** — `environment.variables` merges before the user's config `env` (config wins) and under the host-key guard (`PATH`, `HOME`, `LD_LIBRARY_PATH`, … can never be overridden).
-- **Aliases** — `shell_config.aliases` merge over `GuestRootfsInitializer.DEFAULT_SHELL_ALIASES` into `/etc/profile.d/00-linexa-shell.sh`. Login shells only; user's own `~/.bashrc` always wins.
-- **First boot** — `init.post_install` + `init.first_boot` run once per rootfs before the first terminal (marker `{rootfs}/.linexa/first-boot.done`; bounded attempts). Failure never blocks the terminal.
-- **Health check** — after activation runs `health_check.command` inside the rootfs (`InstallCoordinator.verifyRootfs`). Non-zero exit marks the workspace **Broken** with command, exit code, output tail as diagnostic.
-- **Identity** — a valid declaration outranks probe detection; version mismatches vs. detection surfaced as warnings.
+Structural validation fails at import, naming the exact YAML path:
 
----
+- Paths (`home`, `workspace.directory`, `shell`) must be absolute, contain no whitespace or
+  NUL, contain no `..` segments, and the workspace directory must not be `/`.
+- `shell_args` entries are single argv tokens with no whitespace or NUL, at most 8 entries.
+- `variables` names use POSIX name shape, values are single-line scalars, at most 24 entries.
+- `aliases` names are identifiers, expansions are single-line, at most 40 entries.
+- `init`, `health_check`, and `shortcuts` commands are single-line, length-capped, and never
+  shell-interpreted by the parser.
 
-## 5. Install pipeline
+## 8. How the runtime consumes the declaration
+
+- **Shell** — `config.yaml launch.shell` (user override) → declared `environment.shell`
+  (verified to exist) → probe `/bin/bash` → `/bin/sh`.
+- **Home, user, startup directory** — `GuestEnvironmentResolver` resolves
+  `environment.home` (default `/home/linexa`) and `environment.user` (default
+  `linexa`). Interactive terminals start in the resolved home, so the prompt reads
+  `~`. The account and home are created and self-healed before launch; if creation
+  fails, launch falls back to `HOME`. A `workspace.directory` declaration is still
+  parsed but no longer changes the startup directory.
+- **Declared environment** — `environment.variables` merges before the user's `config.yaml`
+  `env` (config wins) and is filtered by the host-key guard. `PATH`, `HOME`,
+  `LD_LIBRARY_PATH`, and similar host-owned keys cannot be overridden.
+- **Aliases** — `shell_config.aliases` merge over the built-in aliases into
+  `/etc/profile.d/00-linexa-shell.sh`. They apply to login shells only; the user's own
+  `~/.bashrc` always wins.
+- **First boot** — `init.post_install` and `init.first_boot` run once per rootfs before the
+  first terminal, guarded by `{rootfs}/.linexa/first-boot.done` and bounded attempts.
+  Failure does not block the terminal.
+- **Health check** — after activation, `health_check.command` runs inside the rootfs. A
+  non-zero exit marks the workspace `Broken` with the command, exit code, and output tail as
+  diagnostics.
+- **Identity** — a valid declaration outranks probe detection. Version mismatches against
+  detection are surfaced as warnings.
+
+## 9. Install and activation pipeline
 
 ```
-DownloadService / ImportService → StagedRootFsInstaller
-  Pass 1 (JVM)  : analyze() — SHA-256, ArchiveValidator, profile resolution, OCI layout
-  Pass 2 (native): RootfsExtractor.extract() — proot --link2symlink tar -xf … -C staging
-  Pass 2.5      : L2sLinkRewriter.rewrite(staging) — .l2s.* targets → relative
-  Pass 3        : validateExtractedRootfs(profile required dirs/shell)
-  Pass 3.5      : runInstallSteps(profile plan) — ENSURE_TMP → ENSURE_DEV_SHM → ANDROID_ACCOUNT_FIXUP → SEED_RESOLV_CONF
-  Pass 4        : writeWorkspaceConfig (captured config.yaml)
-  Activation    : WorkspaceFileManager.activateStagedRootfs() — live→previous-<ts>, staging→rootfs (rename)
+DownloadService / ImportService
+  -> StagedRootFsInstaller
+       Pass 1 (JVM)    analyze(): SHA-256, archive validation, profile resolution, OCI layout
+       Pass 2 (native) RootfsExtractor.extract(): proot --link2symlink tar -xf ... -C staging
+       Pass 2.5        L2sLinkRewriter.rewrite(staging): relative .l2s.* targets
+       Pass 3          validateExtractedRootfs(): required directories and shell
+       Pass 3.5        runInstallSteps(): ENSURE_TMP, ENSURE_DEV_SHM,
+                       ANDROID_ACCOUNT_FIXUP, SEED_RESOLV_CONF
+       Pass 4          writeWorkspaceConfig(): captured config.yaml
+  -> WorkspaceFileManager.activateStagedRootfs()
+       live -> rootfs.previous-<timestamp>; staging -> rootfs; restore on failure
 ```
 
-Runtime self-heal before every session/exec/daemon: `ensureGuestTmp`, `ensureGuestDevShm`, `ensureGuestRun`, `ensureProcSnapshots`, `ensureDpkgHealthy` (+ optional `dpkg --configure -a` preflight). `InstallRecoveryManager` handles crash-between-phases at app startup.
+`InstallRecoveryManager` handles a crash between phases at application startup. Runtime
+self-healing before every session, exec, or daemon launch repairs `/tmp`, `/dev/shm`,
+`/run`, `/proc` snapshots, and dpkg state.
 
----
+## 10. Behavior notes
 
-## 6. Limitations and known issues
+- The `rootfsPath` column is diagnostic. Production launch paths derive the rootfs location
+  from the workspace id through `WorkspaceFileManager.getRootfsPath(id)`. A startup backfill
+  repairs rows whose stored value disagrees with the derived path.
+- `pluginConfig` is an inert compatibility column retained because removing it would require
+  a Room migration.
+- Backup rules exclude the database as defence in depth even though the VNC secret is
+  encrypted at rest.
+- An explicit RootFS export asks about guest credential material. The default (`REMOVE_CREDENTIALS`)
+  omits the VNC passwd file, SSH private keys, and GnuPG; the explicit "export as-is" choice
+  includes the full guest filesystem, including the VNC password file while a desktop is
+  provisioned.
 
-- No Room migrations: first schema bump without a migration crashes existing installs on open. Migration policy in [`ROOM_MIGRATIONS.md`](../ROOM_MIGRATIONS.md).
-- `WorkspaceMetadata.attributes` holds the VNC password encrypted (AES-GCM/Keystore); backup rules still exclude the DB as defence in depth. Legacy plaintext rows are migrated on startup. See [`features/SECURITY_AND_PERMISSIONS.md`](../features/SECURITY_AND_PERMISSIONS.md).
-- Full RootFS install flows still need device verification; see [`engineering/TESTING_STRATEGY.md`](../engineering/TESTING_STRATEGY.md).
+## 11. Related documentation
 
----
-
-## 7. Related documentation
-
-- [`architecture/SYSTEM_ARCHITECTURE.md`](./SYSTEM_ARCHITECTURE.md) — system architecture
-- [`architecture/RUNTIME_ARCHITECTURE.md`](./RUNTIME_ARCHITECTURE.md) — PRoot runtime, installer interaction
-- [`features/SECURITY_AND_PERMISSIONS.md`](../features/SECURITY_AND_PERMISSIONS.md) — VNC password, backup rules
-- [`ROOM_MIGRATIONS.md`](../ROOM_MIGRATIONS.md) — migration policy and exported schemas
-- [`engineering/TESTING_STRATEGY.md`](../engineering/TESTING_STRATEGY.md) — verification status
+- [`SYSTEM_ARCHITECTURE.md`](./SYSTEM_ARCHITECTURE.md) — system overview and modules
+- [`RUNTIME_ARCHITECTURE.md`](./RUNTIME_ARCHITECTURE.md) — PRoot runtime and installer interaction
+- [`../features/SECURITY_AND_PERMISSIONS.md`](../features/SECURITY_AND_PERMISSIONS.md) — VNC password and backup rules
+- [`ROOM_MIGRATIONS.md`](../ROOM_MIGRATIONS.md) — Room schema and migration policy

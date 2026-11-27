@@ -47,7 +47,10 @@ aliases:
   - archlinux
   - archlinuxarm
 
-supported_architectures: [arm64, armv7l, x86_64]
+# Linexa-hosted architectures only (arm64/armv7 PRoot is packaged); Arch's
+# x86_64 images are detected and rejected by ArchitectureCompatibility rather
+# than advertised as runnable here (finding 029).
+supported_architectures: [arm64, armv7l]
 
 layout:
   # `./bin` and `./sbin` are symlinks into `usr/`, and `./lib` likewise — a

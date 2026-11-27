@@ -211,6 +211,14 @@ class DesktopPortPollWiringSourceTest {
     private var attempts = 0
 
     /**
+     * Largest `after + wait - deadline` the replica ever scheduled. The clamp's
+     * own contract is exactly `after + wait <= deadline`; recording it makes the
+     * assertion a day-one invariant of the policy rather than a wall-clock
+     * measurement polluted by connect cost and scheduler latency.
+     */
+    private var maxDelayOvershootMs = Long.MIN_VALUE
+
+    /**
      * Structural replica of the production loop, pinned by
      * [theReplicaMatchesTheProductionLoop].
      */
@@ -241,6 +249,13 @@ class DesktopPortPollWiringSourceTest {
                     elapsedMs = after - start,
                     remainingMs = deadline - after
                 )
+                // Only a POSITIVE delay is a policy decision to sleep past an
+                // instant. `wait == 0` means "stop now"; the attempt itself may
+                // already have crossed the deadline (a connect or scheduler
+                // stall), which is not a clamp failure.
+                if (wait > 0L) {
+                    maxDelayOvershootMs = maxOf(maxDelayOvershootMs, after + wait - deadline)
+                }
                 if (wait <= 0L) break
                 delay(wait)
             }
@@ -282,15 +297,22 @@ class DesktopPortPollWiringSourceTest {
     fun thePollStopsAtItsDeadlineAndDoesNotOverrun() = runBlocking {
         val port = freePort()
         val budget = 500L
-        val t0 = System.currentTimeMillis()
+        maxDelayOvershootMs = Long.MIN_VALUE
         val ok = waitForVncPortReplica("127.0.0.1", port, budget)
-        val elapsed = System.currentTimeMillis() - t0
         assertFalse(ok)
-        // The clamp in delayAfterFailure is what makes this exact rather than
-        // "budget + one interval"; before §16.3.4 this could overshoot by ~150 ms.
+        // The clamp's contract, asserted exactly and without a clock: no retry
+        // may be SCHEDULED for an instant after the deadline. This is what the
+        // pre-§16.3.4 fixed 150 ms sleep violated (it slept past a deadline that
+        // could be 1 ms away).
+        //
+        // Wall-clock is deliberately not the assertion: this device's test JVM
+        // has shown a single loop iteration stalling for seconds between
+        // `Socket.connect` returning and the next clock read, and a connect may
+        // itself consume up to CONNECT_TIMEOUT_MS. Neither is the policy's
+        // delay, so neither can disprove the clamp.
         assertTrue(
-            "poll ran $elapsed ms against a $budget ms budget — the clamp failed",
-            elapsed < budget + 150
+            "a retry was scheduled ${maxDelayOvershootMs}ms past the deadline — the clamp failed",
+            maxDelayOvershootMs <= 0L
         )
     }
 

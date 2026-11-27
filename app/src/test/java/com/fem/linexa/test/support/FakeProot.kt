@@ -97,7 +97,37 @@ object FakeProot {
          * [SLOW_SLEEP_SECONDS] before exiting 0 — so a test can determinst-
          * ically observe behavior while the exec is in flight.
          */
-        SLOW_EXIT
+        SLOW_EXIT,
+
+        /**
+         * 10E: a descendant that IGNORES SIGTERM. Invocations #1/#2 (the
+         * §1.46 testExecve preflight and the §1.52 static-ELF probe — same
+         * counting as [SECCOMP_BUG_ON_3RD]) exit 0 fast; the FIRST extraction
+         * attempt (#3+) signals its start via [TERM_STARTED_FILE], records
+         * the host PID and a real `sleep` child PID, traps TERM
+         * (`trap '' TERM` — SIG_IGN, inherited by the sleep child), then
+         * waits for the child: only SIGKILL can end the tree. RootFS R1
+         * uses this shape to prove the extractor's terminator reaches the
+         * descendant, not just the PRoot host.
+         */
+        IGNORES_TERM,
+
+        /**
+         * Phase 0: a long-lived daemon WITH a real child process (the shape
+         * of a PRoot host whose initial tracee forked a worker). Writes the
+         * child PID to [DAEMON_CHILD_FILE] then waits for it, so a test can
+         * assert the whole daemon tree — not just the host — is terminated.
+         */
+        DAEMON_WITH_CHILD,
+
+        /**
+         * Phase 0: an exec that hangs WITH a child process, but only for the
+         * command containing [TIMEOUT_MARKER]. Every other invocation exits 0
+         * immediately, so guest-preparation probes during `execInternal` do
+         * not turn into multi-second sleeps. Used by the exec-timeout
+         * containment regression test.
+         */
+        TIMEOUT_WITH_CHILD
     }
 
     /**
@@ -323,6 +353,46 @@ object FakeProot {
         |    echo started > "${'$'}DIR/$SLOW_STARTED_FILE"
         |    sleep 5
         |    exit 0 ;;
+        |  IGNORES_TERM)
+        |    # 10E: descendant that ignores SIGTERM. Invocations #1/#2 are the
+        |    # preflight probes (testExecve + static-ELF): exit 0 fast. #3+ is
+        |    # the real extraction attempt: install the TERM trap FIRST (a
+        |    # deadline that fires during sh startup must not kill us before
+        |    # the trap exists), record the host and a real sleep child, then
+        |    # wait for the child until a SIGKILL — the sleep's output is
+        |    # redirected so only the sh holds the capture pipes, keeping EOF
+        |    # tied to the sh's death.
+        |    if [ "${'$'}n" -lt 3 ]; then
+        |      exit 0
+        |    fi
+        |    trap '' TERM
+        |    echo "${'$'}${'$'}" > "${'$'}DIR/$HOST_PID_FILE"
+        |    sleep 300 >/dev/null 2>&1 &
+        |    child=${'$'}!
+        |    echo "${'$'}child" > "${'$'}DIR/$IGNORES_TERM_CHILD_FILE"
+        |    echo started > "${'$'}DIR/$TERM_STARTED_FILE"
+        |    wait "${'$'}child"
+        |    exit 0 ;;
+        |  DAEMON_WITH_CHILD)
+        |    # Phase 0: a daemon host WITH a real child (PRoot host + tracee).
+        |    # The child PID is written so the test can prove the whole tree dies.
+        |    echo "${'$'}${'$'}" > "${'$'}DIR/$HOST_PID_FILE"
+        |    sleep 300 &
+        |    child=${'$'}!
+        |    echo "${'$'}child" > "${'$'}DIR/$DAEMON_CHILD_FILE"
+        |    wait "${'$'}child" ;;
+        |  TIMEOUT_WITH_CHILD)
+        |    # Phase 0: only the marked command hangs; everything else is fast.
+        |    case "${'$'}*" in
+        |      *$TIMEOUT_MARKER*)
+        |        echo "${'$'}${'$'}" > "${'$'}DIR/$HOST_PID_FILE"
+        |        sleep 300 &
+        |        child=${'$'}!
+        |        echo "${'$'}child" > "${'$'}DIR/$EXEC_CHILD_FILE"
+        |        sleep 10
+        |        exit 0 ;;
+        |      *) exit 0 ;;
+        |    esac ;;
         |  *)
         |    exit 0 ;;
         |esac
@@ -341,6 +411,59 @@ object FakeProot {
 
     /** F-6: how long the SLOW_EXIT scenario sleeps before exiting 0. */
     const val SLOW_SLEEP_SECONDS = 5
+
+    /** 10E: marker the IGNORES_TERM scenario writes when the real attempt starts. */
+    const val TERM_STARTED_FILE = ".fake-proot-term-started"
+
+    /** RootFS R1: PID file written by IGNORES_TERM for its TERM-ignoring sleep child. */
+    const val IGNORES_TERM_CHILD_FILE = ".fake-proot-ignores-term-child-pid"
+
+    /** Phase 0: PID file written by DAEMON_WITH_CHILD / TIMEOUT_WITH_CHILD (the host). */
+    const val HOST_PID_FILE = ".fake-proot-host-pid"
+
+    /** Phase 0: PID file written by DAEMON_WITH_CHILD (the daemon's guest child). */
+    const val DAEMON_CHILD_FILE = ".fake-proot-daemon-child-pid"
+
+    /** Phase 0: PID file written by TIMEOUT_WITH_CHILD (the exec's guest child). */
+    const val EXEC_CHILD_FILE = ".fake-proot-exec-child-pid"
+
+    /** Phase 0: the argv substring that makes TIMEOUT_WITH_CHILD hang. */
+    const val TIMEOUT_MARKER = "linexa-timeout-marker"
+
+    /** Phase 0: reads a PID file written by a scenario, or null when absent. */
+    fun pidFile(dir: File, name: String): Int? =
+        File(dir, name).readTextOrNull()?.trim()?.toIntOrNull()
+
+    /**
+     * Phase 0: bounded wait for a scenario's PID file.
+     *
+     * 30 s, not 10 s: the fake is a real child process, and on a swapping or
+     * heavily loaded host (the Android/Termux build box is both) a JVM fork can
+     * take far longer than a developer laptop. A timeout here fails the test as
+     * a "daemon did not start", which is indistinguishable from a real defect.
+     */
+    fun awaitPidFile(dir: File, name: String, timeoutMs: Long = 30_000): Int? {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            pidFile(dir, name)?.let { return it }
+            Thread.sleep(25)
+        }
+        return null
+    }
+
+    /**
+     * Phase 0: bounded wait for a PID file that differs from [previous].
+     * Scenarios share the same file name, so starting a second daemon must
+     * wait for the rewrite instead of reading the first daemon's stale PID.
+     */
+    fun awaitNewPidFile(dir: File, name: String, previous: Int?, timeoutMs: Long = 30_000): Int? {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (System.currentTimeMillis() < deadline) {
+            pidFile(dir, name)?.takeIf { it != previous }?.let { return it }
+            Thread.sleep(25)
+        }
+        return null
+    }
     private const val HEADER = "=== fake-proot invocation "
     private const val ENV_SECTION = "--- env ---"
     private const val END_MARK = "--- end ---"

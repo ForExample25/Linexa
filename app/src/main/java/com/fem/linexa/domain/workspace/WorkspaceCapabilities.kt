@@ -26,7 +26,24 @@ object WorkspaceCapabilities {
      */
     const val ATTR_DESKTOP = "desktop"
 
-    private val DESKTOP_KEYS = listOf(ATTR_DESKTOP, "desktop.enabled")
+    /**
+     * Persisted **intent** marker: the user (or the imported `config.yaml`)
+     * explicitly chose the desktop on or off. Written by
+     * [com.fem.linexa.ui.screens.workspace.WorkspaceDetailViewModel.setFeatureToggle]
+     * and by the import path only when `linexa.features` declares a desktop
+     * key.
+     *
+     * Why this exists: import persists the *defaults-merged* toggle map, so
+     * `featureToggles["desktop"] == false` is the default for every imported
+     * workspace and cannot be told apart from an explicit "off". Treating the
+     * bare default as a choice defeated auto-detection for every import
+     * (Desktop stayed hidden even when the rootfs really carried a desktop).
+     * [desktopAvailable] therefore honours an off toggle only when this marker
+     * records that a choice was actually made.
+     */
+    const val ATTR_DESKTOP_INTENT = "desktop.enabled"
+
+    private val DESKTOP_KEYS = listOf(ATTR_DESKTOP, ATTR_DESKTOP_INTENT)
 
     fun desktopEnabled(workspace: WorkspaceMetadata): Boolean {
         val toggles = workspace.featureToggles
@@ -76,6 +93,60 @@ object WorkspaceCapabilities {
     ): Boolean =
         desktopEnabledFor(featureToggles, attributes) &&
             attributes[ATTR_DESKTOP] == "true"
+
+    /**
+     * Whether the Desktop action is available for a VNC-mode workspace, given
+     * the rootfs's live [capable] result.
+     *
+     * Previously the action required an explicit "intent" toggle that defaults
+     * to OFF, so an imported rootfs that already contained a full desktop still
+     * showed Desktop disabled until the user found and flipped it. Now:
+     * - not [capable] → never available (a toggle cannot conjure a desktop);
+     * - an explicit ON — a persisted `true` (defaults are off, so it can only
+     *   come from the user or `config.yaml`) or an `desktop.enabled` attribute
+     *   — is honoured;
+     * - an explicit OFF — a persisted `false` **only when** [ATTR_DESKTOP_INTENT]
+     *   records that a choice was made — is honoured in the other direction;
+     * - no explicit choice → capability alone decides.
+     *
+     * A bare persisted `false` is NOT a choice: import stores the
+     * defaults-merged map, so it is the default value on every imported
+     * workspace. See [ATTR_DESKTOP_INTENT].
+     *
+     * [persistedToggles] must be the workspace's persisted overrides, NOT the
+     * defaults-merged map (a default is not a choice). The `desktop` attribute
+     * is the capability cache, never an intent signal, so it is not read here.
+     */
+    fun desktopAvailable(
+        persistedToggles: Map<String, Boolean>,
+        attributes: Map<String, String>,
+        capable: Boolean
+    ): Boolean {
+        if (!capable) return false
+        for (key in DESKTOP_KEYS) {
+            when (persistedToggles[key]) {
+                true -> return true
+                false -> Unit
+                null -> Unit
+            }
+        }
+        return when (attributes[ATTR_DESKTOP_INTENT]) {
+            "false", "0", "no", "disabled" -> false
+            else -> true
+        }
+    }
+
+    /**
+     * The [ATTR_DESKTOP_INTENT] value to persist for an imported workspace:
+     * `"true"`/`"false"` only when `config.yaml`'s `linexa.features` block
+     * explicitly declares a desktop key, otherwise `null` (no choice — let
+     * capability auto-detection decide).
+     *
+     * [declaredFeatures] must be the **raw** config overrides, never the
+     * defaults-merged map.
+     */
+    fun desktopIntentAttribute(declaredFeatures: Map<String, Boolean>): String? =
+        DESKTOP_KEYS.firstNotNullOfOrNull { declaredFeatures[it] }?.toString()
 
     private fun desktopEnabledFor(
         featureToggles: Map<String, Boolean>,

@@ -3,6 +3,7 @@ package com.fem.linexa.ui.screens.home
 import androidx.lifecycle.ViewModel
 import com.fem.linexa.data.Workspace
 import com.fem.linexa.service.exporter.ExportCoordinator
+import com.fem.linexa.service.exporter.ExportCredentialPolicy
 import com.fem.linexa.service.exporter.ExportFlowState
 import com.fem.linexa.service.exporter.ExportNames
 import android.net.Uri
@@ -54,11 +55,17 @@ class ExportFlowViewModel @Inject constructor(
         )
 
     /** Starts the export into the SAF document the user just picked. */
-    fun start(workspace: Workspace, uri: Uri, suggestedFileName: String) {
+    fun start(
+        workspace: Workspace,
+        uri: Uri,
+        suggestedFileName: String,
+        credentialPolicy: ExportCredentialPolicy,
+    ) {
         coordinator.start(
             workspaceId = workspace.id,
             workspaceName = workspace.name,
             targetUri = uri,
+            credentialPolicy = credentialPolicy,
             suggestedFileName = suggestedFileName,
         )
     }

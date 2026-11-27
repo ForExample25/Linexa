@@ -26,7 +26,11 @@ import kotlin.math.roundToLong
  * uids simply fail to open and are skipped SILENTLY (platform hiding is
  * honored, never probed around). So:
  *
- * 1. each pass enumerates `/proc/<pid>/stat` for readable pids;
+ * 1. each pass reads `/proc/<pid>/stat` for the pids readable to this uid.
+ *    A full `/proc` enumeration runs once per
+ *    [FULL_SCAN_INTERVAL_MS]; the passes in between re-read only the set that
+ *    was readable at that sweep (LINEXA-PERF-001 — on a busy device the full
+ *    sweep is ~1 100 entries, almost all of which fail the same-uid read);
  * 2. busy ticks per PID = utime+stime+cutime+cstime — REAL scheduler
  *    accounting, including reaped children so short-lived gcc/aptd forks
  *    still land in the totals;
@@ -96,6 +100,23 @@ class EnvTickSampler(
     private var loadExp15m: Double? = null
 
     /**
+     * LINEXA-PERF-001: pids that were readable at the last full enumeration.
+     * A full `/proc` sweep opens every numeric `/proc/<pid>/stat`; on the
+     * audited device that is ~1 100 entries, of which ~5 are this app's. Doing
+     * that every 2 s (≈550 failed opens/s, each a syscall plus an SELinux
+     * check) was the dominant per-tick cost — far more expensive than the host
+     * collection the audit originally blamed.
+     *
+     * Between full sweeps only these pids are re-read. A process started in
+     * between is picked up at the next full sweep (its already-consumed ticks
+     * are baselined then), so a window can under-count a brand-new child but
+     * can never fabricate or double-count: emitted counters stay cumulative
+     * and monotonic.
+     */
+    private val knownPids = HashSet<Int>()
+    private var lastFullScanMs = Long.MIN_VALUE
+
+    /**
      * Run one sampling pass across [allowedCores] (the affinity mask; the
      * caller supplies the snapshot's value so capacity math matches what the
      * scheduler actually grants). Returns null before the SECOND pass — a
@@ -106,7 +127,7 @@ class EnvTickSampler(
         synchronized(lock) {
             val now = nowMs()
             if (!seeded) {
-                seedLocked(allowedCores)
+                seedLocked(allowedCores, now)
                 lastNowMs = now
                 return null
             }
@@ -119,7 +140,7 @@ class EnvTickSampler(
             val currentBusyByPid = HashMap<Int, Long>()
             val deltaBusyPerCore = HashMap<Int, Long>()
 
-            for ((pid, rawStat) in readablePidStats()) {
+            for ((pid, rawStat) in pidStatsForPass(now)) {
                 val parsed = ProcMetricParsers.pidTickSample(rawStat) ?: continue
                 if (parsed.stateChar == 'R') running++
                 if (parsed.stateChar == 'D') blocked++
@@ -165,6 +186,9 @@ class EnvTickSampler(
         }
     }
 
+    /** Test/diagnostic visibility: pids the incremental pass will re-read. */
+    internal fun knownPidCountForTest(): Int = synchronized(lock) { knownPids.size }
+
     /** Drop all state (called when the overlay ticker stops; cheap re-seed later). */
     fun reset() {
         synchronized(lock) {
@@ -174,6 +198,8 @@ class EnvTickSampler(
             cumulativeBusy.clear()
             cumulativeIdle.clear()
             distinctPidsSeen = 0
+            knownPids.clear()
+            lastFullScanMs = Long.MIN_VALUE
             loadExp1m = null; loadExp5m = null; loadExp15m = null
         }
     }
@@ -187,8 +213,8 @@ class EnvTickSampler(
      * not host boot). Constant-and-documented semantics; guest tools diff
      * deltas anyway, and `/proc/stat` consumers only need monotonicity.
      */
-    private fun seedLocked(cores: List<Int>) {
-        for ((pid, rawStat) in readablePidStats()) {
+    private fun seedLocked(cores: List<Int>, nowMs: Long) {
+        for ((pid, rawStat) in pidStatsForPass(nowMs)) {
             ProcMetricParsers.pidTickSample(rawStat)?.let { parsed ->
                 perPidBaseline[pid] = parsed.busyTicks
                 lastSeenPids.add(pid)
@@ -230,8 +256,47 @@ class EnvTickSampler(
         }
     }
 
+    /**
+     * One pass's readable pid set.
+     *
+     * LINEXA-PERF-001: a full directory sweep is expensive on a busy device
+     * (~1 100 entries on the audited phone) and almost all of it fails the
+     * same-uid read. It therefore runs at most once per
+     * [FULL_SCAN_INTERVAL_MS]; the passes in between re-read only the pids that
+     * were readable last time, which is the environment's actual process set.
+     */
+    private fun pidStatsForPass(nowMs: Long): List<Pair<Int, String>> {
+        val fullScan = knownPids.isEmpty() ||
+            lastFullScanMs == Long.MIN_VALUE ||
+            nowMs - lastFullScanMs >= FULL_SCAN_INTERVAL_MS
+        if (fullScan) {
+            val stats = readablePidStats().toList()
+            knownPids.clear()
+            knownPids.addAll(stats.map { it.first })
+            lastFullScanMs = nowMs
+            return stats
+        }
+        val incremental = ArrayList<Pair<Int, String>>(knownPids.size)
+        val vanished = ArrayList<Int>(0)
+        for (pid in knownPids) {
+            val content = runCatching { File(procDir, "$pid/stat").readText() }.getOrNull()
+            if (content == null) vanished.add(pid) else incremental.add(pid to content)
+        }
+        // A dead pid must not be re-probed until the next full sweep re-admits
+        // it; keeping it would reintroduce one failed open per tick per exit.
+        knownPids.removeAll(vanished.toSet())
+        return incremental
+    }
+
     companion object {
         private const val MIN_INTERVAL_MS = 50L
+
+        /**
+         * LINEXA-PERF-001: how often the sampler pays for a full `/proc`
+         * enumeration. Between sweeps it re-reads only the pids that were
+         * readable last time (see [knownPids]).
+         */
+        internal const val FULL_SCAN_INTERVAL_MS = 10_000L
         private const val LOAD_TAU_1M_S = 60.0
         private const val LOAD_TAU_5M_S = 300.0
         private const val LOAD_TAU_15M_S = 900.0

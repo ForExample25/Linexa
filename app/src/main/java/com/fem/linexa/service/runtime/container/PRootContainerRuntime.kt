@@ -2,7 +2,14 @@ package com.fem.linexa.service.runtime.container
 
 import com.fem.linexa.core.logging.DebugCapture
 import com.fem.linexa.core.logging.Logger
-import com.fem.linexa.core.filesystem.processHostPid
+import com.fem.linexa.core.filesystem.ProcessIdentity
+import com.fem.linexa.core.filesystem.ProcessSignal
+import com.fem.linexa.core.filesystem.ProcessSignalSender
+import com.fem.linexa.core.filesystem.ProcessTreeTerminator
+import com.fem.linexa.core.filesystem.captureProcessIdentity
+import com.fem.linexa.core.perf.PerfCounters
+import com.fem.linexa.core.perf.PerfTrace
+import com.fem.linexa.core.perf.StartupEvent
 import android.system.Os
 import com.fem.linexa.data.WorkspaceContent
 import com.fem.linexa.data.resolveFeatureToggles
@@ -33,10 +40,14 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.io.IOException
 import java.util.UUID
@@ -128,6 +139,17 @@ class PRootContainerRuntime @Inject constructor(
      * so the Shortcuts tab and this runtime agree on what a package operation is.
      */
     private val packageOpCoordinator: com.fem.linexa.domain.packagemanager.PackageOperationCoordinator,
+    /**
+     * P0-1 (2026-11-23 performance remediation): the process-scoped
+     * convergence stamp for the idempotent guest-repair battery. The
+     * interactive session path keeps its own [repairConverged] (RN-003,
+     * live-PTY gated), while this registry lets one-shot `exec` — the File
+     * Manager, Package Manager, feature-provisioner and installer-verification
+     * path — stop redoing work that has already succeeded for the same
+     * rootfs. Defaulted so test harnesses that do not care about the stamp
+     * keep their existing constructor calls.
+     */
+    private val guestConvergence: GuestConvergenceRegistry = GuestConvergenceRegistry(),
 ) : ContainerRuntime {
 
     // Transformation spec §7/§8: concurrent maps so cross-thread readers
@@ -137,6 +159,31 @@ class PRootContainerRuntime @Inject constructor(
     // race-free.
     private val sessions = ConcurrentHashMap<TerminalKey, PtySession>()
     private val sessionsLock = Mutex()
+
+    /**
+     * RN-001: serialization is PER WORKSPACE, not process-wide. The pre-launch
+     * pipeline (bootstrap, guest repair, dpkg preflight, first boot, PTY
+     * creation) can take tens of seconds; a single [sessionsLock] around it made
+     * every other workspace's open/close wait for the slowest one. A terminal
+     * open/close of the same workspace still needs ordering (replace-on-open,
+     * tombstoned close-during-start), so each workspace owns one mutex. The
+     * map itself is concurrent and only mutated inside that workspace's lock,
+     * so cross-workspace map operations stay race-free without a global lock.
+     */
+    private val workspaceRuntimeLocks = ConcurrentHashMap<String, Mutex>()
+
+    private fun workspaceRuntimeLock(workspaceId: String): Mutex =
+        workspaceRuntimeLocks.computeIfAbsent(workspaceId) { Mutex() }
+
+    /**
+     * RN-003: workspaceId → rootfs path for which the full guest repair pass
+     * has already succeeded in THIS process. A second terminal of the same
+     * live workspace session does not need to repeat the idempotent host-side
+     * repairs; the first terminal of every workspace session still runs them
+     * (self-heal for imported/old rootfs images). Removed when the last
+     * terminal closes, so the next session re-converges.
+     */
+    private val repairConverged = ConcurrentHashMap<String, String>()
 
     /** §1.98: one-shot latch so the full bootstrap forensics dump runs only on
      * the first terminal open of the process, not on every "New terminal". */
@@ -149,10 +196,75 @@ class PRootContainerRuntime @Inject constructor(
      * on [closeWorkspaceSessions] so a fresh session re-captures. */
     private val execForensicsDone = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
 
+    /**
+     * LINEXA-PERF-009: one-shot exec signatures whose full argv has already
+     * been dumped this process. A repeated command (a probe re-run, a feature
+     * reconcile, a retry) logs a single summary line instead of the whole
+     * block. Bounded: a guest that execs unbounded distinct commands must not
+     * grow this map forever.
+     */
+    private val loggedLaunchSignatures = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /** LINEXA-PERF-009: the launcher env is identical per process — dump once. */
+    private val launchEnvDumped = java.util.concurrent.atomic.AtomicBoolean(false)
+
     // §1.83: named guest daemons (Xvnc now, sshd later), keyed by (workspace, name).
     // ConcurrentHashMap for the same §7/§8 cross-thread read guarantee as [sessions].
     private val daemons = ConcurrentHashMap<Pair<String, String>, ManagedDaemon>()
     private val daemonsLock = Mutex()
+
+    // ── Phase 0 (2026-11-15): component-level process ownership ───────────
+    //
+    // Before this model, a daemon stop or an exec timeout called
+    // killRootfsProcesses(), which signalled every own-UID process whose
+    // cmdline referenced the workspace rootfs. That identifies a WORKSPACE,
+    // not a COMPONENT: a terminal's bash/apt/vim was killed by an unrelated
+    // daemon stop, and the dead-daemon branch had no exclusions at all.
+    //
+    // Every launch now records its host identity (pid + start time + process
+    // group) and termination is scoped to that launch's process tree:
+    // snapshot descendants BEFORE killing the host (PRoot tracees are its
+    // children; after the host dies they reparent to init), signal by
+    // identity (PID reuse is rejected), and verify the tree is gone.
+    // The workspace-wide sweep is now used only where a whole workspace is
+    // being stopped or recovered, never by a component operation.
+    private val processTerminator: ProcessTreeTerminator by lazy {
+        ProcessTreeTerminator(
+            expectedUid = runCatching { android.os.Process.myUid() }.getOrNull(),
+            sender = ProcessSignalSender { target, signal ->
+                try {
+                    Os.kill(
+                        target,
+                        if (signal == ProcessSignal.TERM) android.system.OsConstants.SIGTERM
+                        else android.system.OsConstants.SIGKILL
+                    )
+                    true
+                } catch (e: Exception) {
+                    // ESRCH is normal after a race; let the poll decide.
+                    Logger.w(TAG, "containment signal $signal to $target failed: ${e.message}")
+                    false
+                }
+            },
+            selfPid = runCatching { android.os.Process.myPid() }.getOrNull()
+        )
+    }
+
+    /**
+     * TEST-ONLY seam: JVM tests cannot call `android.system.Os.kill`, so they
+     * inject a terminator whose sender records signals or shells out to the
+     * host `kill`. Production never assigns it.
+     */
+    internal var processTerminatorForTest: ProcessTreeTerminator? = null
+
+    private fun terminator(): ProcessTreeTerminator = processTerminatorForTest ?: processTerminator
+
+    /** Captures a launch identity for later component-scoped termination. */
+    private fun captureIdentity(process: Process): ProcessIdentity? =
+        captureProcessIdentity(process).also { identity ->
+            if (identity == null) {
+                Logger.w(TAG, "containment: could not capture /proc identity for a launch — guest tree will not be addressable")
+            }
+        }
 
     // 2026-11-13: the guest `sudo` bridge. One per workspace, started when
     // the first terminal opens and stopped when the workspace's last terminal
@@ -235,8 +347,8 @@ class PRootContainerRuntime @Inject constructor(
     // snapshots, hostinfo helper, host /proc overlays, group-db
     // reconciliation, dpkg-health check) is read-modify-write state INSIDE
     // the workspace's rootfs. Multiple entry points mutate it concurrently
-    // in practice: openTerminal (serialized by [sessionsLock] against other
-    // opens, but not against execs), one-shot execs (Package Manager UI,
+    // in practice: openTerminal (serialized by the workspace's runtime lock
+    // against other opens of the same workspace, but not against execs), one-shot execs (Package Manager UI,
     // feature provisioners, desktop presets) and daemon starts (Xvnc/sshd)
     // can all run at the same moment for the SAME workspace. The individual
     // ensure* repairs are idempotent but not interleaving-safe (temp-file
@@ -365,7 +477,18 @@ class PRootContainerRuntime @Inject constructor(
             } catch (_: Exception) {
                 // Session teardown raced us; the slot is released below either way.
             } finally {
-                liveSessions[session.workspaceId]?.decrementAndGet()
+                val remaining = liveSessions[session.workspaceId]?.decrementAndGet() ?: 0
+                // P0-1: a natural exit ends the interactive session just like
+                // an explicit terminal close, and that session may have
+                // mutated guest state (dpkg/apt, package installs, doctored
+                // files). Invalidate the one-shot convergence stamp with the
+                // last session so the next exec runs the full repair battery
+                // again — including F-6 stale-lock recovery, which must
+                // return once every guest process has ended. Keeping the
+                // stamp here made the lock recovery unreachable.
+                if (remaining <= 0) {
+                    guestConvergence.invalidate(session.workspaceId)
+                }
             }
         }
     }
@@ -380,7 +503,7 @@ class PRootContainerRuntime @Inject constructor(
      * a large string). That dump is a *diagnostic*, not a launch gate — the
      * launch gate is binary-access validation inside setup() itself. Re-running
      * the full dump on EVERY terminal open added real, serialized cost to each
-     * "New terminal" (T1/T2/...) under [sessionsLock] with zero correctness
+     * "New terminal" (T1/T2/...) under the workspace runtime lock with zero correctness
      * benefit once the layout is known-good. So the dump is gated to the first
      * open of the process; subsequent opens still run setup()'s cheap self-heal
      * and validation, only the forensics string is skipped. Diagnostics remain
@@ -405,10 +528,18 @@ class PRootContainerRuntime @Inject constructor(
      * `forceSetup()` instead; this one has not, so `setup()` is correct here.
      */
     private fun ensureBootstrap() {
-        bootstrapManager.setup()
-        if (DebugCapture.isEnabled() && bootstrapDiagnosticsDumped.compareAndSet(false, true)) {
-            // §1.40: log full state once per process for device debugging.
-            Logger.d("ContainerRuntime", bootstrapManager.diagnoseAll())
+        // Phase M0-A: same-thread synchronous section (setup() may hop to IO
+        // inside, but this entry point does not suspend while the section is
+        // open). Closed in finally.
+        val traceSection = PerfTrace.beginSync("Linexa:bootstrap")
+        try {
+            bootstrapManager.setup()
+            if (DebugCapture.isEnabled() && bootstrapDiagnosticsDumped.compareAndSet(false, true)) {
+                // §1.40: log full state once per process for device debugging.
+                Logger.d("ContainerRuntime", bootstrapManager.diagnoseAll())
+            }
+        } finally {
+            PerfTrace.endSync(traceSection)
         }
     }
 
@@ -534,74 +665,116 @@ class PRootContainerRuntime @Inject constructor(
     private suspend fun runDeclaredFirstBootIfNeeded(
         workspaceId: String,
         rootfsPath: String,
+        terminalId: String,
         metadata: RootFsMetadata?
     ) {
-        val init = metadata?.init ?: return
-        val commands = init.postInstall + init.firstBoot
-        if (commands.isEmpty()) return
-        val rootfs = File(rootfsPath)
-        val markerDir = File(rootfs, FIRST_BOOT_MARKER_DIR)
-        val marker = File(markerDir, FIRST_BOOT_MARKER_FILE)
-        if (marker.isFile) return
-        val context = "distro=${metadata.distro.id} version=${metadata.distro.version ?: "?"} " +
-            "arch=${metadata.architecture.abi}"
-
+        // Phase M0-A: E4 is marked at every exit below, including each skip.
+        // The section is ASYNC because the declared commands suspend through
+        // execInternal; a synchronous Trace section would cross dispatchers.
+        val traceSection = PerfTrace.beginAsync("Linexa:firstBoot")
         try {
-            if (!markerDir.isDirectory && !markerDir.mkdirs()) {
-                Logger.w(TAG, "first boot: could not create ${markerDir.absolutePath} — skipping declared init ($context)")
-                return
-            }
-            val attempts = File(markerDir, FIRST_BOOT_ATTEMPTS_FILE)
-                .takeIf { it.isFile }?.readText()?.trim()?.toIntOrNull() ?: 0
-            if (attempts >= DeclaredInit.MAX_ATTEMPTS) {
-                marker.writeText("gave-up after $attempts attempts\n")
-                Logger.w(
-                    TAG,
-                    "first boot gave up for $workspaceId after $attempts failed attempts — " +
-                        "marker written; commands stay available as manual shortcuts ($context)"
+            fun markBoot(skipped: Boolean) {
+                PerfTrace.markPhase(
+                    workspaceId,
+                    terminalId,
+                    StartupEvent.E4,
+                    skipped = skipped
                 )
-                runtimeTrace.record(workspaceId, "declaredFirstBoot GAVE-UP after $attempts attempts")
-                return
             }
 
-            Logger.i(TAG, "first boot for $workspaceId: ${commands.size} declared command(s), attempt ${attempts + 1} ($context)")
-            runtimeTrace.record(workspaceId, "declaredFirstBoot ENTER commands=${commands.size} attempt=${attempts + 1}")
-            for ((index, command) in commands.withIndex()) {
-                runtimeTrace.record(workspaceId, "declaredFirstBoot[$index] ENTER: $command")
-                val result = execInternal(
-                    workspaceId,
-                    rootfsPath,
-                    command = command,
-                    onLine = null,
-                    timeoutSeconds = COMMAND_TIMEOUT_SECONDS
-                )
-                if (result.exitCode != 0) {
-                    val tail = result.output.trim().takeLast(500).ifBlank { "<no output>" }
-                    Logger.w(
-                        TAG,
-                        "declared init command $index FAILED for $workspaceId: cmd='$command' " +
-                            "exit=${result.exitCode} output=$tail ($context)"
-                    )
-                    runtimeTrace.record(
-                        workspaceId,
-                        "declaredFirstBoot[$index] FAILED exit=${result.exitCode} out=${tail.take(256)}"
-                    )
-                    File(markerDir, FIRST_BOOT_ATTEMPTS_FILE).writeText((attempts + 1).toString())
+            val init = metadata?.init
+            if (init == null) {
+                PerfCounters.firstBootSkipped()
+                markBoot(skipped = true)
+                return
+            }
+            val commands = init.postInstall + init.firstBoot
+            if (commands.isEmpty()) {
+                PerfCounters.firstBootSkipped()
+                markBoot(skipped = true)
+                return
+            }
+            val rootfs = File(rootfsPath)
+            val markerDir = File(rootfs, FIRST_BOOT_MARKER_DIR)
+            val marker = File(markerDir, FIRST_BOOT_MARKER_FILE)
+            if (marker.isFile) {
+                PerfCounters.firstBootSkipped()
+                markBoot(skipped = true)
+                return
+            }
+            val context = "distro=${metadata.distro.id} version=${metadata.distro.version ?: "?"} " +
+                "arch=${metadata.architecture.abi}"
+
+            try {
+                if (!markerDir.isDirectory && !markerDir.mkdirs()) {
+                    Logger.w(TAG, "first boot: could not create ${markerDir.absolutePath} — skipping declared init ($context)")
+                    PerfCounters.firstBootSkipped()
+                    markBoot(skipped = true)
                     return
                 }
-                Logger.i(TAG, "declared init command $index ok for $workspaceId ($context)")
-                runtimeTrace.record(workspaceId, "declaredFirstBoot[$index] OK")
+                val attempts = File(markerDir, FIRST_BOOT_ATTEMPTS_FILE)
+                    .takeIf { it.isFile }?.readText()?.trim()?.toIntOrNull() ?: 0
+                if (attempts >= DeclaredInit.MAX_ATTEMPTS) {
+                    marker.writeText("gave-up after $attempts attempts\n")
+                    Logger.w(
+                        TAG,
+                        "first boot gave up for $workspaceId after $attempts failed attempts — " +
+                            "marker written; commands stay available as manual shortcuts ($context)"
+                    )
+                    runtimeTrace.record(workspaceId, "declaredFirstBoot GAVE-UP after $attempts attempts")
+                    PerfCounters.firstBootSkipped()
+                    markBoot(skipped = true)
+                    return
+                }
+
+                Logger.i(TAG, "first boot for $workspaceId: ${commands.size} declared command(s), attempt ${attempts + 1} ($context)")
+                runtimeTrace.record(workspaceId, "declaredFirstBoot ENTER commands=${commands.size} attempt=${attempts + 1}")
+                PerfCounters.firstBootInvoked()
+                for ((index, command) in commands.withIndex()) {
+                    runtimeTrace.record(workspaceId, "declaredFirstBoot[$index] ENTER: $command")
+                    PerfCounters.firstBootCommand()
+                    val result = execInternal(
+                        workspaceId,
+                        rootfsPath,
+                        command = command,
+                        onLine = null,
+                        timeoutSeconds = COMMAND_TIMEOUT_SECONDS
+                    )
+                    if (result.exitCode != 0) {
+                        val tail = result.output.trim().takeLast(500).ifBlank { "<no output>" }
+                        Logger.w(
+                            TAG,
+                            "declared init command $index FAILED for $workspaceId: cmd='$command' " +
+                                "exit=${result.exitCode} output=$tail ($context)"
+                        )
+                        runtimeTrace.record(
+                            workspaceId,
+                            "declaredFirstBoot[$index] FAILED exit=${result.exitCode} out=${tail.take(256)}"
+                        )
+                        File(markerDir, FIRST_BOOT_ATTEMPTS_FILE).writeText((attempts + 1).toString())
+                        // The phase ran; a non-zero exit is still "done", not
+                        // skipped — the marker/attempt discipline decides retry.
+                        markBoot(skipped = false)
+                        return
+                    }
+                    Logger.i(TAG, "declared init command $index ok for $workspaceId ($context)")
+                    runtimeTrace.record(workspaceId, "declaredFirstBoot[$index] OK")
+                }
+                marker.writeText("ok at ${java.time.Instant.now()}\n")
+                File(markerDir, FIRST_BOOT_ATTEMPTS_FILE).delete()
+                Logger.i(TAG, "first boot completed for $workspaceId ($context)")
+                runtimeTrace.record(workspaceId, "declaredFirstBoot COMPLETE")
+                markBoot(skipped = false)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Fail-open: never block the terminal over declared init.
+                Logger.e(TAG, "first boot threw for $workspaceId — continuing ($context): ${e.message}", e)
+                runtimeTrace.record(workspaceId, "declaredFirstBoot THREW ${e.message}")
+                markBoot(skipped = false)
             }
-            marker.writeText("ok at ${java.time.Instant.now()}\n")
-            File(markerDir, FIRST_BOOT_ATTEMPTS_FILE).delete()
-            Logger.i(TAG, "first boot completed for $workspaceId ($context)")
-            runtimeTrace.record(workspaceId, "declaredFirstBoot COMPLETE")
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            // Fail-open: never block the terminal over declared init.
-            Logger.e(TAG, "first boot threw for $workspaceId — continuing ($context): ${e.message}", e)
-            runtimeTrace.record(workspaceId, "declaredFirstBoot THREW ${e.message}")
+        } finally {
+            PerfTrace.endAsync("Linexa:firstBoot", traceSection)
         }
     }
 
@@ -684,7 +857,7 @@ class PRootContainerRuntime @Inject constructor(
      * Must run inside the IO contexts these sites already own: it is file I/O
      * plus one provider pull.
      */
-    private suspend fun refreshHostProcOverlays(rootfs: File, workspaceId: String, strict: Boolean) {
+    private suspend fun refreshHostProcOverlays(rootfs: File, workspaceId: String, strict: Boolean): String? {
         runtimeTrace.record(workspaceId, "hostProcOverlays ENTER")
         try {
             val failure = hostInfoBridge.refreshProcOverlays(rootfs, workspaceId)
@@ -693,23 +866,23 @@ class PRootContainerRuntime @Inject constructor(
                 Logger.w(TAG, "host /proc overlays degraded to baseline for $workspaceId: $failure")
             }
             runtimeTrace.record(workspaceId, "hostProcOverlays EXIT ok=${failure == null}")
+            return failure
         } catch (e: IllegalStateException) {
             throw e
         } catch (t: Throwable) {
             if (strict) throw t
             Logger.w(TAG, "host /proc overlay refresh threw for $workspaceId — continuing with baseline: ${t.message}")
             runtimeTrace.record(workspaceId, "hostProcOverlays THREW ${t.message}")
+            return t.message ?: t::class.java.simpleName
         }
     }
 
     /**
-     * §1.73: resolves the launch shell for [rootfsPath] after applying the
-     * workspace's `linexa.launch.shell` override. The override is an
-     * absolute guest path used verbatim (single argv token, never
-     * shell-interpreted); without one, the default [resolveShellPath]
+     * §1.73 / RootFS finding 018: resolves the launch shell for [rootfsPath]
+     * after applying the workspace's `linexa.launch.shell` override. The
+     * override is an absolute guest path used verbatim (single argv token,
+     * never shell-interpreted); without one, the default [resolveShellPath]
      * fallback (`/bin/bash` → `/usr/bin/bash` → `/bin/sh`) is preserved.
-     * Logs loudly so an obvious "no such shell" mistake is visible in
-     * diagnostics rather than a silent exec failure.
      *
      * §1.118 inserts one step in the middle: the rootfs's declared
      * `linexa.environment.shell`. Precedence is
@@ -718,33 +891,55 @@ class PRootContainerRuntime @Inject constructor(
      * of launch behaviour* (§1.73's whole purpose), while
      * `environment.shell` states what the image's login shell **is**. A
      * statement of fact must not beat an explicit override, but it must beat
-     * a guess. The declared path is still verified to exist in the rootfs
-     * before it is used: a declaration that is wrong about its own image
-     * would otherwise turn a working workspace into a session that can't
-     * exec, and the probe answer is right there.
+     * a guess.
+     *
+     * RootFS finding 018: both declared paths are validated with
+     * [GuestShellValidator] before use — existing regular file, executable,
+     * and (for scripts/ELF) a resolvable interpreter. `launch.shell` used to
+     * be returned unchecked, so a typo or a directory made every terminal
+     * fail with exit 127. A rejected value is logged with the concrete reason
+     * and resolution continues fail-open; the validator also surfaces the
+     * fallback through [runtimeTrace] for diagnostics. UI health wiring is
+     * part of the terminal-recovery work.
      */
     private fun resolveLaunchShell(rootfsPath: String, config: WorkspaceConfig?, workspaceId: String): String {
+        val rootfs = File(rootfsPath)
         val override = config?.launch?.shell
         if (override != null) {
-            Logger.i("ContainerRuntime", "config.yaml launch.shell override for $workspaceId: $override (replaces resolveShellPath default)")
-            return override
+            val rejection = GuestShellValidator.validate(rootfs, override)
+            if (rejection == null) {
+                Logger.i("ContainerRuntime", "config.yaml launch.shell override for $workspaceId: $override (replaces resolveShellPath default)")
+                runtimeTrace.record(workspaceId, "launchShell override accepted: $override")
+                return override
+            }
+            Logger.w(
+                "ContainerRuntime",
+                "config.yaml launch.shell '$override' rejected for $workspaceId: $rejection — " +
+                    "falling back to environment.shell/probe"
+            )
+            runtimeTrace.record(workspaceId, "launchShell override rejected: $override ($rejection)")
         }
         val declared = workspaceRootFsMetadata.of(workspaceId)?.environment?.shell
         if (declared != null) {
-            if (File(File(rootfsPath), declared.removePrefix("/")).exists()) {
+            val rejection = GuestShellValidator.validate(rootfs, declared)
+            if (rejection == null) {
                 Logger.i(
                     "ContainerRuntime",
                     "§1.118 using declared linexa.environment.shell for $workspaceId: $declared (skips the shell probe)"
                 )
+                runtimeTrace.record(workspaceId, "launchShell declared accepted: $declared")
                 return declared
             }
             Logger.w(
                 "ContainerRuntime",
-                "§1.118 declared linexa.environment.shell '$declared' does not exist in $workspaceId's rootfs — " +
+                "§1.118 declared linexa.environment.shell '$declared' rejected for $workspaceId: $rejection — " +
                     "falling back to the probe"
             )
+            runtimeTrace.record(workspaceId, "launchShell declared rejected: $declared ($rejection)")
         }
-        return resolveShellPath(rootfsPath)
+        val probed = resolveShellPath(rootfsPath)
+        runtimeTrace.record(workspaceId, "launchShell probe: $probed")
+        return probed
     }
 
     /**
@@ -769,14 +964,69 @@ class PRootContainerRuntime @Inject constructor(
         return "/bin/sh"
     }
 
+    /**
+     * Resolves the identity a terminal launches as from the guest's passwd
+     * database. This is launch work, not repair work: it must run for every
+     * terminal, including one that opens while the workspace's host-side
+     * repair pipeline is skipped as already converged (RN-003).
+     *
+     * @return identity, resolved HOME and resolved USER
+     */
+    private fun resolveLaunchIdentity(
+        rootfs: File,
+        guestEnv: GuestEnvironmentResolver.GuestEnvironment,
+        asRoot: Boolean
+    ): Triple<GuestIdentity, String, String> {
+        val identity = if (asRoot) {
+            // Root Shell is its OWN context: root's passwd record decides,
+            // never the declared normal-user home.
+            GuestIdentity.resolveNamedUser(rootfs, "root")
+                ?.takeIf { it.isRoot }
+                ?: GuestIdentity.root()
+        } else {
+            GuestIdentity.resolveNamedUser(rootfs, guestEnv.user)
+                ?: GuestIdentity.root(guestEnv.home)
+        }
+        // The passwd facts win only when the identity was really resolved.
+        // The fallback keeps the declared values, exactly as the launch path
+        // did before this was extracted.
+        val resolved = asRoot || !identity.isRoot
+        return Triple(
+            identity,
+            if (resolved) identity.home else guestEnv.home,
+            if (resolved) identity.name else guestEnv.user
+        )
+    }
+
+    /**
+     * Default interactive arguments for [shellPath].
+     *
+     * `--login` is a GNU long option. Bash, zsh and busybox ash accept it,
+     * but Debian/Ubuntu's dash does not: it prints `Illegal option --` and
+     * exits 2 before running anything. The shell probe deliberately falls
+     * back to `/bin/sh` when a rootfs has no bash, so the default must use
+     * the POSIX `-l` spelling for `sh`/`dash`. A user-declared shell keeps
+     * its historical `--login` unless it is one of those POSIX shells; an
+     * explicit `linexa.launch.shellArgs` still wins for every other shell.
+     */
+    internal fun defaultLoginArgs(shellPath: String): List<String> =
+        if (shellPath.substringAfterLast('/') in POSIX_SH_SHELLS) {
+            listOf("-l")
+        } else {
+            listOf("--login")
+        }
+
     override suspend fun openTerminal(
         workspaceId: String,
         rootfsPath: String,
         terminalId: String,
         asRoot: Boolean
-    ): PtySession = sessionsLock.withLock {
+    ): PtySession = workspaceRuntimeLock(workspaceId).withLock {
         val key = TerminalKey(workspaceId, terminalId)
         val t0 = System.currentTimeMillis()
+        // Phase M0-A: bind this open to the workspace-start trace (or start a
+        // terminal-open trace without E0 when this is an extra terminal).
+        PerfTrace.beginTerminalOpen(workspaceId, terminalId)
         Logger.i(TAG, "CHAIN: ENTER openTerminal workspaceId=$workspaceId terminalId=$terminalId rootfs=$rootfsPath")
         runtimeTrace.record(workspaceId, "PRootContainerRuntime.openTerminal ENTER terminalId=$terminalId")
         // §1.68: setup() runs the busybox --install + applet layer + 34-binary
@@ -787,6 +1037,7 @@ class PRootContainerRuntime @Inject constructor(
         runtimeTrace.record(workspaceId, "ensureBootstrap ENTER")
         withContext(Dispatchers.IO) { ensureBootstrap() }
         runtimeTrace.record(workspaceId, "ensureBootstrap EXIT")
+        PerfTrace.markPhase(workspaceId, terminalId, StartupEvent.E1)
         Logger.i(TAG, "CHAIN: ensureBootstrap done elapsed=${elapsed(t0)}")
         // §1.48/§1.97: replace any prior session for THIS (workspace, terminal)
         // key first (its scratch dir is released below), then create a fresh
@@ -832,8 +1083,8 @@ class PRootContainerRuntime @Inject constructor(
         // live guest activity could own the package database (LX-2).
         //
         // LX-2: the whole repair section is single-owner per workspace
-        // ([workspaceInitLock]) — concurrent opens (serialized here by
-        // [sessionsLock]) no longer race execs/daemons mutating the same
+        // ([workspaceInitLock]) — concurrent opens (serialized here by the
+        // workspace runtime lock) no longer race execs/daemons mutating the same
         // rootfs, and the dpkg-health consult below is atomic with the
         // registration it drives.
         //
@@ -867,14 +1118,48 @@ class PRootContainerRuntime @Inject constructor(
         // never disagree with `$HOME` and the terminal's `-w`.
         var resolvedGuestHome = guestEnv.home
         var resolvedGuestUser = guestEnv.user
-        val (tmp, dpkgReport, guestIdle) = withContext(Dispatchers.IO) {
+        var repairSkipped = false
+        // Phase M0-A: this block contains suspend calls, so it is an ASYNC
+        // trace section (a synchronous section would cross dispatcher hops).
+        val repairTrace = PerfTrace.beginAsync("Linexa:guestRepairs")
+        val (tmp, dpkgReport, guestIdle) = try {
+            withContext(Dispatchers.IO) {
             bootstrapManager.releaseProotTmpDir(prootTmpScope(workspaceId, terminalId))
 
             val rootfs = File(rootfsPath)
             check(rootfs.exists()) { "Rootfs not found at $rootfsPath" }
 
-            val (dpkgReport, guestIdle) = workspaceInitLock(workspaceId).withLock {
+            // RN-003: the host-side repair pipeline is once per workspace
+            // SESSION, not once per terminal. A later terminal in a workspace
+            // whose first terminal already converged the rootfs does not need
+            // to repeat the idempotent ensure*/snapshot passes; the first
+            // terminal of every session still runs them, so imported/old
+            // workspaces keep healing on their next open. The skip requires a
+            // LIVE pty of this workspace: if the first shell crashed or the
+            // last terminal closed (which removes the stamp), the pass runs
+            // again. Per-terminal work (tmp scope allocation, config/shell
+            // resolution, env) stays outside this block.
+            val repairAlreadyConverged = repairConverged[workspaceId] == rootfsPath &&
+                sessionsLock.withLock {
+                    sessions.values.any { it.workspaceId == workspaceId && it.isAlive }
+                }
+            val (dpkgReport, guestIdle) = if (repairAlreadyConverged) {
+                repairSkipped = true
+                PerfCounters.repairSkipped()
+                runtimeTrace.record(
+                    workspaceId,
+                    "guest repair pipeline SKIP (workspace session already converged for $rootfsPath)"
+                )
+                GuestRootfsInitializer.DpkgHealthReport(
+                    needsConfigure = false,
+                    freedLocks = 0,
+                    lowFreeSpace = false
+                ) to false
+            } else {
+                PerfCounters.repairPipelineInvoked()
+                workspaceInitLock(workspaceId).withLock {
                 runtimeTrace.record(workspaceId, "ensureGuestTmp ENTER")
+                PerfCounters.repairOperation()
                 guestRootfsInitializer.ensureGuestTmp(rootfs, workspaceId)?.let { message ->
                     throw IllegalStateException("Guest /tmp could not be prepared for $workspaceId: $message")
                 }
@@ -887,6 +1172,7 @@ class PRootContainerRuntime @Inject constructor(
                 // a failed chmod here means something is deeply wrong with the
                 // rootfs, and a session without working /tmp was already fatal.
                 runtimeTrace.record(workspaceId, "ensureGuestDevShm ENTER")
+                PerfCounters.repairOperation()
                 guestRootfsInitializer.ensureGuestDevShm(rootfs, workspaceId)?.let { message ->
                     throw IllegalStateException("Guest /dev/shm could not be prepared for $workspaceId: $message")
                 }
@@ -900,31 +1186,28 @@ class PRootContainerRuntime @Inject constructor(
                 // any package that writes a pidfile/socket to /run, so a
                 // failure to prepare aborts the session.
                 runtimeTrace.record(workspaceId, "ensureGuestRun ENTER")
+                PerfCounters.repairOperation()
                 guestRootfsInitializer.ensureGuestRun(rootfs, workspaceId)?.let { message ->
                     throw IllegalStateException("Guest /run could not be prepared for $workspaceId: $message")
                 }
                 runtimeTrace.record(workspaceId, "ensureGuestRun EXIT")
 
-                // R-6 (2026-08-26 runtime parity audit): static snapshots for
+                // R-6 (2026-08-26 runtime parity audit): the static
                 // /proc/stat, /proc/uptime, /proc/loadavg, /proc/version,
-                // /proc/vmstat. These are bound over the Android-restricted
-                // /proc paths by PRootLauncher's -b flags. The snapshots are
-                // idempotent and re-written on every launch — values stay
-                // "frozen" but at least non-EACCES, so top/btop/vmstat/uptime
-                // don't refuse to start. Fail-open: a missing /proc in the
-                // rootfs just skips the bind-overs (the launcher's
-                // procBindOvers helper handles the "no snapshot file" case).
-                runtimeTrace.record(workspaceId, "ensureProcSnapshots ENTER")
-                guestRootfsInitializer.ensureProcSnapshots(rootfs, workspaceId)?.let { message ->
-                    throw IllegalStateException("Guest /proc snapshots could not be prepared for $workspaceId: $message")
-                }
-                runtimeTrace.record(workspaceId, "ensureProcSnapshots EXIT")
+                // /proc/vmstat snapshots are NOT written here anymore. The
+                // strict host-overlay refresh below is the single owner of
+                // those five bind-over names (it used to overwrite the static
+                // files immediately), and the static set cannot help a rootfs
+                // whose /proc directory is missing — neither writer creates
+                // it. Fail-open exec/daemon paths keep the static set as
+                // their fallback when the host pull fails.
 
                 // 2026-08-27 expansion (Phase 15): the /usr/local/bin/
                 // linexa-hostinfo viewer. Idempotent byte-compare + explicit
                 // 0755 — installed once per content change, self-heals on roots
                 // imported before this step existed.
                 runtimeTrace.record(workspaceId, "ensureGuestHostInfo ENTER")
+                PerfCounters.repairOperation()
                 guestRootfsInitializer.ensureGuestHostInfo(rootfs, workspaceId)?.let { message ->
                     throw IllegalStateException("Guest hostinfo helper could not be prepared for $workspaceId: $message")
                 }
@@ -936,6 +1219,7 @@ class PRootContainerRuntime @Inject constructor(
                 // reports them). Strict like the baseline: a workspace that cannot
                 // get coherent /proc overlays is treated like one whose other
                 // pre-launch guarantees failed.
+                PerfCounters.repairOperation()
                 refreshHostProcOverlays(rootfs, workspaceId, strict = true)
 
                 // LX-1 (2026-08-29): guest supplementary-group reconciliation.
@@ -949,6 +1233,7 @@ class PRootContainerRuntime @Inject constructor(
                 // session, deterministically. Fail-open: a cosmetic group-name
                 // gap must never block a session.
                 runtimeTrace.record(workspaceId, "ensureGuestGroups ENTER")
+                PerfCounters.repairOperation()
                 guestRootfsInitializer.ensureGuestGroups(rootfs, workspaceId)?.let { message ->
                     Logger.w(TAG, "guest supplementary-group reconciliation failed for $workspaceId — continuing: $message")
                     runtimeTrace.record(workspaceId, "ensureGuestGroups FAILED $message")
@@ -963,6 +1248,7 @@ class PRootContainerRuntime @Inject constructor(
                 // --change-id with THIS identity, so `id`/`whoami`/the bash
                 // prompt are genuinely the user's, not a prompt-string edit.
                 runtimeTrace.record(workspaceId, "ensureGuestUser ENTER user=${guestEnv.user}")
+                PerfCounters.repairOperation()
                 // The account is ensured regardless of which identity launches
                 // (an existing workspace must always have its normal user);
                 // only the LAUNCH identity follows [asRoot].
@@ -972,26 +1258,10 @@ class PRootContainerRuntime @Inject constructor(
                     preferredUser = guestEnv.user,
                     preferredHome = guestEnv.home
                 )
-                if (asRoot) {
-                    // Root Shell is its OWN context. It must keep `HOME=/root`
-                    // and `-w /root` even when the image declares a normal
-                    // `linexa` user — the root account is never redirected into
-                    // the normal user's home. Resolve root's own passwd record
-                    // so a distribution that chose another root home still
-                    // stays self-consistent; `/root` is the fallback.
-                    guestIdentity = GuestIdentity.resolveNamedUser(rootfs, "root")
-                        ?.takeIf { it.isRoot }
-                        ?: GuestIdentity.root()
-                    resolvedGuestHome = guestIdentity.home
-                    resolvedGuestUser = guestIdentity.name
-                } else {
-                    guestIdentity = GuestIdentity.resolveNamedUser(rootfs, guestEnv.user)
-                        ?: GuestIdentity.root(guestEnv.home)
-                    if (!guestIdentity.isRoot) {
-                        resolvedGuestHome = guestIdentity.home
-                        resolvedGuestUser = guestIdentity.name
-                    }
-                }
+                val launchIdentity = resolveLaunchIdentity(rootfs, guestEnv, asRoot)
+                guestIdentity = launchIdentity.first
+                resolvedGuestHome = launchIdentity.second
+                resolvedGuestUser = launchIdentity.third
                 runtimeTrace.record(
                     workspaceId,
                     "ensureGuestUser EXIT user=${guestIdentity.name} uid=${guestIdentity.uid} " +
@@ -1012,6 +1282,7 @@ class PRootContainerRuntime @Inject constructor(
                 // file, never overwritten, fail-open — see
                 // GuestRootfsInitializer.ensureGuestTerminalColors.
                 runtimeTrace.record(workspaceId, "ensureGuestTerminalColors ENTER")
+                PerfCounters.repairOperation()
                 guestRootfsInitializer.ensureGuestTerminalColors(
                     rootfs,
                     workspaceId,
@@ -1032,6 +1303,7 @@ class PRootContainerRuntime @Inject constructor(
                 // the workspace cannot be created the terminal still opens,
                 // in the home directory instead.
                 runtimeTrace.record(workspaceId, "ensureGuestWorkspace ENTER dir=$resolvedStartupDirectory")
+                PerfCounters.repairOperation()
                 guestRootfsInitializer.ensureGuestWorkspace(rootfs, workspaceId, resolvedStartupDirectory)?.let { message ->
                     Logger.w(
                         TAG,
@@ -1041,6 +1313,7 @@ class PRootContainerRuntime @Inject constructor(
                     runtimeTrace.record(workspaceId, "ensureGuestWorkspace FALLBACK to home: $message")
                     // The home itself is also ensured (same fail-open posture:
                     // a missing HOME breaks shell rc lookups and `cd ~`).
+                    PerfCounters.repairOperation()
                     guestRootfsInitializer.ensureGuestWorkspace(rootfs, workspaceId, resolvedGuestHome)?.let {
                         Logger.w(TAG, "guest HOME $resolvedGuestHome also missing for $workspaceId: $it")
                     }
@@ -1054,6 +1327,7 @@ class PRootContainerRuntime @Inject constructor(
                 // shells only; fail-open (the shell keeps the distribution's
                 // own config on failure).
                 runtimeTrace.record(workspaceId, "ensureGuestShellConfig ENTER")
+                PerfCounters.repairOperation()
                 val effectiveAliases = GuestRootfsInitializer.DEFAULT_SHELL_ALIASES +
                     (declaredMetadata?.shellConfig?.aliases.orEmpty())
                 guestRootfsInitializer.ensureGuestShellConfig(rootfs, workspaceId, effectiveAliases)?.let { message ->
@@ -1071,6 +1345,7 @@ class PRootContainerRuntime @Inject constructor(
                 // exec below (after the scope is allocated) rather than inside this
                 // block, so the scratch dir is already in place.
                 runtimeTrace.record(workspaceId, "ensureDpkgHealthy ENTER")
+                PerfCounters.repairOperation()
                 // F-6: lock cleanup is gated on the workspace having NO other live
                 // guest activity — opening T1 must not delete dpkg locks under a
                 // dpkg running in T0. LX-2: the consult + the caller's recovery
@@ -1092,8 +1367,60 @@ class PRootContainerRuntime @Inject constructor(
                 // then terminal B / Package Manager report. Host-side file
                 // op, idempotent, apt-only images; failure is logged there
                 // and non-fatal (guest keeps native fail-fast behavior).
+                PerfCounters.repairOperation()
                 guestRootfsInitializer.ensureAptLockWait(rootfs, workspaceId)
                 dpkgHealth to guestIdle
+                }.also { (health, _) ->
+                    repairConverged[workspaceId] = rootfsPath
+                    // P0-1: the same successful pass also satisfies the
+                    // one-shot exec battery, so the first File Manager /
+                    // Package Manager operation after opening a terminal does
+                    // not repeat it. A partial dpkg state does NOT mark: the
+                    // recovery may be deferred while activity is live, and
+                    // the next exec must still examine dpkg itself.
+                    if (!health.needsConfigure) {
+                        guestConvergence.markConverged(workspaceId, rootfs)
+                    }
+                }
+            }
+
+            // RN-003: skipping the repair pipeline must never skip launch identity.
+            // The account's passwd facts are per-terminal launch inputs, not a
+            // repair; without this resolution a second terminal opened while the
+            // first is live inherited the placeholder `GuestIdentity.root()` and
+            // launched with `-0` (a root-owned shell in the user's home). This
+            // runs inside the IO context because it reads the guest's passwd.
+            if (repairSkipped) {
+                val launchIdentity = resolveLaunchIdentity(rootfs, guestEnv, asRoot)
+                guestIdentity = launchIdentity.first
+                resolvedGuestHome = launchIdentity.second
+                resolvedGuestUser = launchIdentity.third
+                resolvedStartupDirectory = resolvedGuestHome
+                runtimeTrace.record(
+                    workspaceId,
+                    "launchIdentity (repair skipped): user=$resolvedGuestUser " +
+                        "uid=${guestIdentity.uid} home=$resolvedGuestHome root=${guestIdentity.isRoot}"
+                )
+                // The per-home pieces of the repair pass are still per-terminal:
+                // a Root Shell opened after a normal terminal must get its own
+                // colors file (the known pure-black first-screen case) and a
+                // real startup directory. Both are write-once and fail-open.
+                guestRootfsInitializer.ensureGuestTerminalColors(
+                    rootfs,
+                    workspaceId,
+                    guestHomeDir = resolvedGuestHome
+                )?.let { message ->
+                    Logger.w(TAG, "guest terminal colors provisioning failed for $workspaceId — continuing: $message")
+                    runtimeTrace.record(workspaceId, "ensureGuestTerminalColors FAILED $message")
+                }
+                guestRootfsInitializer.ensureGuestWorkspace(
+                    rootfs,
+                    workspaceId,
+                    resolvedStartupDirectory
+                )?.let { message ->
+                    Logger.w(TAG, "guest workspace '$resolvedStartupDirectory' could not be prepared for $workspaceId — continuing: $message")
+                    runtimeTrace.record(workspaceId, "ensureGuestWorkspace FAILED $message")
+                }
             }
 
             // §1.145: the tmp scope AND the health report (with its idleness
@@ -1103,7 +1430,13 @@ class PRootContainerRuntime @Inject constructor(
                 dpkgReport,
                 guestIdle
             )
+            }
+        } finally {
+            PerfTrace.endAsync("Linexa:guestRepairs", repairTrace)
         }
+        // Phase M0-A (E2): the repair phase completed — skipped when the
+        // workspace session was already converged.
+        PerfTrace.markPhase(workspaceId, terminalId, StartupEvent.E2, skipped = repairSkipped)
         try {
             // Phase 6b bug-fix — pre-flight `dpkg --configure -a` when the
             // health report said the guest's dpkg database was in a partial
@@ -1127,22 +1460,32 @@ class PRootContainerRuntime @Inject constructor(
             // recovery is DEFERRED to the next launch that observes an idle
             // workspace (dpkg's own fcntl locking keeps every intervening
             // user operation safe in the meantime).
+            var dpkgPhaseSkipped = true
             if (dpkgReport.needsConfigure && !guestIdle) {
+                PerfCounters.dpkgRecoveryDeferred()
                 val notice = "dpkg --configure -a preflight DEFERRED for $workspaceId (terminal $terminalId): " +
                     "live guest activity may own the dpkg database — recovery will run at the next idle launch (LX-2)"
                 Logger.i(TAG, notice)
                 runtimeTrace.record(workspaceId, "dpkg --configure -a preflight DEFERRED (live guest activity)")
             } else if (dpkgReport.needsConfigure) {
+                dpkgPhaseSkipped = false
+                PerfCounters.dpkgRecoveryInvoked()
                 runtimeTrace.record(workspaceId, "dpkg --configure -a preflight ENTER")
                 Logger.i(TAG, "CHAIN: preflight dpkg --configure -a for $workspaceId (terminal $terminalId)")
+                // Phase M0-A: suspend exec, so async trace section.
+                val dpkgTrace = PerfTrace.beginAsync("Linexa:dpkgRecovery")
                 try {
-                    val recovery = execInternal(
-                        workspaceId,
-                        rootfsPath,
-                        command = "dpkg --configure -a",
-                        onLine = null,
-                        timeoutSeconds = COMMAND_TIMEOUT_SECONDS
-                    )
+                    val recovery = try {
+                        execInternal(
+                            workspaceId,
+                            rootfsPath,
+                            command = "dpkg --configure -a",
+                            onLine = null,
+                            timeoutSeconds = COMMAND_TIMEOUT_SECONDS
+                        )
+                    } finally {
+                        PerfTrace.endAsync("Linexa:dpkgRecovery", dpkgTrace)
+                    }
                     if (recovery.exitCode != 0) {
                         Logger.w(
                             TAG,
@@ -1162,7 +1505,12 @@ class PRootContainerRuntime @Inject constructor(
                     runtimeTrace.record(workspaceId, "dpkg --configure -a preflight THREW ${e.message}")
                 }
                 runtimeTrace.record(workspaceId, "dpkg --configure -a preflight EXIT")
+            } else {
+                PerfCounters.dpkgRecoveryNotNeeded()
             }
+            // Phase M0-A (E3): completed, or skipped when no recovery was
+            // needed / it was deferred because the workspace was not idle.
+            PerfTrace.markPhase(workspaceId, terminalId, StartupEvent.E3, skipped = dpkgPhaseSkipped)
 
             // Issue #3 (2026-09-03): declared first-boot initialization.
             // `linexa.init.post_install` + `linexa.init.first_boot` run inside
@@ -1173,7 +1521,7 @@ class PRootContainerRuntime @Inject constructor(
             // convention (bundled profiles keep these sub-second); the
             // marker/attempt discipline is what keeps heavier declared
             // commands from becoming a launch-time hazard.
-            runDeclaredFirstBootIfNeeded(workspaceId, rootfsPath, declaredMetadata)
+            runDeclaredFirstBootIfNeeded(workspaceId, rootfsPath, terminalId, declaredMetadata)
 
             // §1.145 (terminal-freeze fix): argv/env construction is pure
             // computation, but everything it *reads* is blocking IO, and all of
@@ -1199,9 +1547,14 @@ class PRootContainerRuntime @Inject constructor(
                 // binds below — the same fail-open load the env merge uses.
                 val loadedConfig = loadWorkspaceConfig(workspaceId)
                 val resolvedShell = resolveLaunchShell(rootfsPath, loadedConfig, workspaceId)
-                // §1.73: non-empty `linexa.launch.shellArgs` replaces the default
-                // `--login`; empty keeps the existing default behavior.
-                val shellArgs = loadedConfig?.launch?.shellArgs?.takeIf { it.isNotEmpty() } ?: listOf("--login")
+                // §1.73: non-empty `linexa.launch.shellArgs` replaces the
+                // default; empty keeps the default behavior for the shell
+                // that was actually resolved. RN-01: `--login` is a GNU long
+                // option — Debian's dash rejects it and exits 2, so a bash-less
+                // rootfs whose probe falls back to `/bin/sh` must use POSIX
+                // `-l` instead.
+                val shellArgs = loadedConfig?.launch?.shellArgs?.takeIf { it.isNotEmpty() }
+                    ?: defaultLoginArgs(resolvedShell)
                 val extraBinds = loadedConfig?.launch?.bindMounts.orEmpty()
                 if (loadedConfig?.launch?.hasOverrides == true) {
                     Logger.i(
@@ -1317,8 +1670,9 @@ class PRootContainerRuntime @Inject constructor(
             // §1.99 (input-lag fix): this dump runs `probeGuestFilesystem` —
             // a FULL second blocking PRoot boot (`/bin/sh -c …`, up to
             // PROBE_TIMEOUT_SECONDS) plus ~20 on-caller-thread fingerprintPath
-            // syscall batches. openTerminal runs on Dispatchers.Main and holds
-            // sessionsLock for its whole body, so running the probe on EVERY
+            // syscall batches. openTerminal's caller-side work runs on
+            // Dispatchers.Main and the open is serialized by the workspace
+            // runtime lock, so running the probe on EVERY
             // terminal open blocked the main thread for seconds. the terminal module's
             // TerminalSession does ALL output emulation on the main thread
             // (mMainThreadHandler → emulator.append → notifyScreenUpdate), so a
@@ -1334,8 +1688,8 @@ class PRootContainerRuntime @Inject constructor(
             //
             // UI/UX Phase 7: also gated on DebugCapture. §1.99 bounded this to
             // once per workspace per process; that first run is still a full
-            // second blocking PRoot boot plus ~20 syscall batches, on the main
-            // thread, under sessionsLock — paid for a report a user with debug
+            // second blocking PRoot boot plus ~20 syscall batches, on IO,
+            // under the workspace runtime lock — paid for a report a user with debug
             // info off cannot read. The latch is only consumed when capture is
             // on, so enabling the toggle later still yields the forensics on the
             // next terminal open instead of finding the latch already spent.
@@ -1430,46 +1784,95 @@ class PRootContainerRuntime @Inject constructor(
                 .computeIfAbsent(workspaceId) { AtomicInteger() }
                 .also { it.incrementAndGet() }
             val session = try {
-                withContext(sessionCreationDispatcher) {
-                    ptySessionFactory.create(
-                        workspaceId = workspaceId,
-                        executable = spec.executable,
-                        args = spec.args,
-                        env = spec.env,
-                        // §1.75: HOST cwd for the forkpty child — deliberately NOT
-                        // spec.workingDirectory. That value is the GUEST cwd in argv
-                        // (`-w /root`, `HOME=/root`); the native forkpty chdirs on the
-                        // HOST before proot/tmux exec, and `/root` does not exist on
-                        // the Android host, so the guest path as host cwd killed the
-                        // child with chdir("/root") before anything ran. filesDir is a
-                        // guaranteed host directory; the guest still starts in /root
-                        // once proot is live. See PRootLauncher.hostPtyWorkingDirectory.
-                        workingDirectory = launcher.hostPtyWorkingDirectory,
-                        // 2026-08-29 (appearance fix): the guest's actual HOME
-                        // resolved to its HOST path (<rootfs><HOME>) — the terminal
-                        // layer reads its own `.termux/colors.properties` and
-                        // `.termux/font.ttf` from there. Only a String crosses this
-                        // seam; the container layer stays free of terminal imports.
-                        terminalConfigHome = spec.env["HOME"]?.let { home ->
-                            File(rootfsPath, home.removePrefix("/")).absolutePath
-                        }
-                    )
+                // CC-001: creation and registration are one ownership handoff.
+                // `withContext` onto a different dispatcher honours prompt
+                // cancellation: if the opener is cancelled while the pty child
+                // is being forked, the result is discarded and the catch below
+                // never sees the session — a live proot with four threads that
+                // no map references. Making the create hop NonCancellable keeps
+                // that window closed; the cancellation checkpoint after
+                // registration tears the pty down again if the caller is gone.
+                // Phase M0-A: async section (the create hop crosses dispatchers
+                // and may fork the child). Bound pty id is attached inside
+                // TermuxPtySession BEFORE this block runs.
+                val ptyTrace = PerfTrace.beginAsync("Linexa:ptyCreation")
+                try {
+                    withContext(sessionCreationDispatcher + NonCancellable) {
+                        ptySessionFactory.create(
+                            workspaceId = workspaceId,
+                            executable = spec.executable,
+                            args = spec.args,
+                            env = spec.env,
+                            // §1.75: HOST cwd for the forkpty child — deliberately NOT
+                            // spec.workingDirectory. That value is the GUEST cwd in argv
+                            // (`-w /root`, `HOME=/root`); the native forkpty chdirs on the
+                            // HOST before proot/tmux exec, and `/root` does not exist on
+                            // the Android host, so the guest path as host cwd killed the
+                            // child with chdir("/root") before anything ran. filesDir is a
+                            // guaranteed host directory; the guest still starts in /root
+                            // once proot is live. See PRootLauncher.hostPtyWorkingDirectory.
+                            workingDirectory = launcher.hostPtyWorkingDirectory,
+                            // 2026-08-29 (appearance fix): the guest's actual HOME
+                            // resolved to its HOST path (<rootfs><HOME>) — the terminal
+                            // layer reads its own `.termux/colors.properties` and
+                            // `.termux/font.ttf` from there. Only a String crosses this
+                            // seam; the container layer stays free of terminal imports.
+                            terminalConfigHome = spec.env["HOME"]?.let { home ->
+                                File(rootfsPath, home.removePrefix("/")).absolutePath
+                            }
+                        )
+                    }
+                } finally {
+                    PerfTrace.endAsync("Linexa:ptyCreation", ptyTrace)
                 }
             } catch (e: Exception) {
                 sessionCounter.decrementAndGet()
                 throw e
             }
+            // Phase M0-A (E5): the pty exists (the child was forked inside
+            // create). Only the first E5 per workspace record is retained.
+            PerfTrace.markPhase(workspaceId, terminalId, StartupEvent.E5, ptyId = session.id)
             runtimeTrace.record(workspaceId, "PtySessionFactory.create EXIT pid=${session.pid} isAlive=${session.isAlive}")
             Logger.i(TAG, "CHAIN: ptySessionFactory.create RETURNED pid=${session.pid} isAlive=${session.isAlive} elapsed=${elapsed(t0)}")
             sessions[key] = session
-            // 2026-11-13: the terminal's shell can now invoke the guest
-            // `sudo` helper. Start the mailbox only after the pty is live so
-            // the first prompt never races a request without a reader.
-            ensureRootExecBridge(workspaceId, rootfsPath)
-            // F-6: the pty child (a PRoot that could run dpkg at any moment)
-            // is live — attach the watcher that releases its pre-registered
-            // slot on natural exit or destroy().
-            watchSessionActivity(session)
+            // CC-001: the pty now exists. If the caller was cancelled during
+            // the (non-cancellable) create hop, it must not survive as an
+            // unowned session: unregister it, release the pre-registered
+            // dpkg-lock slot and destroy it before propagating cancellation.
+            // No watcher is attached yet, so this decrement is the only one.
+            if (!currentCoroutineContext().isActive) {
+                sessions.remove(key, session)
+                sessionCounter.decrementAndGet()
+                try {
+                    session.destroy()
+                } catch (_: Exception) {
+                    // Best effort: the session is already unreachable.
+                }
+                currentCoroutineContext().ensureActive()
+            }
+            // RN-004: everything after registration must either succeed or
+            // hand the pty back. A failure here used to leave a live proot in
+            // `sessions` while the caller was told the open failed and the
+            // scratch directory was already removed.
+            try {
+                // 2026-11-13: the terminal's shell can now invoke the guest
+                // `sudo` helper. Start the mailbox only after the pty is live so
+                // the first prompt never races a request without a reader.
+                ensureRootExecBridge(workspaceId, rootfsPath)
+                // F-6: the pty child (a PRoot that could run dpkg at any moment)
+                // is live — attach the watcher that releases its pre-registered
+                // slot on natural exit or destroy().
+                watchSessionActivity(session)
+            } catch (e: Exception) {
+                sessions.remove(key, session)
+                sessionCounter.decrementAndGet()
+                try {
+                    session.destroy()
+                } catch (_: Exception) {
+                    // Best effort: the session is already unregistered.
+                }
+                throw e
+            }
             runtimeTrace.record(workspaceId, "openTerminal EXIT (session registered) terminalId=$terminalId")
             Logger.i(
                 "ContainerRuntime",
@@ -1477,6 +1880,9 @@ class PRootContainerRuntime @Inject constructor(
             )
             session
         } catch (e: Exception) {
+            // Phase M0-A: a failed extra terminal ends its own trace; the
+            // workspace-start record (if any) is left for requestStart/stop.
+            PerfTrace.abandonTerminalOpen(workspaceId, "terminal-open-failed")
             runtimeTrace.record(workspaceId, "openTerminal FAILURE ${e::class.simpleName}: ${e.message}")
             Logger.i(TAG, "CHAIN: openTerminal FAILURE ${e::class.simpleName}: ${e.message} elapsed=${elapsed(t0)}")
             // Nothing owns the scratch scope yet — drop it so a failed open
@@ -1646,20 +2052,80 @@ class PRootContainerRuntime @Inject constructor(
 
     override suspend fun closeTerminal(workspaceId: String, terminalId: String) {
         val key = TerminalKey(workspaceId, terminalId)
-        var closed: PtySession? = null
-        val noRemaining = sessionsLock.withLock {
-            closed = sessions.remove(key)
-            sessions.keys.none { it.workspaceId == workspaceId }
+        workspaceRuntimeLock(workspaceId).withLock {
+            var closed: PtySession? = null
+            val noRemaining = sessionsLock.withLock {
+                closed = sessions.remove(key)
+                sessions.keys.none { it.workspaceId == workspaceId }
+            }
+            // SS-001: PRoot is a tracer and its tracees are ordinary host
+            // processes. SIGHUP/SIGTERM to the pty child are ignored by PRoot,
+            // and killing only that child (destroy()'s escalation) reparents
+            // the guest bash and every job it started to init. Snapshot and
+            // terminate the component tree BEFORE destroy() can kill the
+            // child — once it is gone the PPID chain no longer exists.
+            closed?.let { session ->
+                withContext(NonCancellable + Dispatchers.IO) { terminatePtyTree(session) }
+            }
+            closed?.destroy()
+            // SS-001: do not delete the terminal's scratch tree while its proot
+            // may still be exiting. destroy() sends SIGHUP first and escalates
+            // to SIGKILL after a bounded grace; wait for the exit signal here
+            // (off Main) and release only afterwards.
+            withContext(NonCancellable + Dispatchers.IO) {
+                val session = closed
+                if (session != null) {
+                    withTimeoutOrNull(TERMINAL_EXIT_GRACE_MS) { session.awaitExit() }
+                }
+                // 2026-11-13: no shell remains that could issue a `sudo`, so stop
+                // the mailbox and remove its marker. The manager may immediately
+                // open a replacement terminal (§1.106); that open starts it again.
+                if (noRemaining) stopRootExecBridge(workspaceId)
+                // RN-003: no live terminal remains in this workspace session,
+                // so the next open must run the full self-healing pass again.
+                if (noRemaining) {
+                    repairConverged.remove(workspaceId)
+                    // P0-1: the interactive session is over and may have
+                    // mutated guest state; the next exec re-converges.
+                    guestConvergence.invalidate(workspaceId)
+                }
+                // §1.48/§1.97: this terminal owned its own PROOT_TMP_DIR scope —
+                // release it now that this terminal's process is gone. Other
+                // terminals in the same workspace keep their scopes.
+                bootstrapManager.releaseProotTmpDir(prootTmpScope(workspaceId, terminalId))
+            }
         }
-        closed?.destroy()
-        // 2026-11-13: no shell remains that could issue a `sudo`, so stop the
-        // mailbox and remove its marker. The manager may immediately open a
-        // replacement terminal (§1.106); that open starts it again.
-        if (noRemaining) stopRootExecBridge(workspaceId)
-        // §1.48/§1.97: this terminal owned its own PROOT_TMP_DIR scope —
-        // release it now that this terminal's process is gone. Other
-        // terminals in the same workspace keep their scopes.
-        bootstrapManager.releaseProotTmpDir(prootTmpScope(workspaceId, terminalId))
+    }
+
+    /**
+     * SS-001: kills one terminal's whole PRoot component tree.
+     *
+     * The pty child is a session leader and PRoot's tracees (guest bash and
+     * its jobs) are ordinary host processes below it. [ProcessTreeTerminator]
+     * snapshots descendants and the leader's process group before signalling,
+     * so nothing can reparent away between the snapshot and the kill. The
+     * grace is short on purpose: PRoot and an interactive bash both ignore
+     * SIGTERM, so the bounded escalation is what actually reaps them.
+     */
+    private fun terminatePtyTree(session: PtySession) {
+        val identity = session.processIdentity
+        if (identity == null) {
+            Logger.w(
+                TAG,
+                "close: no host identity for ${session.id}; tree teardown falls back to the runtime sweep"
+            )
+            return
+        }
+        val report = processTerminator.terminate(
+            roots = listOf(identity),
+            graceMs = PTY_CLOSE_GRACE_MS,
+            hardLimitMs = PTY_CLOSE_HARD_LIMIT_MS
+        )
+        Logger.i(
+            TAG,
+            "close: pty tree pid=${identity.pid} targets=${report.targets} " +
+                "term=${report.signalled} kill=${report.escalated} survivors=${report.survivors}"
+        )
     }
 
     override suspend fun closeWorkspaceSessions(workspaceId: String) {
@@ -1667,19 +2133,29 @@ class PRootContainerRuntime @Inject constructor(
         // could send them are destroyed. In-flight privileged commands keep
         // their own lifetime (the bridge never cancels a claimed request).
         stopRootExecBridge(workspaceId)
-        val keys = sessionsLock.withLock {
-            sessions.keys.filter { it.workspaceId == workspaceId }
-        }
-        // Destroy every terminal's pty first (under the lock), then the
-        // workspace-scoped teardown. §1.58: destroying the pty only kills the
-        // tmux *client*; the detached tmux server (proot + guest shell)
-        // survives without this, so "stop" must explicitly tear the server
-        // down to actually stop the workspace.
-        keys.forEach { key ->
-            sessionsLock.withLock {
-                sessions.remove(key)
-            }?.destroy()
-            bootstrapManager.releaseProotTmpDir(prootTmpScope(key.workspaceId, key.terminalId))
+        workspaceRuntimeLock(workspaceId).withLock {
+            val liveKeys = sessionsLock.withLock {
+                sessions.keys.filter { it.workspaceId == workspaceId }
+            }
+            // Destroy every terminal's pty first, then the workspace-scoped
+            // teardown. §1.58: destroying the pty only kills the tmux *client*;
+            // the detached tmux server (proot + guest shell) survives without
+            // this, so "stop" must explicitly tear the server down to actually
+            // stop the workspace.
+            val closed = liveKeys.mapNotNull { key ->
+                sessionsLock.withLock { sessions.remove(key) }?.also { it.destroy() }
+            }
+            // SS-001: wait (bounded) for the ptys to actually exit before any
+            // scratch tree is released. Off Main and non-cancellable so a
+            // caller cancelled during teardown cannot leave half-deleted state.
+            withContext(NonCancellable + Dispatchers.IO) {
+                closed.forEach { session ->
+                    withTimeoutOrNull(TERMINAL_EXIT_GRACE_MS) { session.awaitExit() }
+                }
+                liveKeys.forEach { key ->
+                    bootstrapManager.releaseProotTmpDir(prootTmpScope(key.workspaceId, key.terminalId))
+                }
+            }
         }
         killTmuxServer(workspaceId)
         // §1.83: the workspace owns its guest daemons (Xvnc). Stop them when
@@ -1691,10 +2167,31 @@ class PRootContainerRuntime @Inject constructor(
         // connection dies first) so the server is never killed under a live
         // client. Idempotent — no-op when the feature never started.
         gpuSupervisor.stopFor(workspaceId)
+        // Phase 0 (2026-11-15): a FULL workspace stop is the only place where
+        // a workspace-wide sweep is legitimate. Every owned component has
+        // already been stopped above (terminals destroyed, tmux server killed,
+        // daemons tree-scoped terminated, GPU server stopped), so this only
+        // catches genuine leftovers of this rootfs — e.g. a guest process that
+        // outlived a SIGKILLed PRoot host. Component stops and exec timeouts
+        // never call this; they terminate their own recorded process tree.
+        withContext(Dispatchers.IO) {
+            val rootfs = fileManager.getRootfsPath(workspaceId).absolutePath
+            val swept = killRootfsProcesses(rootfs, sigterm = false)
+            if (swept > 0) {
+                Logger.i(TAG, "workspace teardown: swept $swept leftover process(es) of $workspaceId")
+            }
+        }
         // §1.99: the workspace session is over — reset the first-open forensics
         // latch so the NEXT session's first terminal re-captures the cold-start
         // dump (the diagnostic is for a fresh launch, not a reused workspace).
         execForensicsDone.remove(workspaceId)
+        // RN-003: the workspace session is over — the next open re-runs the
+        // full repair pass (imported/old rootfs self-heal is per session).
+        repairConverged.remove(workspaceId)
+        // P0-1: a full workspace stop also drops the one-shot exec
+        // convergence stamp — the stop is the point after which any guest
+        // mutation (package installs, deleted /tmp, ...) must be re-examined.
+        guestConvergence.invalidate(workspaceId)
     }
 
     /**
@@ -1814,6 +2311,21 @@ class PRootContainerRuntime @Inject constructor(
     override suspend fun exec(workspaceId: String, rootfsPath: String, command: String): CommandResult =
         execInternal(workspaceId, rootfsPath, command, onLine = null, timeoutSeconds = COMMAND_TIMEOUT_SECONDS)
 
+    override suspend fun execWithInput(
+        workspaceId: String,
+        rootfsPath: String,
+        command: String,
+        stdin: String
+    ): CommandResult =
+        execInternal(
+            workspaceId,
+            rootfsPath,
+            command,
+            onLine = null,
+            timeoutSeconds = COMMAND_TIMEOUT_SECONDS,
+            stdin = stdin
+        )
+
     override suspend fun execStreaming(
         workspaceId: String,
         rootfsPath: String,
@@ -1834,7 +2346,8 @@ class PRootContainerRuntime @Inject constructor(
         rootfsPath: String,
         command: String,
         onLine: ((String) -> Unit)?,
-        timeoutSeconds: Long = OPERATION_TIMEOUT_SECONDS
+        timeoutSeconds: Long = OPERATION_TIMEOUT_SECONDS,
+        stdin: String? = null
     ): CommandResult =
         withContext(Dispatchers.IO) {
             ensureBootstrap()
@@ -1845,96 +2358,161 @@ class PRootContainerRuntime @Inject constructor(
             // The section is bounded to repairs — the guest process launch
             // below happens OUTSIDE the init mutex.
             val (dpkgReport, guestIdle, execCounter) = workspaceInitLock(workspaceId).withLock {
-                // §1.80: same guest /tmp guarantee as openTerminal, so one-shot
-                // commands (package manager's apt, features, file ops) never hit
-                // "unable to mkstemp /tmp/...". Fail-open here: a one-shot exec
-                // should not be blocked by an exceptional chmod failure, but it
-                // must be logged loudly — the session path (openTerminal) is the
-                // strict gate that throws instead.
-                guestRootfsInitializer.ensureGuestTmp(File(rootfsPath), workspaceId)?.let { message ->
+                val rootfs = File(rootfsPath)
+                // P0-1: the repair battery is idempotent, but it was running
+                // on EVERY one-shot exec. The stamp records a fully successful
+                // pass for this exact rootfs tree; a package operation always
+                // invalidates it first, because the command about to run can
+                // mutate dpkg/apt state the next exec must re-examine.
+                val packageOperation = isPackageOperation(command)
+                if (packageOperation) guestConvergence.invalidate(workspaceId)
+                val alreadyConverged = !packageOperation &&
+                    guestConvergence.isConverged(workspaceId, rootfs)
+                var repairsSucceeded = true
+
+                // The cheap, lstat-gated liveness checks ALWAYS run: a stamp
+                // must never suppress a required re-creation of /tmp,
+                // /dev/shm or /run (a guest command or import can remove them
+                // without touching dpkg state, and the check itself is one
+                // no-follow stat in the healthy case).
+                guestRootfsInitializer.ensureGuestTmp(rootfs, workspaceId)?.let { message ->
+                    repairsSucceeded = false
                     Logger.w(TAG, "guest /tmp could not be prepared for $workspaceId — continuing exec: $message")
                 }
-                // F-5: same fail-open /dev/shm guarantee for one-shot execs
-                // (package-manager ops and feature provisioners are exactly the
-                // paths whose consumers need shm).
-                guestRootfsInitializer.ensureGuestDevShm(File(rootfsPath), workspaceId)?.let { message ->
+                guestRootfsInitializer.ensureGuestDevShm(rootfs, workspaceId)?.let { message ->
+                    repairsSucceeded = false
                     Logger.w(TAG, "guest /dev/shm could not be prepared for $workspaceId — continuing exec: $message")
                 }
-                // R-5: same fail-open /run guarantee for one-shot execs
-                // (package-manager init scripts, dbus, XDG_RUNTIME_DIR consumers).
-                guestRootfsInitializer.ensureGuestRun(File(rootfsPath), workspaceId)?.let { message ->
+                guestRootfsInitializer.ensureGuestRun(rootfs, workspaceId)?.let { message ->
+                    repairsSucceeded = false
                     Logger.w(TAG, "guest /run could not be prepared for $workspaceId — continuing exec: $message")
                 }
-                // R-6: same fail-open /proc bind-over snapshots for one-shot execs
-                // (vmstat, uptime, btop may be invoked as one-shot commands too).
-                guestRootfsInitializer.ensureProcSnapshots(File(rootfsPath), workspaceId)?.let { message ->
-                    Logger.w(TAG, "guest /proc snapshots could not be prepared for $workspaceId — continuing exec: $message")
-                }
-                // Host info layer: same goal, host-backed values. Fail-open here
-                // matches the exec path's overall posture.
-                refreshHostProcOverlays(File(rootfsPath), workspaceId, strict = false)
-                // LX-1: same guest supplementary-group reconciliation as
-                // openTerminal — one-shot execs (package-manager processes,
-                // feature installers) inherit the same live host group set and
-                // must resolve it too. Fail-open like the exec path itself.
-                guestRootfsInitializer.ensureGuestGroups(File(rootfsPath), workspaceId)?.let { message ->
-                    Logger.w(TAG, "guest supplementary-group reconciliation failed for $workspaceId — continuing exec: $message")
-                }
-                // Issue #1 (2026-09-03): same normal-user account guarantee as
-                // openTerminal — one-shot execs (file-manager operations in
-                // the user's home, first-boot provisioning) must find the
-                // account and home even before the first terminal opened.
-                // The exec itself stays root-emulated: it IS one of the
-                // privileged operations the normal user delegates to Linexa.
-                runCatching {
-                    val execMeta = workspaceRootFsMetadata.of(workspaceId)
-                    val execGuestEnv = GuestEnvironmentResolver.resolve(execMeta)
-                    guestRootfsInitializer.ensureGuestUser(
-                        File(rootfsPath),
+
+                var report = GuestRootfsInitializer.DpkgHealthReport(
+                    needsConfigure = false,
+                    freedLocks = 0,
+                    lowFreeSpace = false
+                )
+                var idle = false
+
+                if (alreadyConverged) {
+                    PerfCounters.repairSkipped()
+                    runtimeTrace.record(
                         workspaceId,
-                        preferredUser = execGuestEnv.user,
-                        preferredHome = execGuestEnv.home
+                        "exec guest repair pipeline SKIP (convergence stamp valid for $rootfsPath)"
                     )
-                }.onFailure { e ->
-                    Logger.w(TAG, "guest user ensure failed for $workspaceId exec — continuing: ${e.message}")
+                } else {
+                    // Host info layer is the SINGLE owner of the five
+                    // bind-over /proc names on the normal path — the static
+                    // R-6 snapshots used to be written first and immediately
+                    // overwritten by these same names. The static set remains
+                    // the fail-open fallback only when the host pull cannot
+                    // produce the files.
+                    val overlayFailure = refreshHostProcOverlays(rootfs, workspaceId, strict = false)
+                    val procDir = File(rootfs, "proc")
+                    val procDirUsable = procDir.isDirectory &&
+                        !runCatching { java.nio.file.Files.isSymbolicLink(procDir.toPath()) }.getOrDefault(true)
+                    if (overlayFailure != null || !procDirUsable) {
+                        guestRootfsInitializer.ensureProcSnapshots(rootfs, workspaceId)?.let { message ->
+                            repairsSucceeded = false
+                            Logger.w(
+                                TAG,
+                                "guest /proc snapshots could not be prepared for $workspaceId — continuing exec: $message"
+                            )
+                        }
+                    }
+                    // LX-1: same guest supplementary-group reconciliation as
+                    // openTerminal — one-shot execs (package-manager processes,
+                    // feature installers) inherit the same live host group set
+                    // and must resolve it too. Fail-open like the exec path itself.
+                    guestRootfsInitializer.ensureGuestGroups(rootfs, workspaceId)?.let { message ->
+                        repairsSucceeded = false
+                        Logger.w(TAG, "guest supplementary-group reconciliation failed for $workspaceId — continuing exec: $message")
+                    }
+                    // Issue #1 (2026-09-03): same normal-user account guarantee as
+                    // openTerminal — one-shot execs (file-manager operations in
+                    // the user's home, first-boot provisioning) must find the
+                    // account and home even before the first terminal opened.
+                    // The exec itself stays root-emulated: it IS one of the
+                    // privileged operations the normal user delegates to Linexa.
+                    runCatching {
+                        val execMeta = workspaceRootFsMetadata.of(workspaceId)
+                        val execGuestEnv = GuestEnvironmentResolver.resolve(execMeta)
+                        guestRootfsInitializer.ensureGuestUser(
+                            rootfs,
+                            workspaceId,
+                            preferredUser = execGuestEnv.user,
+                            preferredHome = execGuestEnv.home
+                        )
+                    }.onFailure { e ->
+                        repairsSucceeded = false
+                        Logger.w(TAG, "guest user ensure failed for $workspaceId exec — continuing: ${e.message}")
+                    }
+
+                    // Phase 6b bug-fix: same dpkg-health check as openTerminal, but
+                    // for one-shot execs (Package Manager UI's apt invocations, File
+                    // Manager ops, Feature toggles). When the guest's dpkg database is
+                    // in a partial state from a previously-killed transaction, prepend
+                    // `dpkg --configure -a &&` to the user's command so recovery
+                    // happens *before* the user's command runs — otherwise apt would
+                    // surface as the exact "Sub-process /usr/bin/dpkg returned an
+                    // error code (1)" the user reported, even when the cause was an
+                    // interrupted install on a previous launch. Lock cleanup is
+                    // host-side file ops only; the auto-configure is the guest-side
+                    // one-shot exec, which is what the user's command was going to be
+                    // anyway, so the overhead is one extra PRoot startup only when
+                    // recovery is needed.
+                    //
+                    // F-6/LX-2: the idleness consult and THIS exec's activity
+                    // registration are now ONE atomic section under [dpkgHealthLock]
+                    // (they were two, leaving a window where a second caller could
+                    // consult an empty registry and act on a stale "idle"). The
+                    // registration happens BEFORE the process can spawn and is
+                    // released when the process has exited — a concurrent caller can
+                    // never delete dpkg locks under OUR running dpkg, nor act on a
+                    // recovery decision that predates ours.
+                    runCatching {
+                        dpkgHealthLock.withLock {
+                            val idleNow = !hasLiveGuestActivity(workspaceId)
+                            idle = idleNow
+                            report = guestRootfsInitializer.ensureDpkgHealthy(
+                                rootfs,
+                                workspaceId,
+                                allowLockCleanup = idleNow
+                            )
+                        }
+                    }.onFailure { e ->
+                        repairsSucceeded = false
+                        Logger.w(TAG, "dpkg health check failed for $workspaceId exec — continuing: ${e.message}")
+                    }
+                    // LX-4 (2026-09-01): same queueing behavior for one-shot execs
+                    // as for sessions — Package-Manager-UI apt commands wait for
+                    // an apt running in a terminal instead of failing on the
+                    // native lock. Idempotent host-side file op; see
+                    // GuestRootfsInitializer.ensureAptLockWait.
+                    guestRootfsInitializer.ensureAptLockWait(rootfs, workspaceId)?.let { message ->
+                        repairsSucceeded = false
+                        Logger.w(TAG, "apt lock wait failed for $workspaceId exec — continuing: $message")
+                    }
+
+                    // Only a fully successful pass marks the stamp. A package
+                    // operation leaves NO stamp: the next exec must re-run the
+                    // dpkg/apt checks, because the current command may have
+                    // been interrupted or may have left a partial transaction.
+                    // A detected partial dpkg state does not mark either: the
+                    // command about to run is then prefixed with
+                    // `dpkg --configure -a` (or deferred under live activity),
+                    // so it is itself a package mutation and must be re-examined
+                    // by the next exec.
+                    if (repairsSucceeded && !packageOperation && !report.needsConfigure) {
+                        guestConvergence.markConverged(workspaceId, rootfs)
+                        runtimeTrace.record(
+                            workspaceId,
+                            "exec guest repair pipeline CONVERGED for $rootfsPath"
+                        )
+                    }
                 }
 
-                // Phase 6b bug-fix: same dpkg-health check as openTerminal, but
-                // for one-shot execs (Package Manager UI's apt invocations, File
-                // Manager ops, Feature toggles). When the guest's dpkg database is
-                // in a partial state from a previously-killed transaction, prepend
-                // `dpkg --configure -a &&` to the user's command so recovery
-                // happens *before* the user's command runs — otherwise apt would
-                // surface as the exact "Sub-process /usr/bin/dpkg returned an
-                // error code (1)" the user reported, even when the cause was an
-                // interrupted install on a previous launch. Lock cleanup is
-                // host-side file ops only; the auto-configure is the guest-side
-                // one-shot exec, which is what the user's command was going to be
-                // anyway, so the overhead is one extra PRoot startup only when
-                // recovery is needed.
-                //
-                // F-6/LX-2: the idleness consult and THIS exec's activity
-                // registration are now ONE atomic section under [dpkgHealthLock]
-                // (they were two, leaving a window where a second caller could
-                // consult an empty registry and act on a stale "idle"). The
-                // registration happens BEFORE the process can spawn and is
-                // released when the process has exited — a concurrent caller can
-                // never delete dpkg locks under OUR running dpkg, nor act on a
-                // recovery decision that predates ours.
-                val (report, idle) = dpkgHealthLock.withLock {
-                    val idle = !hasLiveGuestActivity(workspaceId)
-                    guestRootfsInitializer.ensureDpkgHealthy(
-                        File(rootfsPath),
-                        workspaceId,
-                        allowLockCleanup = idle
-                    ) to idle
-                }
-                // LX-4 (2026-09-01): same queueing behavior for one-shot execs
-                // as for sessions — Package-Manager-UI apt commands wait for
-                // an apt running in a terminal instead of failing on the
-                // native lock. Idempotent host-side file op; see
-                // GuestRootfsInitializer.ensureAptLockWait.
-                guestRootfsInitializer.ensureAptLockWait(File(rootfsPath), workspaceId)
                 val counter = inflightExecs.computeIfAbsent(workspaceId) { AtomicInteger() }
                 dpkgHealthLock.withLock { counter.incrementAndGet() }
                 Triple(report, idle, counter)
@@ -2028,10 +2606,10 @@ class PRootContainerRuntime @Inject constructor(
                 // locking remains the only authority for manual use.
                 val result = if (isPackageOperation(effectiveCommand)) {
                     packageOpCoordinator.runExclusive(workspaceId, effectiveCommand) {
-                        runGuestCommand(workspaceId, spec, timeoutSeconds, onLine)
+                        runGuestCommand(workspaceId, spec, timeoutSeconds, onLine, stdin)
                     }
                 } else {
-                    runGuestCommand(workspaceId, spec, timeoutSeconds, onLine)
+                    runGuestCommand(workspaceId, spec, timeoutSeconds, onLine, stdin)
                 }
                 if (result.exitCode == -1) {
                     CommandResult(exitCode = -1, output = result.output, error = "Command timed out after $timeoutSeconds seconds")
@@ -2061,9 +2639,10 @@ class PRootContainerRuntime @Inject constructor(
         workspaceId: String,
         spec: LaunchSpec,
         timeoutSeconds: Long,
-        onLine: ((String) -> Unit)?
+        onLine: ((String) -> Unit)?,
+        stdin: String? = null
     ): ProcessResult {
-        var result = runProcess(spec, timeoutSeconds = timeoutSeconds, onLine = onLine)
+        var result = runProcess(spec, timeoutSeconds = timeoutSeconds, onLine = onLine, stdin = stdin)
         // §1.50: detect the known seccomp/kernel-incompatibility
         // signature and retry once with PROOT_NO_SECCOMP=1. Only
         // fires on a genuine signature (verified against the shipped
@@ -2076,7 +2655,12 @@ class PRootContainerRuntime @Inject constructor(
                 "Seccomp/kernel-incompatibility detected in $workspaceId exec — retrying once with PROOT_NO_SECCOMP=1 (§1.50)"
             )
             BootstrapManager.needsNoSeccomp = true
-            result = runProcess(spec.copy(env = spec.env + BootstrapManager.NO_SECCOMP_ENV), timeoutSeconds = timeoutSeconds, onLine = onLine)
+            result = runProcess(
+                spec.copy(env = spec.env + BootstrapManager.NO_SECCOMP_ENV),
+                timeoutSeconds = timeoutSeconds,
+                onLine = onLine,
+                stdin = stdin
+            )
         }
         return result
     }
@@ -2157,11 +2741,10 @@ class PRootContainerRuntime @Inject constructor(
                 guestRootfsInitializer.ensureGuestRun(File(rootfsPath), workspaceId)?.let { message ->
                     Logger.w(TAG, "guest /run could not be prepared for $workspaceId daemon '$name' — continuing: $message")
                 }
-                // R-6: same fail-open /proc snapshots for daemons (many daemons
-                // read /proc/loadavg or /proc/stat at startup).
-                guestRootfsInitializer.ensureProcSnapshots(File(rootfsPath), workspaceId)?.let { message ->
-                    Logger.w(TAG, "guest /proc snapshots could not be prepared for $workspaceId daemon '$name' — continuing: $message")
-                }
+                // R-6: the five bind-over /proc names are owned by the host
+                // overlay refresh below; the static snapshots are written only
+                // when that layer cannot produce them (missing /proc dir or a
+                // failed pull).
                 // LX-1: guest daemons (Xvnc, sshd) inherit the same live host
                 // supplementary-group set as terminals and execs — reconcile the
                 // guest group db for them too. Fail-open like the daemon path.
@@ -2183,8 +2766,19 @@ class PRootContainerRuntime @Inject constructor(
                     preferredUser = daemonGuestEnv.user,
                     preferredHome = daemonGuestEnv.home
                 )
-                // Host info layer for daemons, same fail-open posture.
-                refreshHostProcOverlays(File(rootfsPath), workspaceId, strict = false)
+                // Host info layer for daemons, same fail-open posture. It is
+                // the single owner of the five bind-over /proc names; the
+                // static snapshot set covers only the fail-open fallback.
+                val daemonRootfs = File(rootfsPath)
+                val overlayFailure = refreshHostProcOverlays(daemonRootfs, workspaceId, strict = false)
+                val daemonProcDir = File(daemonRootfs, "proc")
+                val daemonProcDirUsable = daemonProcDir.isDirectory &&
+                    !runCatching { java.nio.file.Files.isSymbolicLink(daemonProcDir.toPath()) }.getOrDefault(true)
+                if (overlayFailure != null || !daemonProcDirUsable) {
+                    guestRootfsInitializer.ensureProcSnapshots(daemonRootfs, workspaceId)?.let { message ->
+                        Logger.w(TAG, "guest /proc snapshots could not be prepared for $workspaceId daemon '$name' — continuing: $message")
+                    }
+                }
             }
             val scope = "daemon-${UUID.randomUUID()}"
             val tmp = bootstrapManager.scopedProotTmpDir(scope)
@@ -2236,11 +2830,16 @@ class PRootContainerRuntime @Inject constructor(
                 if (DebugCapture.isEnabled()) logDaemonForensics(spec, name)
 
                 val process = launchDaemonProcess(spec, workspaceId, name)
-                // Pre-release audit fix (2026-09-02, finding RT-1): carry the
-                // rootfs path so the stop path can sweep the guest daemon
-                // tree (proot's SIGKILLed host cannot run --kill-on-exit —
-                // the guest daemon would survive holding its port).
-                val managed = ManagedDaemon(process = process, scope = scope, rootfsPath = rootfsPath)
+                // Phase 0: capture the host identity (pid + start ticks + group)
+                // BEFORE any stop path can see the daemon. Guest-tree
+                // termination is scoped to this identity; the old stop path
+                // swept the whole workspace by rootfs cmdline.
+                val managed = ManagedDaemon(
+                    process = process,
+                    scope = scope,
+                    rootfsPath = rootfsPath,
+                    identity = captureIdentity(process)
+                )
                 daemons[key] = managed
                 // §8 process supervision: observe this daemon's exit. An
                 // unexpected death degrades the workspace (health registry →
@@ -2274,18 +2873,7 @@ class PRootContainerRuntime @Inject constructor(
     }
 
     override suspend fun stopDaemon(workspaceId: String, name: String) {
-        val key = workspaceId to name
-        val managed = daemonsLock.withLock {
-            val m = daemons.remove(key)
-            // §8: mark the stop as intentional BEFORE the process can die, so
-            // the exit watcher never reports an intentional stop as a crash.
-            m?.stopping?.set(true)
-            m
-        } ?: return
-        withContext(Dispatchers.IO) {
-            stopDaemonProcess(managed)
-            bootstrapManager.releaseProotTmpDir(managed.scope)
-        }
+        stopDaemons(workspaceId, listOf(name))
         Logger.i(TAG, "§1.83 daemon '$name' stopped for $workspaceId")
     }
 
@@ -2295,8 +2883,84 @@ class PRootContainerRuntime @Inject constructor(
     }
 
     override suspend fun stopAllDaemons(workspaceId: String) {
-        val keys = daemonsLock.withLock { daemons.keys.filter { it.first == workspaceId } }
-        keys.forEach { (_, name) -> stopDaemon(workspaceId, name) }
+        val names = daemonsLock.withLock {
+            daemons.keys.filter { it.first == workspaceId }.map { it.second }
+        }
+        if (names.isEmpty()) return
+        stopDaemons(workspaceId, names)
+        Logger.i(TAG, "§1.83 all daemons stopped for $workspaceId (${names.size})")
+    }
+
+    /**
+     * Phase 0 (findings 002/003/004/035): one component-scoped daemon stop.
+     *
+     * Every requested daemon host is removed and marked intentional first,
+     * then ONE snapshot-based termination pass covers the union of the
+     * removed launches. A dead host contributes no targets at all.
+     *
+     * There is deliberately **no workspace sweep** in this path:
+     *
+     *  - the old live-host branch excluded only the PTY *host* PIDs, so a
+     *    same-workspace terminal's bash/apt/vim was killed;
+     *  - the old dead-host branch had no exclusions at all and could kill the
+     *    PTY host itself.
+     *
+     * The identity is only ever captured at launch. Re-capturing at stop time
+     * would be unsafe: the child may already be reaped and its PID recycled,
+     * and `/proc/<pid>/stat` would then describe a stranger. A missing
+     * identity degrades to host-only termination with a loud log — never to a
+     * workspace sweep.
+     */
+    private suspend fun stopDaemons(workspaceId: String, names: Collection<String>) {
+        val removed = daemonsLock.withLock {
+            names.mapNotNull { name ->
+                daemons.remove(workspaceId to name)?.also { it.stopping.set(true) }
+            }
+        }
+        if (removed.isEmpty()) return
+        withContext(Dispatchers.IO) {
+            val identities = removed.mapNotNull { it.identity }
+            if (identities.isNotEmpty()) {
+                val report = terminator().terminate(
+                    roots = identities,
+                    graceMs = DAEMON_STOP_GRACE_MS,
+                    hardLimitMs = DAEMON_STOP_HARD_LIMIT_MS
+                )
+                if (!report.confirmed) {
+                    Logger.w(
+                        TAG,
+                        "§1.83 daemon stop unconfirmed for $workspaceId: " +
+                            "targets=${report.targets} survivors=${report.survivors}"
+                    )
+                }
+            } else {
+                Logger.w(
+                    TAG,
+                    "§1.83 daemon stop has no /proc identity for $workspaceId — " +
+                        "stopping the recorded host(s) only (no workspace sweep)"
+                )
+            }
+            removed.forEach { managed ->
+                reapHost(managed.process)
+                runCatching { bootstrapManager.releaseProotTmpDir(managed.scope) }
+                    .onFailure { Logger.w(TAG, "§1.83 daemon scope release failed: ${it.message}") }
+            }
+        }
+    }
+
+    /**
+     * Reaps the JVM [Process] object after containment. `destroy()` is a
+     * SIGTERM that PRoot forwards to the tracee (graceful daemon shutdown);
+     * `destroyForcibly()` is the bounded fallback. This is bookkeeping for the
+     * Java child — the guest tree was already addressed by identity.
+     */
+    private fun reapHost(process: Process) {
+        if (!process.isAlive) return
+        process.destroy()
+        if (!process.waitFor(DAEMON_STOP_GRACE_MS, TimeUnit.MILLISECONDS)) {
+            process.destroyForcibly()
+            process.waitFor(DAEMON_STOP_HARD_LIMIT_MS, TimeUnit.MILLISECONDS)
+        }
     }
 
     /**
@@ -2319,61 +2983,40 @@ class PRootContainerRuntime @Inject constructor(
     }
 
     /**
-     * §1.83: stop a daemon's PRoot host — SIGTERM first (PRoot forwards it
-     * to the initial tracee = the daemon, a graceful shutdown), then SIGKILL
-     * the host if it hasn't exited within [DAEMON_STOP_GRACE_MS]. Bounded so
-     * a wedged daemon can't block teardown.
+     * §1.83 restart-path stop. Used only when an idempotent `startDaemon`
+     * replaces a live incumbent (the collection stop lives in [stopDaemons]).
      *
-     * Pre-release audit fix (2026-09-02, finding RT-1 — the audit's highest
-     * -severity runtime issue): `Process.destroy*()` signals the DIRECT child
-     * only. PRoot's `--kill-on-exit` reaper is an exit handler and therefore
-     * never runs under SIGKILL, so the SIGKILL path left the GUEST daemon
-     * (Xvnc, sshd) alive as an orphan — still bound to its port, invisible
-     * to [daemons] (in-memory only), and the next start failed with
-     * "address already in use". The stop now ALSO sweeps any surviving
-     * own-uid process whose /proc cmdline references this daemon's rootfs
-     * (proot passes the translated host path to the real execve, so every
-     * guest process of this workspace carries the rootfs path in its
-     * cmdline; other workspaces' processes never match). SIGTERM first,
-     * bounded SIGKILL after — mirroring the host's own escalation.
+     * Termination is scoped to the incumbent's launch identity. The dead-host
+     * branch deliberately does nothing: a host that is already gone contributes
+     * no targets, and sweeping the workspace there was finding 003 — it killed
+     * the live PTY host and every terminal of the same workspace.
      */
     private fun stopDaemonProcess(managed: ManagedDaemon) {
-        if (!managed.process.isAlive) {
-            killRootfsProcesses(managed.rootfsPath, sigterm = true)
-            return
-        }
-        // Phase 04: capture the PRoot host's start time BEFORE destroying it —
-        // the sweep's PID-reuse guard below is only meaningful while the
-        // launch's own start time is known.
-        val hostStartTicks = processHostPid(managed.process)
-            ?.let { RootfsProcessMatcher.startTimeTicksOf(it) }
-        managed.process.destroy()
-        if (!managed.process.waitFor(DAEMON_STOP_GRACE_MS, TimeUnit.MILLISECONDS)) {
-            Logger.w(TAG, "§1.83 daemon host did not exit within ${DAEMON_STOP_GRACE_MS}ms — force-killing")
-            managed.process.destroyForcibly()
-        }
-        // Guest-tree sweep: SIGTERM survivors (graceful daemons shut down
-        // here), then SIGKILL anything still holding on after the grace.
-        // Live pty sessions are excluded — a same-workspace terminal must
-        // survive its workspace's daemon stop.
-        val termKilled = killRootfsProcesses(
-            managed.rootfsPath,
-            sigterm = true,
-            excludePids = livePtyPids(),
-            notBeforeTicks = hostStartTicks
-        )
-        if (termKilled > 0) {
-            Thread.sleep(DAEMON_STOP_GRACE_MS)
-            killRootfsProcesses(
-                managed.rootfsPath,
-                sigterm = false,
-                excludePids = livePtyPids(),
-                notBeforeTicks = hostStartTicks
+        val identity = managed.identity
+        if (identity != null) {
+            val report = terminator().terminate(
+                roots = listOf(identity),
+                graceMs = DAEMON_STOP_GRACE_MS,
+                hardLimitMs = DAEMON_STOP_HARD_LIMIT_MS
+            )
+            if (!report.confirmed) {
+                Logger.w(
+                    TAG,
+                    "§1.83 daemon restart stop unconfirmed: " +
+                        "targets=${report.targets} survivors=${report.survivors}"
+                )
+            }
+        } else if (managed.process.isAlive) {
+            Logger.w(
+                TAG,
+                "§1.83 daemon restart has no /proc identity — " +
+                    "stopping the recorded host only (no workspace sweep)"
             )
         }
+        reapHost(managed.process)
     }
 
-    /** Host pids of this process's live pty sessions — the sweep's exclusion set. */
+    /** Host pids of this process's live pty sessions — the whole-workspace sweep's exclusion set. */
     private fun livePtyPids(): Set<Int> =
         sessions.values.mapNotNull { session ->
             session.pid.takeIf { it > 0 && session.isAlive }
@@ -2382,11 +3025,17 @@ class PRootContainerRuntime @Inject constructor(
     /**
      * Kill every own-uid process whose /proc cmdline references [rootfsPath]
      * — the guest process tree of one workspace — EXCLUDING [excludePids]
-     * (the live pty sessions: a workspace's terminal must never be caught by
-     * its own daemon stop or exec timeout). SIGTERM ([sigterm] = true) for a
-     * graceful stop, SIGKILL otherwise. Never another workspace (different
-     * rootfs path). Best-effort by contract: vanished pids and permission
-     * errors are the scan's normal noise. Returns the number of signals sent.
+     * (the live pty sessions). SIGTERM ([sigterm] = true) for a graceful stop,
+     * SIGKILL otherwise. Never another workspace (different rootfs path).
+     * Best-effort by contract: vanished pids and permission errors are the
+     * scan's normal noise. Returns the number of signals sent.
+     *
+     * **Whole-workspace operations only.** This is the legacy cmdline sweep;
+     * it identifies a workspace, not a component. Current callers are exactly:
+     * [closeWorkspaceSessions] (after every owned component was already
+     * stopped) and [startupRecoverySweep] (a fresh process owns no live
+     * sessions). Daemon stop, daemon restart, and exec timeout must use
+     * [ProcessTreeTerminator] instead — see `RUNTIME_ARCHITECTURE.md` §2.1.
      *
      * Phase 04 hardening (was `cmdline.contains(marker)` plus nothing else):
      *
@@ -2401,9 +3050,10 @@ class PRootContainerRuntime @Inject constructor(
      * - The app's own PID is excluded explicitly (fail-safe even though its
      *   cmdline is the Android runtime).
      *
-     * The cmdline scan remains the *fallback*: the primary containment for
-     * extraction is the process group (Phase 04), and the recorded PRoot
-     * host is destroyed before this sweep runs.
+     * This sweep is a last-resort cleanup for whole-workspace boundaries, not
+     * a containment proof: it can only see processes whose cmdline still
+     * references the rootfs, and it cannot distinguish a user command from an
+     * orphan. Component operations therefore never call it.
      */
     private fun killRootfsProcesses(
         rootfsPath: String,
@@ -2523,6 +3173,25 @@ class PRootContainerRuntime @Inject constructor(
      * `if` is the whole cost paid on the fast path (one `@Volatile` boolean read).
      */
     private fun logLaunchForensics(spec: LaunchSpec) {
+        // LINEXA-PERF-009: this used to emit ~70–120 lines per exec (full argv,
+        // complete environment, a multi-KB shell-copyable line, path
+        // fingerprints). During idle that produced ~2 600 `ContainerRuntime`
+        // lines per four minutes from 23 one-shot execs. The information that
+        // actually diagnoses a failed launch is the exact argv; the launcher
+        // environment is identical for every one-shot in a process, so it is
+        // dumped once. A repeated command signature logs a single summary line,
+        // and every exec still logs one compact, greppable line so the order of
+        // launches stays reconstructable.
+        val signature = spec.executable + '\u0000' + spec.args.joinToString("\u0000")
+        if (loggedLaunchSignatures.size > MAX_LOGGED_LAUNCH_SIGNATURES) loggedLaunchSignatures.clear()
+        val firstOfSignature = loggedLaunchSignatures.add(signature)
+        Logger.i(
+            TAG,
+            "exec ${File(spec.executable).name} argv=${spec.args.size} envKeys=${spec.env.size}" +
+                if (firstOfSignature) "" else " (repeat; argv already dumped this process)"
+        )
+        if (!firstOfSignature) return
+
         // ── §1.52 FORENSIC: full argv (argv[0]..argv[n]) + shell-copyable ──
         val fullArgv = listOf(spec.executable) + spec.args
         Logger.i(TAG, "=== FORENSIC: full argv (§1.52) ===")
@@ -2536,16 +3205,22 @@ class PRootContainerRuntime @Inject constructor(
         Logger.i(TAG, "  shell-copyable: $shellCopyable")
 
         // ── §1.52 FORENSIC: complete env passed to proot (sorted) ──────────
-        Logger.i(TAG, "=== FORENSIC: complete env passed to proot (§1.52, sorted) ===")
-        val highlightedKeys = setOf(
-            "PATH", "LD_LIBRARY_PATH", "PROOT_LOADER", "PROOT_TMP_DIR",
-            "TMPDIR", "HOME", "PWD", "LANG", "TERM", "USER"
-        )
-        spec.env.toSortedMap().forEach { (key, value) ->
-            val mark = if (key in highlightedKeys) "   <--" else ""
-            Logger.i(TAG, "  $key = ${value.orEmpty()}$mark")
+        // One dump per process is enough: openTerminal / execInternal /
+        // startDaemon all build from BootstrapManager.prootEnv().
+        if (launchEnvDumped.compareAndSet(false, true)) {
+            Logger.i(TAG, "=== FORENSIC: complete env passed to proot (§1.52, sorted) ===")
+            val highlightedKeys = setOf(
+                "PATH", "LD_LIBRARY_PATH", "PROOT_LOADER", "PROOT_TMP_DIR",
+                "TMPDIR", "HOME", "PWD", "LANG", "TERM", "USER"
+            )
+            spec.env.toSortedMap().forEach { (key, value) ->
+                val mark = if (key in highlightedKeys) "   <--" else ""
+                Logger.i(TAG, "  $key = ${value.orEmpty()}$mark")
+            }
+            Logger.i(TAG, "  keys=${spec.env.size}; unset in env: TMPDIR=${spec.env["TMPDIR"] ?: "<unset>"}, HOME=${spec.env["HOME"] ?: "<unset>"}, PWD=${spec.env["PWD"] ?: "<unset>"}, LANG=${spec.env["LANG"] ?: "<unset>"}, TERM=${spec.env["TERM"] ?: "<unset>"}, USER=${spec.env["USER"] ?: "<unset>"}")
+        } else {
+            Logger.i(TAG, "  env: ${spec.env.size} vars (launcher env already dumped once this process)")
         }
-        Logger.i(TAG, "  keys=${spec.env.size}; unset in env: TMPDIR=${spec.env["TMPDIR"] ?: "<unset>"}, HOME=${spec.env["HOME"] ?: "<unset>"}, PWD=${spec.env["PWD"] ?: "<unset>"}, LANG=${spec.env["LANG"] ?: "<unset>"}, TERM=${spec.env["TERM"] ?: "<unset>"}, USER=${spec.env["USER"] ?: "<unset>"}")
 
         // ── §1.52 FORENSIC: pipeline path verification (file metadata) ─────
         Logger.i(TAG, "=== FORENSIC: pipeline path verification (§1.52) ===")
@@ -2586,6 +3261,14 @@ class PRootContainerRuntime @Inject constructor(
      * the `daemonsLock`/`releaseProotTmpDir` error path are all as they were.
      */
     private fun logDaemonForensics(spec: LaunchSpec, name: String) {
+        // LINEXA-PERF-009: a desktop restart re-runs Xvnc with the same argv;
+        // dump it once per process/signature, then keep one summary line.
+        val signature = "daemon:$name:" + spec.executable + '\u0000' + spec.args.joinToString("\u0000")
+        if (loggedLaunchSignatures.size > MAX_LOGGED_LAUNCH_SIGNATURES) loggedLaunchSignatures.clear()
+        if (!loggedLaunchSignatures.add(signature)) {
+            Logger.i(TAG, "daemon '$name' argv=${spec.args.size} envKeys=${spec.env.size} (repeat; already dumped this process)")
+            return
+        }
         val fullArgv = listOf(spec.executable) + spec.args
         Logger.i(TAG, "=== FORENSIC: §1.83 daemon '$name' full argv (§1.52) ===")
         fullArgv.forEachIndexed { i, arg ->
@@ -2602,14 +3285,13 @@ class PRootContainerRuntime @Inject constructor(
     }
 
     /**
-     * Pre-release audit fix (2026-09-02): redact the VNC password out of
-     * forensic argv dumps. The one secret that legitimately travels through a
-     * guest argv is the `vncpasswd -f` provisioning command — the configured
-     * password is embedded in the `sh -c` payload after `printf '%s\n'`.
-     * Forensic dumps are DebugCapture-gated, but they land in `linexa.log` /
-     * runtime-trace files that ship inside the user's "Copy error" report, so
-     * the secret must not survive into them. Everything else passes through
-     * byte-identical.
+     * Finding 031: the VNC password no longer travels in guest argv — it is
+     * written to `vncpasswd -f`'s stdin (see [execWithInput]) — so this
+     * redaction is defence in depth for any legacy or future `printf … |
+     * vncpasswd` payload that reaches a forensic dump. Forensic dumps are
+     * DebugCapture-gated, but they land in `linexa.log` / runtime-trace files
+     * that ship inside the user's "Copy error" report, so a secret must not
+     * survive into them. Everything else passes through byte-identical.
      */
     private fun redactSecretArgv(arg: String): String {
         if (!arg.contains("vncpasswd -f")) return arg
@@ -2635,12 +3317,25 @@ class PRootContainerRuntime @Inject constructor(
     private fun runProcess(
         spec: LaunchSpec,
         timeoutSeconds: Long = COMMAND_TIMEOUT_SECONDS,
-        onLine: ((String) -> Unit)? = null
+        onLine: ((String) -> Unit)? = null,
+        stdin: String? = null
     ): ProcessResult {
         // §16.3 (§1.167): the §1.52 forensic dump is now behind [DebugCapture],
         // exactly like the two dumps above it in this file. See
         // [logLaunchForensics] for why, and for what is and is not skipped.
         if (DebugCapture.isEnabled()) logLaunchForensics(spec)
+
+        // Finding 031: the input is written before `waitFor`, so it must fit in
+        // the pipe buffer — otherwise a guest that never reads stdin could block
+        // the writer past the caller's timeout. 4 KiB is far below Linux's
+        // 64 KiB default and ~340× the longest password this app generates.
+        if (stdin != null && stdin.length > MAX_EXEC_STDIN_CHARS) {
+            Logger.e(TAG, "one-shot exec stdin rejected: ${stdin.length} chars exceeds $MAX_EXEC_STDIN_CHARS")
+            return ProcessResult(
+                exitCode = -1,
+                output = "stdin payload exceeds $MAX_EXEC_STDIN_CHARS characters"
+            )
+        }
 
         val pb = ProcessBuilder(listOf(spec.executable) + spec.args)
             .redirectErrorStream(true)
@@ -2654,6 +3349,9 @@ class PRootContainerRuntime @Inject constructor(
         pb.environment().clear()
         pb.environment().putAll(spec.env)
         val process = pb.start()
+        // Phase 0: capture the guest host identity immediately. The timeout
+        // path must address THIS launch's tree, never the workspace.
+        val hostIdentity = captureIdentity(process)
         val reader = Executors.newSingleThreadExecutor()
         return try {
             val outputFuture = reader.submit<String> {
@@ -2675,30 +3373,64 @@ class PRootContainerRuntime @Inject constructor(
                     ""
                 }
             }
+            // Finding 031: deliver the secret, then close stdin so the guest's
+            // reader sees EOF. A failed write is a failed exec, never a command
+            // that ran with an empty or partial stdin: provisioning treats a
+            // non-zero exit as "do not start an unauthenticated server".
+            if (stdin != null) {
+                val delivered = try {
+                    process.outputStream.bufferedWriter().use { writer ->
+                        writer.write(stdin)
+                        if (!stdin.endsWith("\n")) writer.newLine()
+                    }
+                    true
+                } catch (e: IOException) {
+                    Logger.w(TAG, "one-shot exec stdin delivery failed: ${e.message}")
+                    false
+                }
+                if (!delivered) {
+                    process.destroyForcibly()
+                    process.waitFor(DAEMON_STOP_GRACE_MS, TimeUnit.MILLISECONDS)
+                    val drained = try {
+                        outputFuture.get(5, TimeUnit.SECONDS)
+                    } catch (_: Exception) {
+                        ""
+                    }
+                    return ProcessResult(exitCode = -1, output = drained)
+                }
+            }
             val completed = process.waitFor(timeoutSeconds, TimeUnit.SECONDS)
             if (!completed) {
-                // Phase 04: capture the exec's own start time before killing —
-                // the sweep below only signals PIDs started at/after it.
-                val hostStartTicks = processHostPid(process)
-                    ?.let { RootfsProcessMatcher.startTimeTicksOf(it) }
-                process.destroyForcibly()
-                // Pre-release audit fix (2026-09-02, finding RT-6): SIGKILL
-                // reaches only the proot host — --kill-on-exit is an exit
-                // handler and never runs — so the timed-out guest command
-                // (e.g. an apt transaction) survived as an orphan holding
-                // dpkg locks. Sweep the workspace's guest tree the same way
-                // the daemon stop path does (rootfs path extracted from the
-                // spec's -r argument).
-                val rootfsMarker = spec.args.indexOf("-r").takeIf { it >= 0 && it + 1 < spec.args.size }
-                    ?.let { spec.args[it + 1] }
-                if (rootfsMarker != null) {
-                    killRootfsProcesses(
-                        rootfsMarker,
-                        sigterm = false,
-                        excludePids = livePtyPids(),
-                        notBeforeTicks = hostStartTicks
+                // Phase 0 (finding 004): a timed-out exec terminates ONLY its
+                // own process tree. The tree is snapshotted before the host is
+                // killed (PRoot tracees reparent to init afterwards), and every
+                // member is signalled by identity so PID reuse is inert.
+                //
+                // The old path called killRootfsProcesses() here, which
+                // SIGKILLed every guest process of the workspace started at or
+                // after this exec — including a terminal's bash and a running
+                // apt transaction.
+                if (hostIdentity != null) {
+                    val report = terminator().terminate(
+                        roots = listOf(hostIdentity),
+                        graceMs = EXEC_TIMEOUT_STOP_GRACE_MS,
+                        hardLimitMs = EXEC_TIMEOUT_STOP_HARD_LIMIT_MS
+                    )
+                    if (!report.confirmed) {
+                        Logger.w(
+                            TAG,
+                            "exec timeout containment unconfirmed: " +
+                                "targets=${report.targets} survivors=${report.survivors}"
+                        )
+                    }
+                } else {
+                    Logger.w(
+                        TAG,
+                        "exec timeout has no /proc identity — killing the recorded host only (no workspace sweep)"
                     )
                 }
+                process.destroyForcibly()
+                process.waitFor(DAEMON_STOP_GRACE_MS, TimeUnit.MILLISECONDS)
                 val drained = try { outputFuture.get(5, TimeUnit.SECONDS) } catch (_: Exception) { "" }
                 return ProcessResult(exitCode = -1, output = drained)
             }
@@ -2778,11 +3510,15 @@ class PRootContainerRuntime @Inject constructor(
     companion object {
         private const val TAG = "ContainerRuntime"
 
+        /** LINEXA-PERF-009: bound on remembered exec signatures (see fields). */
+        private const val MAX_LOGGED_LAUNCH_SIGNATURES = 128
+
         /**
-         * Pre-release audit fix (2026-09-02): matches the `printf … | vncpasswd`
-         * payload region of the VNC-auth provisioning command so
-         * [redactSecretArgv] can mask the configured password in forensic
-         * argv dumps. The literal guest text is `printf '%s\n' <pw> | vncpasswd`.
+         * Finding 031: retained to mask a legacy `printf … | vncpasswd`
+         * payload if one ever reaches a forensic dump. Current VNC
+         * provisioning delivers the password on stdin instead, so no argv
+         * contains it. The literal guest text was `printf '%s\n' <pw> |
+         * vncpasswd`.
          */
         private val VNC_PASSWD_SECRET_REGEX =
             Regex("""printf '%s\\n' .*? \| vncpasswd""")
@@ -2811,6 +3547,13 @@ class PRootContainerRuntime @Inject constructor(
          */
         private val SHELL_CANDIDATES = listOf("/bin/bash", "/usr/bin/bash", "/bin/sh")
 
+        /**
+         * RN-01: shells whose login flag must be POSIX `-l`, not `--login`.
+         * Both are supported by bash and busybox ash; dash rejects the long
+         * option and exits 2.
+         */
+        private val POSIX_SH_SHELLS = setOf("sh", "dash")
+
         // FEATURE_STORAGE moved to com.fem.linexa.domain.runtime.FeatureIds (Phase 6b).
         // It is a plain string constant with no PRoot-specific meaning, so it lives in
         // the domain layer alongside DEFAULT_TERMINAL_ID / CommandResult / RuntimeState /
@@ -2823,6 +3566,22 @@ class PRootContainerRuntime @Inject constructor(
          * Maximum time in seconds to wait for a one-shot command before force-killing.
          */
         private const val COMMAND_TIMEOUT_SECONDS = 120L
+
+        /**
+         * SS-001: bounded wait for a terminal's proot to exit after destroy()
+         * sent SIGHUP. After this the session escalates to SIGKILL and the
+         * scratch tree is released. Kept short so a stop remains responsive
+         * while still giving the shell a chance to flush history/state.
+         */
+        private const val TERMINAL_EXIT_GRACE_MS = 1_500L
+
+        /**
+         * SS-001: close-time component teardown. PRoot and an interactive
+         * bash ignore SIGTERM, so the grace only gives plain jobs (and any
+         * trap that does honour TERM) a moment before the bounded SIGKILL.
+         */
+        private const val PTY_CLOSE_GRACE_MS = 250L
+        private const val PTY_CLOSE_HARD_LIMIT_MS = 2_000L
 
         // ── Declared first boot (issue #3, 2026-09-03) ──────────────────────
 
@@ -2852,8 +3611,24 @@ class PRootContainerRuntime @Inject constructor(
         /** §1.83: grace period for a daemon's PRoot host to exit on SIGTERM before SIGKILL. */
         private const val DAEMON_STOP_GRACE_MS = 2_000L
 
+        /** Phase 0: verification window after SIGKILL for a stopped daemon tree. */
+        private const val DAEMON_STOP_HARD_LIMIT_MS = 3_000L
+
+        /** Phase 0: post-SIGTERM grace for a timed-out exec's process tree. */
+        private const val EXEC_TIMEOUT_STOP_GRACE_MS = 1_000L
+
+        /** Phase 0: post-SIGKILL verification window for a timed-out exec tree. */
+        private const val EXEC_TIMEOUT_STOP_HARD_LIMIT_MS = 3_000L
+
         /** Phase 04: sweep debug lines truncate a candidate's argv to this. */
         private const val CMDLINE_LOG_LIMIT = 200
+
+        /**
+         * Finding 031: largest stdin payload a one-shot exec accepts. Kept
+         * comfortably below the kernel pipe buffer so the write before
+         * `waitFor` cannot block past the exec timeout.
+         */
+        private const val MAX_EXEC_STDIN_CHARS = 4096
 
     }
 
@@ -2869,8 +3644,15 @@ class PRootContainerRuntime @Inject constructor(
         val process: Process,
         val scope: String,
         val stopping: java.util.concurrent.atomic.AtomicBoolean = java.util.concurrent.atomic.AtomicBoolean(false),
-        /** Rootfs path of the workspace this daemon runs in — the /proc sweep marker for guest-tree kills (RT-1 fix). */
-        val rootfsPath: String = ""
+        /** Rootfs path of the workspace this daemon runs in — diagnostic context for containment logs. */
+        val rootfsPath: String = "",
+        /**
+         * Host identity captured immediately after launch (pid + `/proc` start
+         * time + process group). Termination is scoped to this identity's
+         * process tree, so a same-workspace terminal can never be caught by a
+         * daemon stop and PID reuse can never target a stranger.
+         */
+        val identity: ProcessIdentity? = null
     )
 
     /** Result of a bounded one-shot launch (§1.50). */

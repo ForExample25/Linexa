@@ -3,11 +3,12 @@ package com.fem.linexa.ui.screens.workspace
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.fem.linexa.core.i18n.linexaString
 import com.fem.linexa.R
 import com.fem.linexa.data.resource.HostResourceSampler
 import com.fem.linexa.data.resource.ProcessSignals
-import com.fem.linexa.domain.resource.ProcessTree
 import com.fem.linexa.domain.resource.ResourceMonitor
+import com.fem.linexa.domain.resource.RootTreePartition
 import com.fem.linexa.domain.resource.WorkspaceAggregator
 import com.fem.linexa.domain.resource.WorkspaceProcessSample
 import com.fem.linexa.domain.resource.WorkspaceResourceSample
@@ -329,7 +330,7 @@ class SessionsViewModel @Inject constructor(
                 }
                 .onFailure { e ->
                     _state.update {
-                        it.copy(message = app().getString(R.string.sessions_open_failed, e.message ?: ""))
+                        it.copy(message = app().linexaString(R.string.sessions_open_failed, e.message ?: ""))
                     }
                 }
         }
@@ -346,7 +347,7 @@ class SessionsViewModel @Inject constructor(
             val replacement = runCatching { binder.closeTerminal(workspaceId, session.terminalId) }
                 .onFailure { e ->
                     _state.update {
-                        it.copy(message = app().getString(R.string.sessions_end_failed, e.message ?: ""))
+                        it.copy(message = app().linexaString(R.string.sessions_end_failed, e.message ?: ""))
                     }
                 }
                 .getOrNull()
@@ -355,9 +356,9 @@ class SessionsViewModel @Inject constructor(
                 current.copy(
                     ending = current.ending - session.terminalId,
                     message = when {
-                        !gone -> app().getString(R.string.sessions_end_not_verified)
-                        replacement != null -> app().getString(R.string.sessions_end_replaced, replacement)
-                        else -> app().getString(R.string.sessions_end_ok, session.terminalId)
+                        !gone -> app().linexaString(R.string.sessions_end_not_verified)
+                        replacement != null -> app().linexaString(R.string.sessions_end_replaced, replacement)
+                        else -> app().linexaString(R.string.sessions_end_ok, session.terminalId)
                     }
                 )
             }
@@ -376,7 +377,7 @@ class SessionsViewModel @Inject constructor(
             val newId = runCatching { binder.openTerminal(workspaceId) }
                 .onFailure { e ->
                     _state.update {
-                        it.copy(message = app().getString(R.string.sessions_restart_failed, e.message ?: ""))
+                        it.copy(message = app().linexaString(R.string.sessions_restart_failed, e.message ?: ""))
                     }
                 }
                 .getOrNull()
@@ -387,9 +388,9 @@ class SessionsViewModel @Inject constructor(
                     current.copy(
                         restarting = current.restarting - session.terminalId,
                         message = if (newPty != null && newPty.isAlive) {
-                            app().getString(R.string.sessions_restart_ok, session.terminalId, newId)
+                            app().linexaString(R.string.sessions_restart_ok, session.terminalId, newId)
                         } else {
-                            app().getString(R.string.sessions_restart_not_verified)
+                            app().linexaString(R.string.sessions_restart_not_verified)
                         }
                     )
                 }
@@ -406,7 +407,7 @@ class SessionsViewModel @Inject constructor(
     fun terminateProcess(process: WorkspaceProcessSample) {
         val pid = process.pid
         if (process.isRoot || pid in _state.value.protectedPids) {
-            _state.update { it.copy(message = app().getString(R.string.sessions_process_protected)) }
+            _state.update { it.copy(message = app().linexaString(R.string.sessions_process_protected)) }
             return
         }
         viewModelScope.launch {
@@ -417,17 +418,17 @@ class SessionsViewModel @Inject constructor(
                     current.copy(
                         sessions = current.sessions.map { it.withoutProcess(pid) },
                         processes = current.processes.filterNot { it.pid == pid },
-                        message = app().getString(R.string.sessions_process_ended, process.name)
+                        message = app().linexaString(R.string.sessions_process_ended, process.name)
                     )
                 }
             } else {
                 val reason = if (!signaled) {
-                    app().getString(R.string.sessions_process_signal_failed)
+                    app().linexaString(R.string.sessions_process_signal_failed)
                 } else {
-                    app().getString(R.string.sessions_process_still_running)
+                    app().linexaString(R.string.sessions_process_still_running)
                 }
                 _state.update {
-                    it.copy(message = app().getString(R.string.sessions_process_end_failed, process.name, reason))
+                    it.copy(message = app().linexaString(R.string.sessions_process_end_failed, process.name, reason))
                 }
             }
             refreshNow()
@@ -464,78 +465,97 @@ class SessionsViewModel @Inject constructor(
         val rootPid = currentRootPid?.takeIf { it > 0 }
         val roots = (activePids + listOfNotNull(rootPid)).distinct()
 
-        forgetSampledRoots(except = roots.toSet())
-        sampledRoots = roots.toSet()
-
-        val snapshot = resourceMonitor.snapshot(roots)
-        val workspaceProcesses = snapshot.processes
-        val parents = workspaceProcesses
-            .mapNotNull { process -> process.parentPid?.let { process.pid to it } }
-            .toMap()
-        val perRoot = HashMap<Int, List<WorkspaceProcessSample>>(roots.size)
-        for (root in roots) {
-            val members = ProcessTree.descendantsOf(root, parents)
-            perRoot[root] = workspaceProcesses.filter { it.pid in members }
+        // LINEXA-PERF-002: the map mutation stays on the caller (Main); the
+        // per-tick price — /proc scan, tree correlation, rollups and the host
+        // readings — moves to Default so the 2 s loop cannot deliver
+        // main-thread jitter while a terminal is rendering.
+        val endedTimes = sessions.values.associate { record ->
+            record.terminalId to endedAtFor(record, nowMs)
         }
         val labels = TerminalNumbering.compactLabels(sessions.keys)
 
-        val sessionUis = sessions.values.map { record ->
-            val active = record.state is TerminalState.Running || record.state is TerminalState.Starting
-            val pid = record.ptySession.pid.takeIf { it > 0 }
-            val processes = if (active) pid?.let { perRoot[it] }.orEmpty() else emptyList()
-            val total = WorkspaceAggregator.rollup(processes)
-            SessionUi(
-                terminalId = record.terminalId,
-                label = labels[record.terminalId] ?: record.terminalId,
-                kind = inferKind(processes),
-                state = record.state,
-                createdAt = record.createdAt,
-                endedAtMillis = endedAtFor(record, nowMs),
-                pid = pid,
-                cpuPercentOfDevice = total.cpuPercentOfDevice,
-                memKb = total.memoryKb,
-                memoryIsProportional = total.memoryIsProportional,
-                processCount = total.processCount,
-                processes = processes
+        val computed = withContext(Dispatchers.Default) {
+            forgetSampledRoots(except = roots.toSet())
+            sampledRoots = roots.toSet()
+
+            val snapshot = resourceMonitor.snapshot(roots)
+            val workspaceProcesses = snapshot.processes
+            val perRoot = RootTreePartition.byRoot(roots, workspaceProcesses)
+
+            val sessionUis = sessions.values.map { record ->
+                val active = record.state is TerminalState.Running || record.state is TerminalState.Starting
+                val pid = record.ptySession.pid.takeIf { it > 0 }
+                val processes = if (active) pid?.let { perRoot[it] }.orEmpty() else emptyList()
+                val total = WorkspaceAggregator.rollup(processes)
+                SessionUi(
+                    terminalId = record.terminalId,
+                    label = labels[record.terminalId] ?: record.terminalId,
+                    kind = inferKind(processes),
+                    state = record.state,
+                    createdAt = record.createdAt,
+                    endedAtMillis = endedTimes[record.terminalId],
+                    pid = pid,
+                    cpuPercentOfDevice = total.cpuPercentOfDevice,
+                    memKb = total.memoryKb,
+                    memoryIsProportional = total.memoryIsProportional,
+                    processCount = total.processCount,
+                    processes = processes
+                )
+            }.sortedBy { it.createdAt }
+
+            val host = withContext(Dispatchers.IO) {
+                HostReadings(
+                    memory = hostSampler.deviceMemory(),
+                    cpu = hostSampler.deviceCpu(),
+                    appMemory = hostSampler.appMemory(),
+                    appCpu = hostSampler.appCpuPercent()
+                )
+            }
+
+            val workspaceSample = WorkspaceAggregator.workspaceSample(
+                processes = workspaceProcesses,
+                cores = snapshot.topology.capacityCores,
+                deviceTotalKb = snapshot.deviceTotalKb
+                    ?: host.memory?.totalBytes?.div(1024L)
             )
-        }.sortedBy { it.createdAt }
 
-        val host = withContext(Dispatchers.IO) {
-            HostReadings(
-                memory = hostSampler.deviceMemory(),
-                cpu = hostSampler.deviceCpu(),
-                appMemory = hostSampler.appMemory(),
-                appCpu = hostSampler.appCpuPercent()
+            val protected = buildSet {
+                rootPid?.let { add(it) }
+                activePids.forEach { add(it) }
+            }
+
+            SampleResult(
+                sessions = sessionUis,
+                processes = workspaceProcesses,
+                protected = protected,
+                workspaceSample = workspaceSample,
+                host = host
             )
-        }
-
-        val workspaceSample = WorkspaceAggregator.workspaceSample(
-            processes = workspaceProcesses,
-            cores = snapshot.topology.capacityCores,
-            deviceTotalKb = snapshot.deviceTotalKb
-                ?: host.memory?.totalBytes?.div(1024L)
-        )
-
-        val protected = buildSet {
-            rootPid?.let { add(it) }
-            activePids.forEach { add(it) }
         }
 
         _state.update { current ->
             current.copy(
-                sessions = sessionUis,
-                processes = workspaceProcesses,
-                protectedPids = protected,
-                workspaceSample = workspaceSample,
-                deviceMemory = host.memory,
-                appMemory = host.appMemory,
-                deviceCpu = host.cpu,
-                appCpuPercent = host.appCpu,
+                sessions = computed.sessions,
+                processes = computed.processes,
+                protectedPids = computed.protected,
+                workspaceSample = computed.workspaceSample,
+                deviceMemory = computed.host.memory,
+                appMemory = computed.host.appMemory,
+                deviceCpu = computed.host.cpu,
+                appCpuPercent = computed.host.appCpu,
                 nowMillis = nowMs,
                 loading = false
             )
         }
     }
+
+    private class SampleResult(
+        val sessions: List<SessionUi>,
+        val processes: List<WorkspaceProcessSample>,
+        val protected: Set<Int>,
+        val workspaceSample: WorkspaceResourceSample?,
+        val host: HostReadings
+    )
 
     /** Frozen end time for a session that is not running; null while it runs. */
     private fun endedAtFor(record: TerminalSession, nowMs: Long): Long? {

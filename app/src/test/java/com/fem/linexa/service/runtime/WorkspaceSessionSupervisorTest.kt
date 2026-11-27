@@ -2,6 +2,7 @@ package com.fem.linexa.service.runtime
 
 import android.app.Application
 import com.fem.linexa.core.logging.DiagnosticLogManager
+import com.fem.linexa.domain.packagemanager.PackageManagerDetector
 import com.fem.linexa.domain.runtime.CommandResult
 import com.fem.linexa.domain.runtime.DEFAULT_TERMINAL_ID
 import com.fem.linexa.domain.runtime.RuntimeHealth
@@ -245,6 +246,11 @@ class WorkspaceSessionSupervisorTest {
     private fun seedReadyRootfs(workspaceId: String): String {
         val rootfs = fileManager.ensureWorkspaceDirs(workspaceId)
         listOf("bin", "etc", "lib", "usr", "var").forEach { File(rootfs, it).mkdirs() }
+        // RF-003: launch validation now requires a shell that can actually
+        // exec, not just the directory layout. Mirrors the installer fixture.
+        val shell = File(rootfs, "bin/sh")
+        shell.writeText("#!/bin/sh\nexit 0\n")
+        assertTrue("the launch shell must be executable", shell.setExecutable(true))
         File(rootfs, "etc/os-release").writeText("NAME=LinexaTest\n")
         return rootfs.absolutePath
     }
@@ -912,7 +918,7 @@ class WorkspaceSessionSupervisorTest {
         )
         featureHost.apply {
             responses["command -v sshd"] = CommandResult(1, "", "")
-            responses["which apt-get"] = CommandResult(1, "", "")
+            responses[PackageManagerDetector.PROBE_COMMAND] = CommandResult(1, "", "")
             responses["os-release"] = CommandResult(1, "", "")
         }
 

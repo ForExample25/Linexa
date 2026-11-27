@@ -4,7 +4,7 @@ Linexa is a Jetpack Compose Android app that runs Linux distributions in
 isolated workspaces via PRoot, with a real PTY terminal and a staged RootFS
 importer.
 
-This index covers the documentation published with the `0.1.0-beta` source
+This index covers the documentation published with the `0.2.0` source
 release. Internal audit reports, planning ledgers, dated evidence archives,
 and historical snapshots are maintained separately and are not part of the
 public source tree.
@@ -49,6 +49,8 @@ public source tree.
 - [`engineering/CODE_CONVENTIONS.md`](./engineering/CODE_CONVENTIONS.md) — naming, layering, failure philosophy, documentation style.
 - [`engineering/PERFORMANCE.md`](./engineering/PERFORMANCE.md) — startup, memory, CPU, Compose performance.
 - [`engineering/TROUBLESHOOTING.md`](./engineering/TROUBLESHOOTING.md) — common build/runtime issues.
+- [`engineering/DEVICE_COMPATIBILITY.md`](./engineering/DEVICE_COMPATIBILITY.md) — tested devices, ABIs, and Android versions.
+- [`engineering/DOCUMENTATION_GUIDELINES.md`](./engineering/DOCUMENTATION_GUIDELINES.md) — how these documents are written and maintained.
 
 ## Decisions
 
@@ -61,5 +63,5 @@ These live next to the code they describe:
 - [`../terminal-emulator/PROVENANCE.md`](../terminal-emulator/PROVENANCE.md) — vendored Termux terminal-emulator module.
 - [`../terminal-view/PROVENANCE.md`](../terminal-view/PROVENANCE.md) — vendored Termux terminal-view module.
 - [`../app/src/main/jniLibs/BINARY-MANIFEST.md`](../app/src/main/jniLibs/BINARY-MANIFEST.md) — native binaries, versions, hashes, and licenses.
-- [`../app/src/main/jniLibs/proot-build/BUILD-NOTES.md`](../app/src/main/jniLibs/proot-build/BUILD-NOTES.md) — PRoot source, patches, and build flags.
+- [`../third_party/proot/BUILD-NOTES.md`](../third_party/proot/BUILD-NOTES.md) — PRoot source, patches, and build flags.
 - [`../THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) — complete third-party licenses and corresponding-source offer.

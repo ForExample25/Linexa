@@ -13,7 +13,10 @@ import org.junit.Test
  * The behavioural half of §1.191 is already covered where it is observable:
  * [com.fem.linexa.service.runtime.WorkspaceTerminalManagerTest] pins the exit
  * status onto `TerminalState.Error`, pins `killedBySigkill` to `-9` only, and
- * pins the §P0 guarantee that a killed terminal never ends the workspace.
+ * pins the §P0 guarantee that a killed terminal never ends the workspace; the
+ * derivation itself is additionally pinned behaviourally on the domain type in
+ * `TerminalStateTest`, where the two source pins this file used to carry
+ * (`exitCode == SIGKILL_EXIT_STATUS`, the `-9` literal) moved in 10D.
  *
  * What that cannot reach is the *presentation* decision, which is the part most
  * likely to be quietly undone by a later refactor. This repo runs no Compose UI
@@ -70,9 +73,6 @@ class TerminalKilledNoticeSourceTest {
     private val panel: String
         get() = source("src/main/java/com/fem/linexa/ui/screens/terminal/WorkspaceTerminalPanel.kt")
 
-    private val terminalState: String
-        get() = source("src/main/java/com/fem/linexa/domain/runtime/TerminalState.kt")
-
     // ── 1. gated on SIGKILL, and only on SIGKILL ────────────────────────────
 
     @Test
@@ -88,31 +88,6 @@ class TerminalKilledNoticeSourceTest {
             Regex("TerminalKilledNotice\\(").findAll(panel).count()
         )
     }
-
-    @Test
-    fun sigkillIsDerivedFromTheExitStatusConstantNotAHardcodedNumber() {
-        assertTrue(
-            "killedBySigkill must compare against the named SIGKILL_EXIT_STATUS",
-            terminalState.contains("exitCode == SIGKILL_EXIT_STATUS")
-        )
-        assertTrue(
-            "terminal-lib reports a signal death as the negated signal number, so SIGKILL is -9",
-            terminalState.contains("const val SIGKILL_EXIT_STATUS: Int = -9")
-        )
-    }
-
-    @Test
-    fun errorStateStillCarriesADefaultedExitCode() {
-        // Defaulted, because a failure-to-open has no child and therefore no exit
-        // status to report. Dropping the default would force every Error
-        // construction site to invent one.
-        assertTrue(
-            "Error must expose an optional exitCode alongside its reason",
-            terminalState.contains("data class Error(val reason: String, val exitCode: Int? = null)")
-        )
-    }
-
-    // ── 2. inline, never a screen ───────────────────────────────────────────
 
     @Test
     fun noticeIsAnInlineBlockAndNotAScreen() {
@@ -143,9 +118,14 @@ class TerminalKilledNoticeSourceTest {
     @Test
     fun noticeIsRenderedInsideThePerTerminalPlaceholder() {
         assertTrue(
+            "the panel must resolve the Error state once, for both the notice and the " +
+                "finding-027 hint",
+            panel.contains("val errorState = terminalState as? TerminalState.Error")
+        )
+        assertTrue(
             "the notice must render through StatusPlaceholder's footer, i.e. inside the " +
                 "same per-terminal surface as every other terminal state",
-            panel.contains("footer = if ((terminalState as? TerminalState.Error)?.killedBySigkill == true)")
+            panel.contains("footer = if (errorState?.killedBySigkill == true)")
         )
         assertTrue(
             "StatusPlaceholder must accept the optional footer",

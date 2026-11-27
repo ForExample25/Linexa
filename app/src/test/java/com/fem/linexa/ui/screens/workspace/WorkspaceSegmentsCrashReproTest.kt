@@ -32,7 +32,7 @@ import com.fem.linexa.domain.workspace.NetworkSettings
 import com.fem.linexa.domain.workspace.WorkspaceStatus
 import com.fem.linexa.service.runtime.WorkspaceFileManager
 import com.fem.linexa.service.runtime.features.FeatureSettings
-import com.fem.linexa.ui.components.WorkspacePerformanceViewModel
+import com.fem.linexa.ui.screens.terminal.TerminalsViewModel
 import com.fem.linexa.ui.theme.LinexaTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
@@ -55,10 +55,9 @@ import org.robolectric.annotation.Config
  * Features tab inside Workspace crashes the app".
  *
  * Every ViewModel the screen resolves is the real production type, built by
- * hand the way AppModule/Hilt builds them (minus the DI graph):
- * [WorkspacePerformanceViewModel] over a no-op [ResourceMonitor] and the real
- * [WorkspaceFileManager], plus the real no-arg [ShortcutsViewModel] and the
- * real [FeaturesViewModel] from [FeaturesTabCrashReproTest]'s wiring.
+ * hand the way AppModule/Hilt builds them (minus the DI graph): the real
+ * no-arg [ShortcutsViewModel] and the real [FeaturesViewModel] from
+ * [FeaturesTabCrashReproTest]'s wiring.
  *
  * Persian (fa) locale pinned — the reporting device's locale.
  */
@@ -96,16 +95,10 @@ class WorkspaceSegmentsCrashReproTest {
         status = WorkspaceStatus.Ready
     )
 
-    // Test-isolation fix (2026-09-03): see HomeViewModelPreviewTest — cancel
+    // Test-isolation fix (2026-09-03): see HomeViewModelEnrichmentTest — cancel
     // leaked ViewModel scopes BEFORE resetMain so their Main-dispatcher
     // resumptions cannot hit the missing-Main fatal.
     private val createdScopes = mutableListOf<kotlinx.coroutines.Job>()
-
-    private fun performanceViewModel(): WorkspacePerformanceViewModel =
-        WorkspacePerformanceViewModel(
-            resourceMonitor = NoopResourceMonitor,
-            fileManager = WorkspaceFileManager(ApplicationProvider.getApplicationContext())
-        )
 
     private fun featuresViewModel(): FeaturesViewModel =
         FeaturesTabCrashReproTestHarness.realFeaturesViewModel()
@@ -158,6 +151,17 @@ class WorkspaceSegmentsCrashReproTest {
 
     private fun installTracker(): AppInstallTracker =
         AppInstallTracker(appInstallCoordinator(), appInstallProbe())
+            .also { createdScopes += it.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!! }
+
+    /**
+     * Root Terminal stability: [WorkspaceScreen] now pre-attaches the
+     * nav-scoped terminal desktop, so the harness must supply the real
+     * ViewModel instead of letting the default `hiltViewModel()` run without
+     * a Hilt graph. The overlay stays closed in these tests; the VM is only
+     * created so composition never touches Hilt.
+     */
+    private fun terminalsViewModel(): TerminalsViewModel =
+        TerminalsViewModel(TerminalWindowIdentityRegistry())
             .also { createdScopes += it.viewModelScope.coroutineContext[kotlinx.coroutines.Job]!! }
 
     private fun sessionsViewModel(): SessionsViewModel {
@@ -213,13 +217,13 @@ class WorkspaceSegmentsCrashReproTest {
                     onAddCustomCommand = { _, _ -> },
                     onUpdateCustomCommand = { _, _, _ -> },
                     onDeleteCustomCommand = {},
-                    performanceViewModel = performanceViewModel(),
                     shortcutsViewModel = ShortcutsViewModel(TerminalWindowIdentityRegistry()),
                     pinsViewModel = pinsViewModel(),
                     featuresViewModel = featuresViewModel(),
                     launcherViewModel = launcherViewModel(),
                     installTracker = installTracker(),
-                    sessionsViewModel = sessionsViewModel()
+                    sessionsViewModel = sessionsViewModel(),
+                    terminalsViewModel = terminalsViewModel()
                 )
             }
         }

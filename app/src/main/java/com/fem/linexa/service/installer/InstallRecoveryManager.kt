@@ -1,6 +1,7 @@
 package com.fem.linexa.service.installer
 
 import com.fem.linexa.core.logging.Logger
+import com.fem.linexa.domain.workspace.RootfsCheck
 import com.fem.linexa.domain.workspace.WorkspaceRepository
 import com.fem.linexa.domain.workspace.WorkspaceStatus
 import com.fem.linexa.service.runtime.WorkspaceFileManager
@@ -51,25 +52,47 @@ class InstallRecoveryManager @Inject constructor(
     suspend fun recoverInterruptedInstalls() {
         val workspaceIds = fileManager.listWorkspaceIds()
         for (workspaceId in workspaceIds) {
+            // RF-021: if the process died inside activateStagedRootfs's
+            // live→`rootfs.previous-*` swap, the workspace can be left with
+            // no live rootfs at all. Restore the newest previous tree BEFORE
+            // any status decision, so recovery judges the tree the user
+            // actually has instead of declaring the workspace empty.
+            val restored = fileManager.restorePreviousRootfsIfMissing(workspaceId)
+            if (restored != null) {
+                Logger.w(
+                    "InstallRecovery",
+                    "Restored prior rootfs for $workspaceId after an interrupted activation"
+                )
+            }
+
+            // RF-031: a staged config only becomes `config.yaml` once the
+            // staging rename has completed. The config is therefore promoted
+            // in the `!stagingExists` branch below; while staging exists,
+            // activation did not happen and the staged bytes describe a tree
+            // that recovery is about to discard.
             val stagingExists = fileManager.getStagingRootfsPath(workspaceId).exists()
             if (!stagingExists) {
+                if (fileManager.promoteStagedConfigIfPresent(workspaceId)) {
+                    Logger.w("InstallRecovery", "Promoted staged config.yaml for $workspaceId")
+                }
                 // F4(a): no staging — but a row that still claims to be
                 // mid-install can only mean the process died mid-download or
-                // mid-activation. Previously this row was skipped forever.
+                // mid-activation. RF-030: distinguish those two cases by
+                // validating the live rootfs instead of always blaming the
+                // download.
                 val metadata = repository.getById(workspaceId)
                 if (metadata?.status is WorkspaceStatus.Importing) {
-                    Logger.w(
-                        "InstallRecovery",
-                        "Interrupted DOWNLOAD detected for $workspaceId (status Importing, no staging); marking Broken"
-                    )
-                    File(fileManager.getWorkspaceBasePath(workspaceId), ".import-cache").deleteRecursively()
-                    File(fileManager.getWorkspaceBasePath(workspaceId), ".download-cache").deleteRecursively()
-                    repository.updateStatus(
-                        workspaceId,
-                        WorkspaceStatus.Broken("Download was interrupted. Tap Retry to download again, or delete this workspace.")
-                    )
+                    recoverInterruptedActivation(workspaceId)
                 }
+                sweepDebris(workspaceId)
                 continue
+            }
+
+            if (fileManager.discardStagedConfigIfPresent(workspaceId)) {
+                Logger.w(
+                    "InstallRecovery",
+                    "Discarded staged config.yaml for $workspaceId (activation never completed)"
+                )
             }
 
             val metadata = repository.getById(workspaceId)
@@ -83,6 +106,7 @@ class InstallRecoveryManager @Inject constructor(
                 // tee'd import cache behind; clear it along with the staging.
                 File(fileManager.getWorkspaceBasePath(workspaceId), ".import-cache").deleteRecursively()
                 File(fileManager.getWorkspaceBasePath(workspaceId), ".download-cache").deleteRecursively()
+                sweepDebris(workspaceId)
                 continue
             }
 
@@ -110,6 +134,78 @@ class InstallRecoveryManager @Inject constructor(
                 Logger.w("InstallRecovery", "Ready workspace $workspaceId had stale staging debris; removing it")
                 fileManager.deleteStagingIfExists(workspaceId)
             }
+            sweepDebris(workspaceId)
+        }
+    }
+
+    /**
+     * RF-030: a row still `Importing` with no staging is either a killed
+     * download or a killed post-activation install. The old code always chose
+     * the download diagnosis — deleting the caches and marking a complete
+     * rootfs Broken with the wrong reason. Validate the live tree first:
+     *
+     *  - `Ready` → the install actually finished; promote the row and keep it.
+     *  - `Damaged` → say so, instead of claiming the download was interrupted.
+     *  - `Missing` → the original download-interrupted diagnosis applies.
+     */
+    private suspend fun recoverInterruptedActivation(workspaceId: String) {
+        val check = fileManager.checkRootfs(workspaceId)
+        val base = fileManager.getWorkspaceBasePath(workspaceId)
+        when (check) {
+            RootfsCheck.Ready -> {
+                Logger.w(
+                    "InstallRecovery",
+                    "Interrupted status detected for $workspaceId, but its rootfs is valid; promoting to Ready"
+                )
+                File(base, ".import-cache").deleteRecursively()
+                File(base, ".download-cache").deleteRecursively()
+                repository.updateStatus(workspaceId, WorkspaceStatus.Ready)
+            }
+            is RootfsCheck.Damaged -> {
+                Logger.w(
+                    "InstallRecovery",
+                    "Rootfs for $workspaceId is installed but damaged: ${check.reason}"
+                )
+                File(base, ".import-cache").deleteRecursively()
+                File(base, ".download-cache").deleteRecursively()
+                repository.updateStatus(
+                    workspaceId,
+                    WorkspaceStatus.Broken(
+                        "The rootfs was installed but is damaged: ${check.reason} " +
+                            "Reinstall or repair this workspace."
+                    )
+                )
+            }
+            is RootfsCheck.Missing -> {
+                Logger.w(
+                    "InstallRecovery",
+                    "Interrupted DOWNLOAD detected for $workspaceId (status Importing, no staging, no rootfs); marking Broken"
+                )
+                File(base, ".import-cache").deleteRecursively()
+                File(base, ".download-cache").deleteRecursively()
+                repository.updateStatus(
+                    workspaceId,
+                    WorkspaceStatus.Broken("Download was interrupted. Tap Retry to download again, or delete this workspace.")
+                )
+            }
+        }
+    }
+
+    /**
+     * RF-021: startup is the one point where no install can be writing in
+     * this process, so crash-swap trees (`rootfs.previous-*`) and extraction
+     * quarantines (`.staging-rootfs.quarantine-*`) are safe to reclaim.
+     * Failures are logged, never fatal.
+     */
+    private fun sweepDebris(workspaceId: String) {
+        val sweep = fileManager.sweepInstallDebris(workspaceId)
+        if (sweep.restoredPrevious != null || sweep.deletedCount > 0) {
+            Logger.i(
+                "InstallRecovery",
+                "Workspace $workspaceId debris sweep: restoredPrevious=${sweep.restoredPrevious != null} " +
+                    "deletedPrevious=${sweep.deletedPrevious.size} " +
+                    "deletedQuarantine=${sweep.deletedStagingQuarantine.size}"
+            )
         }
     }
 }

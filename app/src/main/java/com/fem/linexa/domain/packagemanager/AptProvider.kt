@@ -121,14 +121,16 @@ class AptProvider @Inject constructor() : PackageProvider {
         if (result.exitCode != 0) {
             return PackageSearchPage(total = 0, packages = emptyList())
         }
-        val all = AptOutputParser.parseSearch(result.output)
-        val pageNames = all.drop(offset).take(limit).map { it.first }
+        // F-038 / R-27: parse the requested page directly instead of
+        // materializing (and then discarding) every matching pair.
+        val parsed = AptOutputParser.parseSearchPage(result.output, offset, limit)
+        val pageNames = parsed.packages.map { it.first }
         val enriched = if (pageNames.isEmpty()) {
             emptyList()
         } else {
-            enrichWithPolicy(runtimeBinder, workspaceId, pageNames, all.toMap())
+            enrichWithPolicy(runtimeBinder, workspaceId, pageNames, parsed.packages.toMap())
         }
-        return PackageSearchPage(total = all.size, packages = enriched)
+        return PackageSearchPage(total = parsed.total, packages = enriched)
     }
 
     override suspend fun refreshSources(runtimeBinder: CommandExecutor, workspaceId: String): Flow<OperationEvent> =

@@ -38,7 +38,11 @@ detection:
     - bin/bash
     - usr/bin/bash
 
-supported_architectures: [arm64, armv7l, x86_64, i686]
+# Linexa-hosted architectures only: this build packages PRoot for arm64-v8a
+# and armeabi-v7a. Debian also publishes x86_64/i686, but those archives are
+# detected via architecture_hints and rejected by ArchitectureCompatibility;
+# listing them here would advertise a runtime that does not exist (finding 029).
+supported_architectures: [arm64, armv7l]
 
 layout:
   required_directories: [bin, etc, lib, usr, var]

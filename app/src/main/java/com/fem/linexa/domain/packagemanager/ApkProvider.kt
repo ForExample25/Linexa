@@ -104,9 +104,10 @@ class ApkProvider @Inject constructor() : PackageProvider {
         if (result.exitCode != 0) {
             return PackageSearchPage(total = 0, packages = emptyList())
         }
-        val all = ApkOutputParser.parseSearch(result.output)
-        val page = all.drop(offset).take(limit)
-        if (page.isEmpty()) return PackageSearchPage(total = all.size, packages = page)
+        // F-038 / R-27: keep only the requested page in memory.
+        val parsed = ApkOutputParser.parseSearchPage(result.output, offset, limit)
+        val page = parsed.packages
+        if (page.isEmpty()) return PackageSearchPage(total = parsed.total, packages = page)
         // §1.147: `apk info -w` is the only apk command that reports the
         // upstream project page, and it is what backs the Store card's OPEN
         // action. Queried for the visible page only; a failure leaves the URLs
@@ -121,7 +122,7 @@ class ApkProvider @Inject constructor() : PackageProvider {
                 .orEmpty()
         }
         return PackageSearchPage(
-            total = all.size,
+            total = parsed.total,
             packages = page.map { it.copy(homepageUrl = webpages[it.name]) }
         )
     }

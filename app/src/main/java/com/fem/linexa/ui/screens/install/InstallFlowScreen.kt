@@ -96,9 +96,10 @@ fun InstallFlowScreen(
     val state by viewModel.uiState.collectAsState()
     val motions = LocalHavenMotions.current
 
-    // Back is only an abandon action while nothing is committed. Once
-    // Installing, the system-back default (leave the screen, install keeps
-    // running) is correct and this handler stays disabled.
+    // RF-010/UX-001: back/close are real abandon actions while a flow is in
+    // progress. During Installing, `viewModel.cancel()` kills the extraction
+    // tree, removes the staging tree after the job has stopped, and deletes
+    // the uncommitted workspace row before leaving.
     BackHandler(enabled = state.cancellable) {
         viewModel.cancel()
         onBack()
@@ -227,7 +228,18 @@ fun InstallFlowScreen(
                                 InstallingCard(
                                     step = state.step ?: InstallStep.EXTRACTING,
                                     progress = state.progress,
-                                    currentEntryName = state.currentEntryName
+                                    currentEntryName = state.currentEntryName,
+                                    // RF-010/UX-001: a long extraction is now
+                                    // genuinely cancellable; completing does
+                                    // not offer it.
+                                    onCancel = if (phase == InstallFlowPhase.INSTALLING) {
+                                        {
+                                            viewModel.cancel()
+                                            onBack()
+                                        }
+                                    } else {
+                                        null
+                                    }
                                 )
                                 // The concept's reassurance card sits under the
                                 // progress card while installing.
@@ -460,7 +472,8 @@ private fun ConfirmInstallationCard(
 private fun InstallingCard(
     step: InstallStep,
     progress: Float?,
-    currentEntryName: String?
+    currentEntryName: String?,
+    onCancel: (() -> Unit)? = null
 ) {
     val h = HavenTheme.colors
     val motions = LocalHavenMotions.current
@@ -532,6 +545,18 @@ private fun InstallingCard(
             color = h.muted,
             modifier = Modifier.padding(top = 12.dp)
         )
+
+        if (onCancel != null) {
+            // RF-010/UX-001: the engine kills the extraction tree and removes
+            // staging; the control is a deliberate action, not an accidental
+            // back gesture, so it sits apart from the keep-open hint.
+            HButton(
+                label = stringResource(R.string.install_stop_button),
+                onClick = onCancel,
+                variant = com.fem.linexa.ui.components.haven.HavenButtonVariant.GHOST,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+        }
     }
 }
 

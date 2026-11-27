@@ -36,6 +36,12 @@ open class RecordingGuestFeatureHost(
         return key?.let { responses.getValue(it) } ?: defaultResult
     }
 
+    override suspend fun execCommandWithInput(
+        workspaceId: String,
+        command: String,
+        stdin: String
+    ): CommandResult = execCommand(workspaceId, command)
+
     override suspend fun startDaemon(workspaceId: String, name: String, command: String): Boolean {
         startedDaemons += name to command
         if (daemonStartSucceeds) daemonAlive = true

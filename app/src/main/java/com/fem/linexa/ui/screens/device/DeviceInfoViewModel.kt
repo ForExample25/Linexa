@@ -40,7 +40,8 @@ import javax.inject.Inject
  */
 @HiltViewModel
 class DeviceInfoViewModel @Inject constructor(
-    private val hostSystemInfoProvider: HostSystemInfoProvider
+    private val hostSystemInfoProvider: HostSystemInfoProvider,
+    private val labels: DeviceInfoLabels = DeviceInfoLabels.English
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(DeviceInfoState.LOADING)
@@ -104,7 +105,7 @@ class DeviceInfoViewModel @Inject constructor(
 
     private fun publish(fresh: com.fem.linexa.domain.hostinfo.HostSystemInfoSnapshot) {
         _state.update { current ->
-            DeviceInfoMapper.from(snapshot = fresh, refreshing = false)
+            DeviceInfoMapper.from(snapshot = fresh, refreshing = false, labels = labels)
         }
     }
 

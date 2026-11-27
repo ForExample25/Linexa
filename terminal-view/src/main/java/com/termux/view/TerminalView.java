@@ -1455,13 +1455,49 @@ public final class TerminalView extends View {
                     mCursorVisible = !mCursorVisible;
                     //mClient.logVerbose(LOG_TAG, "Toggling cursor blink state to " + mCursorVisible);
                     mEmulator.setCursorBlinkState(mCursorVisible);
-                    invalidate();
+                    // LINEXA-PERF-004: a blink changes exactly one cell, so
+                    // invalidate that cell instead of the whole (full-screen)
+                    // view. The geometry mirrors TerminalRenderer.render():
+                    // row y grows from mFontLineSpacingAndAscent by one
+                    // mFontLineSpacing per visible row starting at mTopRow,
+                    // and a cursor glyph occupies one cell at mFontWidth.
+                    invalidateCursorCell();
                 }
             } finally {
                 // Recall the Runnable after mBlinkRate milliseconds to toggle the blink state
                 mTerminalCursorBlinkerHandler.postDelayed(this, mBlinkRate);
             }
         }
+    }
+
+    /**
+     * Invalidate only the cursor's cell (plus one pixel of slack for
+     * antialiasing). Falls back to a full invalidate when the geometry is not
+     * known yet, and is a no-op for an off-screen cursor (scrolled history).
+     */
+    private void invalidateCursorCell() {
+        if (mEmulator == null || mRenderer == null) {
+            invalidate();
+            return;
+        }
+        float fontWidth = mRenderer.mFontWidth;
+        int lineSpacing = mRenderer.mFontLineSpacing;
+        if (fontWidth <= 0f || lineSpacing <= 0) {
+            invalidate();
+            return;
+        }
+        float baseline = mRenderer.mFontLineSpacingAndAscent
+            + (float) (mEmulator.getCursorRow() - mTopRow + 1) * lineSpacing;
+        float left = mEmulator.getCursorCol() * fontWidth;
+        int l = (int) Math.floor(left) - 1;
+        int t = (int) Math.floor(baseline - lineSpacing) - 1;
+        int r = (int) Math.ceil(left + fontWidth) + 1;
+        int b = (int) Math.ceil(baseline) + 1;
+        if (r <= l || b <= t) {
+            invalidate();
+            return;
+        }
+        invalidate(l, t, r, b);
     }
 
 
@@ -1566,6 +1602,11 @@ public final class TerminalView extends View {
     @Override
     protected void onDetachedFromWindow() {
         super.onDetachedFromWindow();
+
+        // LINEXA-PERF-004: a detached view must never keep its blink callback
+        // posted — the runnable would keep waking the main Looper (and redraw
+        // an unattached view) for as long as the process lives.
+        stopTerminalCursorBlinker();
 
         if (mTextSelectionCursorController != null) {
             // Might solve the following exception

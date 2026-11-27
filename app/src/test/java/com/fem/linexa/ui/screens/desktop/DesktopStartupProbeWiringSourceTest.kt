@@ -63,7 +63,7 @@ class DesktopStartupProbeWiringSourceTest {
     /** `startDesktop`'s body, where the ordering lives. */
     private val startDesktopBody: String
         get() = viewModel
-            .substringAfter("fun startDesktop(workspaceId: String)")
+            .substringAfter("fun startDesktop(workspaceId: String, backendOverride: GuiBackend? = null)")
             .substringBefore("private fun sessionPathFrom(")
 
     /**
@@ -119,11 +119,12 @@ class DesktopStartupProbeWiringSourceTest {
 
     @Test
     fun theSeparateXvncLookupIsGone() {
-        // The whole saving. A surviving standalone `which Xvnc` in the start path
+        // The whole saving. A surviving standalone Xvnc lookup in the start path
         // would mean the merge added an exec instead of removing one.
         assertFalse(
-            "no standalone `which Xvnc` may remain in startDesktop: $startDesktopBody",
-            startDesktopCode.contains("\"which Xvnc\"")
+            "no standalone Xvnc lookup may remain in startDesktop: $startDesktopBody",
+            startDesktopCode.contains("\"which Xvnc\"") ||
+                startDesktopCode.contains("\"command -v Xvnc")
         )
     }
 
@@ -143,21 +144,167 @@ class DesktopStartupProbeWiringSourceTest {
 
     @Test
     fun theReResolveAfterInstallIsStillASeparateProbe() {
-        // §1.85's contract: after installing Xvnc the session is re-probed, because
-        // the install may have pulled in an X client. Folding this into the first
-        // (pre-install) reading would make a session that appeared during the
-        // install invisible.
+        // §1.85's contract: after installing Xvnc the guest is re-probed,
+        // because the install may have pulled in an X client. Finding 001
+        // extends the same refresh to the WHOLE combined probe: the install
+        // replaced the Xvnc binary, so `localhostSupported` must be re-earned
+        // from the server that will actually start. A session-only re-probe
+        // leaves the pre-install `false` in place, and the auth gate then
+        // rejects a no-password start with desktop_vnc_loopback_unsupported.
         val installBranch = startDesktopCode
             .substringAfter("if (!discovery.xvncFound)")
-            .substringBefore("val sessionPath =")
+            .substringBefore("var sessionPath =")
         assertTrue(
-            "the install branch must re-probe the session: $installBranch",
-            installBranch.contains("DesktopSessionProvisioner.detectSessionCommand(")
+            "the install branch must run the full post-install discovery probe: $installBranch",
+            installBranch.contains("reProbeAfterXvncInstall(")
         )
         assertTrue(
             "and must still run the auto-install",
             installBranch.contains("autoInstallXvnc(")
         )
+        assertFalse(
+            "a session-only re-probe would leave localhostSupported stale: $installBranch",
+            installBranch.contains("DesktopSessionProvisioner.detectSessionCommand(")
+        )
+    }
+
+    @Test
+    fun thePostInstallRefreshIsTheFullProbeNotASessionOnlyRead() {
+        // The helper is the single place the refresh happens. It must issue
+        // `DesktopStartupProbe.command` (Xvnc + session + capabilities), never
+        // a bare session probe.
+        val helper = codeOnly(
+            viewModel
+                .substringAfter("private suspend fun reProbeAfterXvncInstall(")
+                .substringBefore("private suspend fun autoInstallXvnc(")
+        )
+        assertTrue(
+            "the post-install refresh must issue the combined probe: $helper",
+            helper.contains("DesktopStartupProbe.command(")
+        )
+        assertTrue(
+            "and must decode it",
+            helper.contains("DesktopStartupProbe.parse(")
+        )
+        assertFalse(
+            "the refresh must not be session-only: $helper",
+            helper.contains("DesktopSessionProvisioner.detectSessionCommand(")
+        )
+    }
+
+    // ── finding 009: an unanswered probe must never install ───────────────
+
+    @Test
+    fun bothStartPathsRefuseToInstallOnAFailedProbe() {
+        val code = startDesktopCode
+        assertEquals(
+            "both start paths must gate on Result.probeFailed after the initial probe and again " +
+                "after a post-install refresh",
+            4,
+            Regex("if \\(discovery\\.probeFailed\\)").findAll(code).count()
+        )
+        // Each initial gate must precede its Xvnc-missing branch, so an
+        // incomplete probe can never reach autoInstallXvnc (finding 009).
+        val firstGate = code.indexOf("if (discovery.probeFailed)")
+        val firstMissing = code.indexOf("if (!discovery.xvncFound)")
+        assertTrue("VNC path: probeFailed gate must exist", firstGate > 0)
+        assertTrue("VNC path: Xvnc-missing branch must exist", firstMissing > firstGate)
+        val secondMissing = code.indexOf(
+            "if (provider == X11Provider.XVNC && !discovery.xvncFound)"
+        )
+        val secondGate = code.lastIndexOf("if (discovery.probeFailed)", secondMissing)
+        assertTrue("X11 path: probeFailed gate must exist", secondGate > firstMissing)
+        assertTrue("X11 path: Xvnc-missing branch must follow its gate", secondMissing > secondGate)
+
+        // The post-install refresh is an exec too: each call must be followed
+        // by its own probeFailed gate before the retry or the session/preset
+        // path, so an unanswered refresh cannot install anything either.
+        val refreshIndices = Regex("discovery = reProbeAfterXvncInstall\\(")
+            .findAll(code).map { it.range.first }.toList()
+        assertEquals("both start paths must re-probe after an install", 2, refreshIndices.size)
+        refreshIndices.forEachIndexed { index, refresh ->
+            val postGate = code.indexOf("if (discovery.probeFailed)", refresh)
+            val nextStep = listOf(
+                "discovery = retryCapabilityIfNeeded(",
+                "sessionPathFrom(declared, discovery.sessionProbeOutput)"
+            ).map { code.indexOf(it, refresh) }
+                .filter { it > refresh }
+                .minOrNull() ?: Int.MAX_VALUE
+            assertTrue("refresh $index must have a post-install probeFailed gate", postGate > refresh)
+            assertTrue(
+                "refresh $index's gate must run before the retry/session path",
+                postGate < nextStep
+            )
+        }
+
+        // And the branch body itself must not contain an install call.
+        val firstBranch = code.substringAfter("if (discovery.probeFailed)").substringBefore("}")
+        assertFalse(
+            "a failed probe must not auto-install: $firstBranch",
+            firstBranch.contains("autoInstallXvnc(") || firstBranch.contains("installDesktopPreset(")
+        )
+    }
+
+    @Test
+    fun theCapabilityRetryIsBoundedAndSharedByBothPaths() {
+        val code = startDesktopCode
+        assertEquals(
+            "both start paths (the X11 one only for the Xvnc provider) must call the retry helper",
+            2,
+            Regex("discovery = retryCapabilityIfNeeded\\(").findAll(code).count()
+        )
+        val helper = codeOnly(
+            viewModel
+                .substringAfter("private suspend fun retryCapabilityIfNeeded(")
+                .substringBefore("private suspend fun provisionVncPassword(")
+        )
+        assertTrue(
+            "the retry must re-ask only the capability question: $helper",
+            helper.contains("DesktopStartupProbe.capsCommand()")
+        )
+        assertFalse(
+            "the retry must not re-run the whole combined probe: $helper",
+            helper.contains("DesktopStartupProbe.command(")
+        )
+        assertTrue(
+            "and must decode the bounded answer",
+            helper.contains("DesktopStartupProbe.parseCaps(")
+        )
+    }
+
+    @Test
+    fun bothStartPathsRefreshDiscoveryBeforeTheirAuthGate() {
+        // Finding 001: the same stale-capability bug existed in startVncDesktop
+        // and startX11Desktop. Both declare discovery as a var, both replace it
+        // in the install branch, and both select the session from the refreshed
+        // result.
+        val code = startDesktopCode
+        assertEquals(
+            "both start paths must declare a replaceable discovery result",
+            2,
+            Regex("var discovery = DesktopStartupProbe\\.parse\\(").findAll(code).count()
+        )
+        assertEquals(
+            "both start paths must re-probe after a successful install",
+            2,
+            Regex("discovery = reProbeAfterXvncInstall\\(").findAll(code).count()
+        )
+        assertEquals(
+            "both must resolve the session from the refreshed result",
+            2,
+            Regex("sessionPathFrom\\(declared, discovery\\.sessionProbeOutput\\)")
+                .findAll(code).count()
+        )
+        // Ordering: each install branch must precede the auth gate that reads
+        // discovery.localhostSupported.
+        val firstInstall = code.indexOf("discovery = reProbeAfterXvncInstall(")
+        val firstGate = code.indexOf("unauthenticatedStartBlocked(")
+        assertTrue("the first install refresh must exist", firstInstall > 0)
+        assertTrue("the first auth gate must exist", firstGate > firstInstall)
+        val secondInstall = code.indexOf("discovery = reProbeAfterXvncInstall(", firstInstall + 1)
+        val secondGate = code.indexOf("unauthenticatedStartBlocked(", firstGate + 1)
+        assertTrue("the second install refresh must exist", secondInstall > firstGate)
+        assertTrue("the second auth gate must follow it", secondGate > secondInstall)
     }
 
     // ── pkill stayed out, and stayed conditional ───────────────────────────
@@ -185,7 +332,12 @@ class DesktopStartupProbeWiringSourceTest {
         // that then refuses to start anything.
         val body = startDesktopCode
         val nullCheckIndex = body.indexOf("if (sessionPath == null)")
-        val noSessionStateIndex = body.indexOf("DesktopUiState.NoSession")
+        // Match the ASSIGNMENT, not any mention of the state: `startDesktop`
+        // legitimately reads `outcome is DesktopUiState.NoSession` after the
+        // start returns (to decide whether a failed start needs releasing), and
+        // a bare-name search would find that read first. The invariant is about
+        // where the state is SET — inside the null-session branch.
+        val noSessionStateIndex = body.indexOf("_desktopState.value = DesktopUiState.NoSession")
         val cleanupIndex = body.indexOf(cleanupStatement)
         assertTrue("the null-session check must exist", nullCheckIndex > 0)
         assertTrue("the NoSession state must be set inside it", noSessionStateIndex > nullCheckIndex)
@@ -263,6 +415,56 @@ class DesktopStartupProbeWiringSourceTest {
         assertTrue(
             "cleanup must stay best-effort: $startDesktopBody",
             startDesktopCode.contains("runCatching { runtimeBinder.stopDaemon(workspaceId, DAEMON_XVNC) }")
+        )
+    }
+
+    // ── a failed start releases only what it launched ─────────────────────
+
+    @Test
+    fun aFailedStartStopsOnlyTheDaemonsItTouched() {
+        // 2026-09 integration fix: releaseFailedStart used to stop Xvnc, the
+        // session, the termux-x11 helper and the web daemon unconditionally —
+        // including on a NoSession refusal that never reached startDaemon.
+        // That tore down an X server the user had started by other means,
+        // contradicting the invariant this file exists to pin.
+        val helper = codeOnly(
+            viewModel
+                .substringAfter("private suspend fun releaseFailedStart(")
+                .substringBefore("fun stopDesktop(")
+        )
+        assertTrue(
+            "the release must consult the attempt's touched set: $helper",
+            helper.contains("attempt.touchedDaemons()")
+        )
+        assertTrue(
+            "and stop exactly those daemons: $helper",
+            helper.contains("for (daemonName in touched)")
+        )
+        listOf(
+            "stopDaemon(workspaceId, DAEMON_XVNC)",
+            "stopDaemon(workspaceId, DesktopSessionProvisioner.DAEMON_NAME)",
+            "stopDaemon(workspaceId, TermuxX11.DAEMON_NAME)",
+            "stopDaemon(workspaceId, DAEMON_WEB)"
+        ).forEach { unconditional ->
+            assertFalse(
+                "releaseFailedStart must not stop an untouched daemon ($unconditional): $helper",
+                helper.contains(unconditional)
+            )
+        }
+    }
+
+    @Test
+    fun theVncPathMarksADaemonOnlyAfterTheSessionIsResolved() {
+        // The no-session refusal must stay ahead of the first daemon mark:
+        // a start that never reaches startDaemon has nothing to release.
+        val body = startDesktopCode
+        val noSessionIndex = body.indexOf("if (sessionPath == null)")
+        val firstMarkIndex = body.indexOf("attempt.markTouched(")
+        assertTrue("the null-session check must exist", noSessionIndex > 0)
+        assertTrue("the first daemon mark must exist", firstMarkIndex > 0)
+        assertTrue(
+            "no daemon may be marked before the no-session refusal",
+            firstMarkIndex > noSessionIndex
         )
     }
 

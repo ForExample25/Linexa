@@ -1,9 +1,11 @@
 package com.fem.linexa.service.installer
 
+import com.fem.linexa.core.logging.DebugCapture
 import com.fem.linexa.test.support.FakeProot
 import com.fem.linexa.test.support.ProotRuntimeTestHarness
 import java.io.File
 import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -46,6 +48,10 @@ class RootfsExtractorSeccompFallbackTest {
         // §1.50 memoization is process-global in production; reset so one
         // test's detection doesn't leak into the next.
         ProotRuntimeTestHarness.resetSeccompMemo()
+        // RF-013: SECCOMP_BUG_ON_3RD counts the two debug-only proot
+        // preflights before the extraction attempt; enable capture so that
+        // contract remains the one under test.
+        DebugCapture.setEnabled(true)
         val root = tmp.newFolder("fake-proot-root")
         prootDir = FakeProot.install(root, FakeProot.Scenario.CLEAN_ALWAYS)
         // Provide the applib-side bootstrap artifacts the extractor's
@@ -71,6 +77,12 @@ class RootfsExtractorSeccompFallbackTest {
         harness.create()
         // binDir/proot → applib/libproot.so and friends; idempotent.
         harness.bootstrapManager.setup()
+    }
+
+    @After
+    fun resetCapture() {
+        // Process-wide flag — must not leak into later tests in this JVM.
+        DebugCapture.resetForTesting()
     }
 
     /** One full extraction of a synthetic archive; returns extract()'s failure or null. */

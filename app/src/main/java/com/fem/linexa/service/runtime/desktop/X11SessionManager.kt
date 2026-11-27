@@ -107,6 +107,27 @@ class X11SessionManager @Inject constructor(
     }
 
     /** The display allocated for [workspaceId], or null. */
+    /**
+     * Allocates a display for a **new start** of [workspaceId]'s desktop and
+     * always sweeps the stale socket + lock file of the chosen display.
+     *
+     * [allocateDisplay] returns a workspace's already-recorded display
+     * without touching the filesystem. That is correct for a reattach, but it
+     * made every RETRY after a failed or killed start reuse the recorded
+     * display while skipping [X11SocketReadiness.removeStaleSocket] — so the
+     * socket/lock the previous Xvnc left behind made the next Xvnc abort
+     * ("Server is already active for display N"). Start paths call this
+     * instead, after stopping this workspace's own X server daemon (the
+     * caller's contract: nothing of THIS workspace is serving the display, and
+     * displays are per-workspace, so no other workspace's server is affected).
+     */
+    fun allocateFreshDisplay(workspaceId: String, rootfsPath: String): String {
+        synchronized(allocationLock) {
+            displays.remove(workspaceId)
+            return allocateDisplay(workspaceId, rootfsPath)
+        }
+    }
+
     fun displayFor(workspaceId: String): String? = displays[workspaceId]
 
     /** Release [workspaceId]'s display (stop/delete). */

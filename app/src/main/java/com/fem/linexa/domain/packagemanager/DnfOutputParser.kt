@@ -109,24 +109,46 @@ internal object DnfOutputParser {
      * inside it cannot shift the columns.
      */
     fun parseAvailable(output: String): List<AvailablePkg> =
-        output.lines().mapNotNull { raw ->
-            val line = raw.trim()
-            if (line.isEmpty()) return@mapNotNull null
-            val cols = line.split(FIELD_SEPARATOR, limit = 8)
-            if (cols.size < 2) return@mapNotNull null
-            val name = cols[0].trim()
-            if (name.isEmpty()) return@mapNotNull null
-            AvailablePkg(
-                name = name,
-                latestVersion = cols[1].trim(),
-                downloadSizeBytes = cols.getOrNull(2)?.trim()?.toLongOrNull()?.takeIf { it > 0 },
-                installedSizeBytes = cols.getOrNull(3)?.trim()?.toLongOrNull()?.takeIf { it > 0 },
-                repository = cols.getOrNull(4)?.trim()?.takeIf { it.isNotEmpty() },
-                description = cols.getOrNull(7)?.trim()?.takeIf { it.isNotEmpty() },
-                section = cols.getOrNull(6)?.nullIfRpmNone()?.takeIf { !it.equals("Unspecified", ignoreCase = true) },
-                homepageUrl = cols.getOrNull(5)?.nullIfRpmNone()
-            )
+        output.lines().mapNotNull { parseAvailableLine(it) }
+
+    /**
+     * F-038 / R-27: page while parsing, so a broad query does not build the
+     * full row list before dropping most of it.
+     */
+    fun parseAvailablePage(output: String, offset: Int, limit: Int): SearchPage {
+        val safeOffset = offset.coerceAtLeast(0)
+        val safeLimit = limit.coerceAtLeast(0)
+        var total = 0
+        val page = ArrayList<AvailablePkg>(safeLimit.coerceAtMost(64))
+        output.lineSequence().forEach { raw ->
+            val pkg = parseAvailableLine(raw) ?: return@forEach
+            if (total >= safeOffset && page.size < safeLimit) page += pkg
+            total++
         }
+        return SearchPage(total, page)
+    }
+
+    private fun parseAvailableLine(raw: String): AvailablePkg? {
+        val line = raw.trim()
+        if (line.isEmpty()) return null
+        val cols = line.split(FIELD_SEPARATOR, limit = 8)
+        if (cols.size < 2) return null
+        val name = cols[0].trim()
+        if (name.isEmpty()) return null
+        return AvailablePkg(
+            name = name,
+            latestVersion = cols[1].trim(),
+            downloadSizeBytes = cols.getOrNull(2)?.trim()?.toLongOrNull()?.takeIf { it > 0 },
+            installedSizeBytes = cols.getOrNull(3)?.trim()?.toLongOrNull()?.takeIf { it > 0 },
+            repository = cols.getOrNull(4)?.trim()?.takeIf { it.isNotEmpty() },
+            description = cols.getOrNull(7)?.trim()?.takeIf { it.isNotEmpty() },
+            section = cols.getOrNull(6)?.nullIfRpmNone()?.takeIf { !it.equals("Unspecified", ignoreCase = true) },
+            homepageUrl = cols.getOrNull(5)?.nullIfRpmNone()
+        )
+    }
+
+    /** One page of search results plus the full count (F-038). */
+    data class SearchPage(val total: Int, val packages: List<AvailablePkg>)
 
     /**
      * Parse `dnf check-update` / `dnf repoquery --upgrades` output into
@@ -188,16 +210,35 @@ internal object DnfOutputParser {
      * carry no separator (or are filtered explicitly) and are skipped.
      */
     fun parseSearch(output: String): List<Pair<String, String>> =
-        output.lines().mapNotNull { raw ->
-            val line = raw.trim()
-            if (line.isEmpty() || line.startsWith("=") || isSearchHeader(line)) return@mapNotNull null
-            val (rawName, summary) = splitSearchRow(line) ?: return@mapNotNull null
-            // `name.arch` → name. Arch is the last dot-segment, and package
-            // names legitimately contain dots, so only a known arch suffix is
-            // stripped rather than everything after the first dot.
-            val name = stripArch(rawName)
-            if (name.isEmpty() || summary.isEmpty()) null else name to summary
+        output.lines().mapNotNull { parseSearchLine(it) }
+
+    /** F-038 / R-27: paged variant of [parseSearch]. */
+    fun parseSearchPage(output: String, offset: Int, limit: Int): SearchPairPage {
+        val safeOffset = offset.coerceAtLeast(0)
+        val safeLimit = limit.coerceAtLeast(0)
+        var total = 0
+        val page = ArrayList<Pair<String, String>>(safeLimit.coerceAtMost(64))
+        output.lineSequence().forEach { raw ->
+            val row = parseSearchLine(raw) ?: return@forEach
+            if (total >= safeOffset && page.size < safeLimit) page += row
+            total++
         }
+        return SearchPairPage(total, page)
+    }
+
+    private fun parseSearchLine(raw: String): Pair<String, String>? {
+        val line = raw.trim()
+        if (line.isEmpty() || line.startsWith("=") || isSearchHeader(line)) return null
+        val (rawName, summary) = splitSearchRow(line) ?: return null
+        // `name.arch` → name. Arch is the last dot-segment, and package
+        // names legitimately contain dots, so only a known arch suffix is
+        // stripped rather than everything after the first dot.
+        val name = stripArch(rawName)
+        return if (name.isEmpty() || summary.isEmpty()) null else name to summary
+    }
+
+    /** One page of name/summary rows plus the full count (F-038). */
+    data class SearchPairPage(val total: Int, val packages: List<Pair<String, String>>)
 
     /** dnf5 uses a tab; dnf4 uses ` : `. Tab wins because it cannot appear in a name. */
     private fun splitSearchRow(line: String): Pair<String, String>? {
